@@ -473,4 +473,32 @@ mod tests {
         let kb = parse_keybind("F5").unwrap();
         assert!(!kb.ctrl);
     }
+
+    #[test]
+    fn update_config_defaults_to_enabled() {
+        let cfg = UpdateConfig::default();
+        assert!(cfg.check_on_startup);
+        assert!(cfg.skip_version.is_empty());
+    }
+
+    /// A config file written by an older release (no `[update]` section)
+    /// must still parse, falling back to the default update settings.
+    #[test]
+    fn config_without_update_section_parses() {
+        let cfg: AppConfig = toml::from_str("[ui]\ntheme = \"nord\"\n").unwrap();
+        assert_eq!(cfg.ui.theme, "nord");
+        assert!(cfg.update.check_on_startup);
+    }
+
+    #[test]
+    fn update_config_round_trips_through_toml() {
+        let mut cfg = AppConfig::default();
+        cfg.update.check_on_startup = false;
+        cfg.update.skip_version = "1.2.3".to_string();
+
+        let serialized = toml::to_string_pretty(&cfg).unwrap();
+        let parsed: AppConfig = toml::from_str(&serialized).unwrap();
+        assert!(!parsed.update.check_on_startup);
+        assert_eq!(parsed.update.skip_version, "1.2.3");
+    }
 }
