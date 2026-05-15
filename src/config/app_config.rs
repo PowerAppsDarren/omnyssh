@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub keybindings: KeybindingsConfig,
     pub smart_context: SmartContextConfig,
     pub auto_key_setup: AutoKeySetupConfig,
+    pub update: UpdateConfig,
 }
 
 /// General / runtime settings.
@@ -159,6 +160,25 @@ impl Default for AutoKeySetupConfig {
             key_directory: String::from("~/.ssh"),
             backup_sshd_config: true,
             confirm_before_disable: true,
+        }
+    }
+}
+
+/// Update checker configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    /// Check GitHub Releases for a newer version on startup.
+    pub check_on_startup: bool,
+    /// A version the user chose to skip; it is never offered again.
+    pub skip_version: String,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            check_on_startup: true,
+            skip_version: String::new(),
         }
     }
 }
@@ -363,14 +383,12 @@ pub fn load_app_config(path: Option<&std::path::Path>) -> anyhow::Result<AppConf
     Ok(config)
 }
 
-/// Saves the theme selection to the config file.
-///
-/// If the config file doesn't exist, it creates a new one with the theme setting.
-/// If it exists, it updates the `[ui]` section's `theme` field.
+/// Loads the on-disk config (or a default), applies `mutator`, and writes it
+/// back. Reading fresh from disk avoids clobbering unrelated edits.
 ///
 /// # Errors
-/// Returns an error if the config file cannot be written or parsed.
-pub fn save_theme_to_config(theme_name: &str) -> anyhow::Result<()> {
+/// Returns an error if the config file cannot be read, parsed, or written.
+fn persist_config<F: FnOnce(&mut AppConfig)>(mutator: F) -> anyhow::Result<()> {
     use crate::utils::platform;
 
     let config_path = match platform::app_config_path() {
@@ -378,13 +396,11 @@ pub fn save_theme_to_config(theme_name: &str) -> anyhow::Result<()> {
         None => anyhow::bail!("Cannot determine config path for this platform"),
     };
 
-    // Ensure config directory exists
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
     }
 
-    // Load existing config or create default
     let mut config = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)
             .with_context(|| format!("Failed to read config: {}", config_path.display()))?;
@@ -394,16 +410,31 @@ pub fn save_theme_to_config(theme_name: &str) -> anyhow::Result<()> {
         AppConfig::default()
     };
 
-    // Update theme
-    config.ui.theme = theme_name.to_string();
+    mutator(&mut config);
 
-    // Serialize and write back
     let content = toml::to_string_pretty(&config).context("Failed to serialize config")?;
-
     std::fs::write(&config_path, content)
         .with_context(|| format!("Failed to write config: {}", config_path.display()))?;
 
     Ok(())
+}
+
+/// Saves the theme selection to the config file's `[ui]` section.
+///
+/// # Errors
+/// Returns an error if the config file cannot be written or parsed.
+pub fn save_theme_to_config(theme_name: &str) -> anyhow::Result<()> {
+    persist_config(|config| config.ui.theme = theme_name.to_string())
+}
+
+/// Saves the update-checker preferences to the config file's `[update]`
+/// section.
+///
+/// # Errors
+/// Returns an error if the config file cannot be written or parsed.
+pub fn save_update_config(update: &UpdateConfig) -> anyhow::Result<()> {
+    let update = update.clone();
+    persist_config(move |config| config.update = update)
 }
 
 #[cfg(test)]
