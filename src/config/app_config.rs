@@ -240,8 +240,9 @@ impl ParsedKeybindings {
             }),
             snippets: parse_keycode(&cfg.snippets)
                 .unwrap_or_else(|| parse_keycode(&defaults.snippets).expect("default snippets")),
-            next_screen: parse_keybind(&cfg.next_screen)
-                .unwrap_or_else(|| parse_keybind(&defaults.next_screen).expect("default next_screen")),
+            next_screen: parse_keybind(&cfg.next_screen).unwrap_or_else(|| {
+                parse_keybind(&defaults.next_screen).expect("default next_screen")
+            }),
             next_tab: parse_keybind(&cfg.next_tab)
                 .unwrap_or_else(|| parse_keybind(&defaults.next_tab).expect("default next_tab")),
         }
