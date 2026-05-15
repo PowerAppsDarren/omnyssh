@@ -149,13 +149,13 @@ jobs:
           sha256sum omny-* > SHA256SUMS
           cat SHA256SUMS
 
-      # Извлекаем блок текущего релиза из CHANGELOG.md
-      # (от первого "## [X.Y.Z]" до следующего "## [")
+      # Extract the current release block from CHANGELOG.md: from the
+      # "## X.Y.Z" heading down to the next "## " heading or "---" rule.
       - name: Extract changelog entry
         id: changelog
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"   # убираем "v" из тега
-          BODY=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          VERSION="${GITHUB_REF_NAME#v}"   # strip the leading "v" from the tag
+          BODY=$(awk "/^## ${VERSION} /{found=1; next} found && (/^## /||/^---\$/){exit} found{print}" CHANGELOG.md)
           # Передаём многострочный текст через GITHUB_OUTPUT
           {
             echo 'body<<CHANGELOG_EOF'
