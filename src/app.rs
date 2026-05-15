@@ -2078,9 +2078,9 @@ impl App {
                 }
             }
 
-            KeyCode::Tab => {
-                // On the File Manager screen Tab switches between the two panels
-                // (local ↔ remote) rather than cycling to the next app screen.
+            _code if self.view.keybindings.next_screen.matches(key) => {
+                // On the File Manager screen this key switches between the two
+                // panels (local ↔ remote) rather than cycling to the next screen.
                 if matches!(screen, Screen::FileManager) {
                     return Ok(Some(AppAction::FmSwitchPanel));
                 }
@@ -2246,11 +2246,11 @@ impl App {
             }
         }
 
-        // Tab key:
-        //   • In split mode  → switch pane focus (existing behaviour).
+        // ── Tab / next-tab keybinding ──────────────────────────────────────
+        //   • In split mode  → switch pane focus.
         //   • Otherwise       → cycle to the next tab AND enter tab-select mode
         //                       (a subsequent digit 1–9 jumps to that tab directly).
-        if key.code == KeyCode::Tab && !ctrl {
+        if self.view.keybindings.next_tab.matches(key) {
             if self.view.terminal_view.split.is_some() {
                 return Some(AppAction::TermFocusNextPane);
             }
