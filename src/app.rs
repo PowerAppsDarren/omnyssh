@@ -1529,6 +1529,10 @@ impl App {
                                 .os_info
                                 .clone()
                                 .or_else(|| existing.os_info.clone()),
+                            top_processes: new_metrics
+                                .top_processes
+                                .clone()
+                                .or_else(|| existing.top_processes.clone()),
                             last_updated: new_metrics.last_updated,
                         }
                     } else {

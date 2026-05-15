@@ -7,11 +7,16 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-## 1.0.2 — 2026-05-15
+## 1.0.2 — 2026-05-16
 
 ### Features
 - **Automatic update checks**: On startup OmnySSH checks GitHub Releases for a newer version and shows a popup when one is available. You can install the update, skip that version, or disable checks entirely. Failed or offline checks are silent and never delay startup.
 - **In-app self-update**: For manual / `install.sh` installs on Linux and macOS, an update can be downloaded and installed from within the app — the release archive is verified against its SHA-256 checksum before the binary is replaced. Homebrew, Cargo, and Nix installs instead show the matching upgrade command.
+- **Top processes on the detail page**: The server detail view now shows the three busiest processes by CPU usage, along with their CPU and memory percentages.
+
+### Bug Fixes
+- **Windows double input fixed**: Each keystroke is now registered once instead of twice (e.g. "j" no longer produced "jj"). Key-release events reported by the Windows console are no longer treated as input.
+- **Ubuntu 22.04 compatibility**: Linux release binaries are now built against an older glibc, fixing the `version 'GLIBC_2.39' not found` error when running on Ubuntu 22.04 and similarly aged distributions.
 
 ### Other
 - Release archives are now published alongside a `SHA256SUMS` checksum file.
