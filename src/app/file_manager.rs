@@ -594,3 +594,126 @@ fn filename_of(path: &str) -> String {
         .unwrap_or("file")
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, path: &str) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            path: path.to_string(),
+            size: 0,
+            is_dir: false,
+            is_symlink: false,
+            permissions: 0,
+            modified: None,
+        }
+    }
+
+    fn panel(entries: Vec<FileEntry>) -> FilePanelView {
+        FilePanelView {
+            entries,
+            ..FilePanelView::default()
+        }
+    }
+
+    // --- FilePanelView marked/cursor selection (P1.6) ---------------------
+
+    #[test]
+    fn marked_or_cursor_uses_marked_set() {
+        let mut p = panel(vec![entry("a", "/a"), entry("b", "/b")]);
+        p.marked.insert("/b".to_string());
+        assert_eq!(p.marked_or_cursor_paths(), vec!["/b".to_string()]);
+    }
+
+    #[test]
+    fn marked_or_cursor_uses_cursor_when_unmarked() {
+        let p = panel(vec![entry("f", "/f")]);
+        assert_eq!(p.marked_or_cursor_paths(), vec!["/f".to_string()]);
+    }
+
+    #[test]
+    fn marked_or_cursor_excludes_dotdot_under_cursor() {
+        let p = panel(vec![entry("..", "/parent")]);
+        assert!(p.marked_or_cursor_paths().is_empty());
+    }
+
+    #[test]
+    fn marked_or_cursor_empty_entries_returns_empty() {
+        let p = panel(vec![]);
+        assert!(p.marked_or_cursor_paths().is_empty());
+    }
+
+    #[test]
+    fn marked_or_cursor_marked_dotdot_still_returned() {
+        // The ".." guard applies only to the cursor path, not the marked set.
+        let mut p = panel(vec![entry("..", "/parent")]);
+        p.marked.insert("/parent".to_string());
+        assert_eq!(p.marked_or_cursor_paths(), vec!["/parent".to_string()]);
+    }
+
+    #[test]
+    fn cursor_entry_in_bounds() {
+        let mut p = panel(vec![entry("a", "/a"), entry("b", "/b")]);
+        p.cursor = 1;
+        assert_eq!(p.cursor_entry().map(|e| e.name.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn cursor_entry_out_of_bounds_returns_none() {
+        let mut p = panel(vec![entry("a", "/a")]);
+        p.cursor = 5;
+        assert!(p.cursor_entry().is_none());
+    }
+
+    #[test]
+    fn fm_select_next_clamps_at_last() {
+        let mut p = panel(vec![entry("a", "/a"), entry("b", "/b")]);
+        p.select_next();
+        p.select_next();
+        p.select_next();
+        assert_eq!(p.cursor, 1);
+    }
+
+    #[test]
+    fn fm_select_next_noop_when_empty() {
+        let mut p = panel(vec![]);
+        p.select_next();
+        assert_eq!(p.cursor, 0);
+    }
+
+    #[test]
+    fn fm_select_prev_saturates_at_zero() {
+        let mut p = panel(vec![entry("a", "/a")]);
+        p.select_prev();
+        assert_eq!(p.cursor, 0);
+    }
+
+    #[test]
+    fn clamp_scroll_pulls_view_up_to_cursor() {
+        let mut p = panel(vec![]);
+        p.cursor = 2;
+        p.scroll.set(5);
+        p.clamp_scroll(10);
+        assert_eq!(p.scroll.get(), 2);
+    }
+
+    #[test]
+    fn clamp_scroll_pushes_view_down_to_cursor() {
+        let mut p = panel(vec![]);
+        p.cursor = 20;
+        p.scroll.set(0);
+        p.clamp_scroll(10);
+        assert_eq!(p.scroll.get(), 11);
+    }
+
+    #[test]
+    fn clamp_scroll_zero_rows_is_noop() {
+        let mut p = panel(vec![]);
+        p.cursor = 20;
+        p.scroll.set(5);
+        p.clamp_scroll(0);
+        assert_eq!(p.scroll.get(), 5);
+    }
+}

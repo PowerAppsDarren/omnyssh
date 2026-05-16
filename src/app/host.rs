@@ -741,4 +741,364 @@ mod tests {
         assert!(host.key_setup_date.is_none());
         assert!(host.password_auth_disabled.is_none());
     }
+
+    // --- FormField insert/backspace, UTF-8 safety (P1.1) ------------------
+
+    #[test]
+    fn formfield_insert_ascii() {
+        let mut f = FormField::default();
+        f.insert_char('a');
+        assert_eq!(f.value, "a");
+        assert_eq!(f.cursor, 1);
+    }
+
+    #[test]
+    fn formfield_insert_multibyte_advances_cursor_by_byte_len() {
+        let mut f = FormField::default();
+        f.insert_char('é');
+        assert_eq!(f.value, "é");
+        assert_eq!(f.cursor, 2);
+    }
+
+    #[test]
+    fn formfield_insert_emoji_advances_cursor_by_four() {
+        let mut f = FormField::default();
+        f.insert_char('😀');
+        assert_eq!(f.cursor, 4);
+    }
+
+    #[test]
+    fn formfield_insert_at_start() {
+        let mut f = FormField::with_value("bc");
+        f.cursor = 0;
+        f.insert_char('a');
+        assert_eq!(f.value, "abc");
+        assert_eq!(f.cursor, 1);
+    }
+
+    #[test]
+    fn formfield_insert_on_multibyte_boundary_stays_valid() {
+        // Cursor sits between 'a' and 'é' — a valid char boundary.
+        let mut f = FormField::with_value("aé");
+        f.cursor = 1;
+        f.insert_char('X');
+        assert_eq!(f.value, "aXé");
+    }
+
+    #[test]
+    fn formfield_backspace_ascii() {
+        let mut f = FormField::with_value("ab");
+        f.backspace();
+        assert_eq!(f.value, "a");
+        assert_eq!(f.cursor, 1);
+    }
+
+    #[test]
+    fn formfield_backspace_removes_whole_multibyte_char() {
+        let mut f = FormField::with_value("é");
+        f.backspace();
+        assert_eq!(f.value, "");
+        assert_eq!(f.cursor, 0);
+    }
+
+    #[test]
+    fn formfield_backspace_at_zero_is_noop() {
+        let mut f = FormField::default();
+        f.backspace();
+        assert_eq!(f.value, "");
+        assert_eq!(f.cursor, 0);
+    }
+
+    #[test]
+    fn formfield_with_value_cursor_at_byte_len() {
+        let f = FormField::with_value("héllo");
+        assert_eq!(f.cursor, 6);
+    }
+
+    // --- filter_hosts (P1.3) ----------------------------------------------
+
+    fn host(name: &str, hostname: &str, tags: &[&str], notes: Option<&str>) -> Host {
+        Host {
+            name: name.to_string(),
+            hostname: hostname.to_string(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            notes: notes.map(|n| n.to_string()),
+            ..Host::default()
+        }
+    }
+
+    #[test]
+    fn filter_hosts_empty_query_returns_all() {
+        let hosts = [host("a", "1", &[], None), host("b", "2", &[], None)];
+        assert_eq!(filter_hosts(&hosts, ""), vec![0, 1]);
+    }
+
+    #[test]
+    fn filter_hosts_matches_name() {
+        let hosts = [host("web-prod", "1", &[], None), host("db", "2", &[], None)];
+        assert_eq!(filter_hosts(&hosts, "web"), vec![0]);
+    }
+
+    #[test]
+    fn filter_hosts_matches_hostname() {
+        let hosts = [
+            host("a", "10.0.0.1", &[], None),
+            host("b", "10.0.0.2", &[], None),
+        ];
+        assert_eq!(filter_hosts(&hosts, "0.0.1"), vec![0]);
+    }
+
+    #[test]
+    fn filter_hosts_matches_tag() {
+        let hosts = [
+            host("a", "1", &["prod"], None),
+            host("b", "2", &["dev"], None),
+        ];
+        assert_eq!(filter_hosts(&hosts, "prod"), vec![0]);
+    }
+
+    #[test]
+    fn filter_hosts_matches_notes() {
+        let hosts = [
+            host("a", "1", &[], Some("bastion host")),
+            host("b", "2", &[], None),
+        ];
+        assert_eq!(filter_hosts(&hosts, "bastion"), vec![0]);
+    }
+
+    #[test]
+    fn filter_hosts_case_insensitive() {
+        let hosts = [host("Web-Prod", "1", &[], None)];
+        assert_eq!(filter_hosts(&hosts, "WEB"), vec![0]);
+    }
+
+    #[test]
+    fn filter_hosts_no_match_returns_empty() {
+        let hosts = [host("a", "1", &[], None)];
+        assert!(filter_hosts(&hosts, "zzz").is_empty());
+    }
+
+    // --- HostListView::rebuild_filter and selection (P1.4) ----------------
+
+    fn filtered_names<'a>(view: &HostListView, hosts: &'a [Host]) -> Vec<&'a str> {
+        view.filtered_indices
+            .iter()
+            .map(|&i| hosts[i].name.as_str())
+            .collect()
+    }
+
+    fn metrics_cpu(value: f64) -> Metrics {
+        Metrics {
+            cpu_percent: Some(value),
+            ..Metrics::default()
+        }
+    }
+
+    fn metrics_ram(value: f64) -> Metrics {
+        Metrics {
+            ram_percent: Some(value),
+            ..Metrics::default()
+        }
+    }
+
+    #[test]
+    fn rebuild_sort_name_alphabetical() {
+        let hosts = [
+            host("c", "1", &[], None),
+            host("a", "2", &[], None),
+            host("b", "3", &[], None),
+        ];
+        let mut view = HostListView::default();
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(filtered_names(&view, &hosts), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn rebuild_sort_cpu_descending_missing_metrics_last() {
+        let hosts = [
+            host("a", "1", &[], None),
+            host("b", "2", &[], None),
+            host("c", "3", &[], None),
+        ];
+        let metrics = HashMap::from([
+            ("a".to_string(), metrics_cpu(90.0)),
+            ("b".to_string(), metrics_cpu(10.0)),
+        ]);
+        let mut view = HostListView {
+            sort_order: SortOrder::Cpu,
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &metrics, &HashMap::new());
+        assert_eq!(filtered_names(&view, &hosts), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn rebuild_sort_ram_descending() {
+        let hosts = [host("a", "1", &[], None), host("b", "2", &[], None)];
+        let metrics = HashMap::from([
+            ("a".to_string(), metrics_ram(20.0)),
+            ("b".to_string(), metrics_ram(80.0)),
+        ]);
+        let mut view = HostListView {
+            sort_order: SortOrder::Ram,
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &metrics, &HashMap::new());
+        assert_eq!(filtered_names(&view, &hosts), ["b", "a"]);
+    }
+
+    #[test]
+    fn rebuild_sort_status_priority() {
+        let hosts = [
+            host("a", "1", &[], None),
+            host("b", "2", &[], None),
+            host("c", "3", &[], None),
+            host("d", "4", &[], None),
+        ];
+        let statuses = HashMap::from([
+            ("a".to_string(), ConnectionStatus::Failed("x".to_string())),
+            ("b".to_string(), ConnectionStatus::Connected),
+            ("c".to_string(), ConnectionStatus::Connecting),
+        ]);
+        let mut view = HostListView {
+            sort_order: SortOrder::Status,
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &statuses);
+        // Connected, Connecting, Unknown/None, Failed.
+        assert_eq!(filtered_names(&view, &hosts), ["b", "c", "d", "a"]);
+    }
+
+    #[test]
+    fn rebuild_tag_filter_includes_only_matching() {
+        let hosts = [
+            host("a", "1", &["prod"], None),
+            host("b", "2", &["dev"], None),
+        ];
+        let mut view = HostListView {
+            tag_filter: Some("prod".to_string()),
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(filtered_names(&view, &hosts), ["a"]);
+    }
+
+    #[test]
+    fn rebuild_tag_filter_none_shows_all() {
+        let hosts = [
+            host("a", "1", &["prod"], None),
+            host("b", "2", &["dev"], None),
+        ];
+        let mut view = HostListView::default();
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(view.filtered_indices.len(), 2);
+    }
+
+    #[test]
+    fn rebuild_combines_text_tag_and_sort() {
+        let hosts = [
+            host("web1", "1", &["prod"], None),
+            host("web2", "2", &["dev"], None),
+            host("db1", "3", &["prod"], None),
+        ];
+        let mut view = HostListView {
+            search_query: "web".to_string(),
+            tag_filter: Some("prod".to_string()),
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(filtered_names(&view, &hosts), ["web1"]);
+    }
+
+    #[test]
+    fn rebuild_clamps_selection_when_list_shrinks() {
+        let hosts = [host("a", "1", &[], None), host("b", "2", &[], None)];
+        let mut view = HostListView {
+            selected: 5,
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(view.selected, 1);
+    }
+
+    #[test]
+    fn rebuild_resets_selection_to_zero_when_empty() {
+        let hosts = [host("a", "1", &[], None)];
+        let mut view = HostListView {
+            selected: 3,
+            search_query: "zzz".to_string(),
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(view.selected, 0);
+    }
+
+    #[test]
+    fn rebuild_preserves_selection_in_range() {
+        let hosts = [
+            host("a", "1", &[], None),
+            host("b", "2", &[], None),
+            host("c", "3", &[], None),
+        ];
+        let mut view = HostListView {
+            selected: 1,
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(view.selected, 1);
+    }
+
+    #[test]
+    fn rebuild_handles_shrunk_host_list_without_panic() {
+        let many = [
+            host("a", "1", &[], None),
+            host("b", "2", &[], None),
+            host("c", "3", &[], None),
+        ];
+        let mut view = HostListView::default();
+        view.rebuild_filter(&many, &HashMap::new(), &HashMap::new());
+        let few = [host("a", "1", &[], None)];
+        view.rebuild_filter(&few, &HashMap::new(), &HashMap::new());
+        assert!(view.filtered_indices.iter().all(|&i| i < few.len()));
+    }
+
+    #[test]
+    fn rebuild_cpu_sort_with_empty_metrics_does_not_panic() {
+        let hosts = [host("a", "1", &[], None), host("b", "2", &[], None)];
+        let mut view = HostListView {
+            sort_order: SortOrder::Cpu,
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(view.filtered_indices.len(), 2);
+    }
+
+    #[test]
+    fn host_select_next_clamps_at_last() {
+        let mut view = HostListView {
+            filtered_indices: vec![0, 1],
+            ..Default::default()
+        };
+        view.select_next();
+        view.select_next();
+        view.select_next();
+        assert_eq!(view.selected, 1);
+    }
+
+    #[test]
+    fn host_select_prev_saturates_at_zero() {
+        let mut view = HostListView {
+            filtered_indices: vec![0, 1],
+            ..Default::default()
+        };
+        view.select_prev();
+        assert_eq!(view.selected, 0);
+    }
+
+    #[test]
+    fn host_select_next_noop_when_empty() {
+        let mut view = HostListView::default();
+        view.select_next();
+        assert_eq!(view.selected, 0);
+    }
 }

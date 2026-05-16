@@ -709,4 +709,206 @@ mod tests {
         let out = substitute_params("{{db name}}", Some(&[s("db name")]), &[s("v")]);
         assert_eq!(out, "v");
     }
+
+    /// Builds a snippet form from the 6 field values, in `SNIPPET_FORM_FIELD_LABELS` order.
+    fn snippet_form(values: [&str; 6]) -> SnippetForm {
+        let mut form = SnippetForm::empty();
+        for (i, v) in values.iter().enumerate() {
+            form.fields[i] = FormField::with_value(*v);
+        }
+        form
+    }
+
+    fn snippet(name: &str, command: &str, tags: &[&str]) -> Snippet {
+        Snippet {
+            name: name.to_string(),
+            command: command.to_string(),
+            scope: SnippetScope::Global,
+            host: None,
+            tags: if tags.is_empty() {
+                None
+            } else {
+                Some(tags.iter().map(|t| t.to_string()).collect())
+            },
+            params: None,
+        }
+    }
+
+    // --- SnippetForm::to_snippet (P1.2) -----------------------------------
+
+    #[test]
+    fn to_snippet_empty_name_errs() {
+        assert!(snippet_form(["", "cmd", "global", "", "", ""])
+            .to_snippet()
+            .is_err());
+    }
+
+    #[test]
+    fn to_snippet_empty_command_errs() {
+        assert!(snippet_form(["n", "", "global", "", "", ""])
+            .to_snippet()
+            .is_err());
+    }
+
+    #[test]
+    fn to_snippet_scope_defaults_global() {
+        let snip = snippet_form(["n", "cmd", "", "", "", ""])
+            .to_snippet()
+            .unwrap();
+        assert_eq!(snip.scope, SnippetScope::Global);
+    }
+
+    #[test]
+    fn to_snippet_scope_host_explicit() {
+        let snip = snippet_form(["n", "cmd", "host", "web", "", ""])
+            .to_snippet()
+            .unwrap();
+        assert_eq!(snip.scope, SnippetScope::Host);
+    }
+
+    #[test]
+    fn to_snippet_scope_case_insensitive() {
+        let snip = snippet_form(["n", "cmd", "HOST", "web", "", ""])
+            .to_snippet()
+            .unwrap();
+        assert_eq!(snip.scope, SnippetScope::Host);
+    }
+
+    #[test]
+    fn to_snippet_host_required_when_scope_host() {
+        assert!(snippet_form(["n", "cmd", "host", "", "", ""])
+            .to_snippet()
+            .is_err());
+    }
+
+    #[test]
+    fn to_snippet_host_kept_when_scope_global() {
+        let snip = snippet_form(["n", "cmd", "global", "web", "", ""])
+            .to_snippet()
+            .unwrap();
+        assert_eq!(snip.host.as_deref(), Some("web"));
+    }
+
+    #[test]
+    fn to_snippet_tags_params_split_and_trimmed() {
+        let snip = snippet_form(["n", "cmd", "global", "", "a, b ,,", "p1, p2"])
+            .to_snippet()
+            .unwrap();
+        assert_eq!(snip.tags, Some(vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(snip.params, Some(vec!["p1".to_string(), "p2".to_string()]));
+    }
+
+    #[test]
+    fn to_snippet_tags_params_none_when_empty() {
+        let snip = snippet_form(["n", "cmd", "global", "", "", ""])
+            .to_snippet()
+            .unwrap();
+        assert!(snip.tags.is_none());
+        assert!(snip.params.is_none());
+    }
+
+    // --- filter_snippets (P1.3) -------------------------------------------
+
+    #[test]
+    fn filter_snippets_empty_query_returns_all() {
+        let snips = [snippet("a", "ls", &[]), snippet("b", "pwd", &[])];
+        assert_eq!(filter_snippets(&snips, ""), vec![0, 1]);
+    }
+
+    #[test]
+    fn filter_snippets_matches_name() {
+        let snips = [snippet("deploy", "ls", &[]), snippet("backup", "pwd", &[])];
+        assert_eq!(filter_snippets(&snips, "depl"), vec![0]);
+    }
+
+    #[test]
+    fn filter_snippets_matches_command() {
+        let snips = [
+            snippet("a", "systemctl restart", &[]),
+            snippet("b", "ls", &[]),
+        ];
+        assert_eq!(filter_snippets(&snips, "systemctl"), vec![0]);
+    }
+
+    #[test]
+    fn filter_snippets_matches_tag() {
+        let snips = [snippet("a", "ls", &["ops"]), snippet("b", "pwd", &["dev"])];
+        assert_eq!(filter_snippets(&snips, "ops"), vec![0]);
+    }
+
+    #[test]
+    fn filter_snippets_case_insensitive() {
+        let snips = [snippet("Deploy", "ls", &[])];
+        assert_eq!(filter_snippets(&snips, "DEPLOY"), vec![0]);
+    }
+
+    #[test]
+    fn filter_snippets_no_match_returns_empty() {
+        let snips = [snippet("a", "ls", &[])];
+        assert!(filter_snippets(&snips, "zzz").is_empty());
+    }
+
+    // --- SnippetsView navigation (P1.5) -----------------------------------
+
+    #[test]
+    fn snippetsview_rebuild_filter_sets_indices() {
+        let snips = [snippet("deploy", "ls", &[]), snippet("backup", "pwd", &[])];
+        let mut view = SnippetsView::default();
+        view.rebuild_filter(&snips, "depl");
+        assert_eq!(view.filtered_indices, vec![0]);
+    }
+
+    #[test]
+    fn snippetsview_rebuild_clamps_selection() {
+        let snips = [snippet("a", "ls", &[]), snippet("b", "pwd", &[])];
+        let mut view = SnippetsView {
+            selected: 5,
+            ..Default::default()
+        };
+        view.rebuild_filter(&snips, "");
+        assert_eq!(view.selected, 1);
+    }
+
+    #[test]
+    fn snippetsview_rebuild_empty_resets_selection() {
+        let snips = [snippet("a", "ls", &[])];
+        let mut view = SnippetsView {
+            selected: 3,
+            ..Default::default()
+        };
+        view.rebuild_filter(&snips, "zzz");
+        assert_eq!(view.selected, 0);
+    }
+
+    #[test]
+    fn snippetsview_select_next_clamps_at_last() {
+        let mut view = SnippetsView {
+            filtered_indices: vec![0, 1],
+            ..Default::default()
+        };
+        view.select_next();
+        view.select_next();
+        view.select_next();
+        assert_eq!(view.selected, 1);
+    }
+
+    #[test]
+    fn snippetsview_select_prev_saturates_at_zero() {
+        let mut view = SnippetsView {
+            filtered_indices: vec![0, 1],
+            ..Default::default()
+        };
+        view.select_prev();
+        assert_eq!(view.selected, 0);
+    }
+
+    #[test]
+    fn snippetsview_selected_idx_maps_through_filter() {
+        let view = SnippetsView {
+            filtered_indices: vec![3, 7],
+            selected: 1,
+            ..Default::default()
+        };
+        assert_eq!(view.selected_snippet_idx(), Some(7));
+    }
 }

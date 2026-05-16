@@ -292,3 +292,80 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab(session_id: SessionId) -> TermTab {
+        TermTab {
+            session_id,
+            host_name: String::new(),
+            has_activity: false,
+            parser: Arc::new(Mutex::new(vt100::Parser::new(24, 80, 0))),
+            scroll_offset: 0,
+        }
+    }
+
+    // --- TerminalView::active_session_id (P1.7) ---------------------------
+
+    #[test]
+    fn active_session_id_none_when_no_tabs() {
+        let view = TerminalView::default();
+        assert_eq!(view.active_session_id(), None);
+    }
+
+    #[test]
+    fn active_session_id_returns_active_tab() {
+        let view = TerminalView {
+            tabs: vec![tab(10), tab(20)],
+            active_tab: 1,
+            ..Default::default()
+        };
+        assert_eq!(view.active_session_id(), Some(20));
+    }
+
+    #[test]
+    fn active_session_id_uses_secondary_pane_when_focused() {
+        let view = TerminalView {
+            tabs: vec![tab(10), tab(20), tab(30)],
+            active_tab: 0,
+            split: Some(SplitView {
+                direction: SplitDirection::Vertical,
+                secondary_tab: 2,
+            }),
+            split_focus: SplitFocus::Secondary,
+            ..Default::default()
+        };
+        assert_eq!(view.active_session_id(), Some(30));
+    }
+
+    #[test]
+    fn active_session_id_uses_primary_pane_when_focused() {
+        let view = TerminalView {
+            tabs: vec![tab(10), tab(20), tab(30)],
+            active_tab: 0,
+            split: Some(SplitView {
+                direction: SplitDirection::Vertical,
+                secondary_tab: 2,
+            }),
+            split_focus: SplitFocus::Primary,
+            ..Default::default()
+        };
+        assert_eq!(view.active_session_id(), Some(10));
+    }
+
+    #[test]
+    fn active_session_id_none_when_secondary_index_out_of_range() {
+        let view = TerminalView {
+            tabs: vec![tab(10)],
+            split: Some(SplitView {
+                direction: SplitDirection::Horizontal,
+                secondary_tab: 99,
+            }),
+            split_focus: SplitFocus::Secondary,
+            ..Default::default()
+        };
+        assert_eq!(view.active_session_id(), None);
+    }
+}
