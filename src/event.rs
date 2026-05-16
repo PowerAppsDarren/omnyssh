@@ -60,6 +60,8 @@ impl Default for Metrics {
 pub enum AppEvent {
     /// Keyboard or mouse input from the user.
     Key(KeyEvent),
+    /// Text pasted into the terminal (bracketed paste).
+    Paste(String),
     /// Render tick (~30 FPS).
     Tick,
     /// SSH metrics received from a background task.
@@ -292,6 +294,11 @@ pub fn spawn_event_thread(tx: mpsc::Sender<AppEvent>) -> anyhow::Result<()> {
                             if tx.blocking_send(AppEvent::TermScroll(d)).is_err() {
                                 break;
                             }
+                        }
+                    }
+                    Ok(Event::Paste(text)) => {
+                        if tx.blocking_send(AppEvent::Paste(text)).is_err() {
+                            break;
                         }
                     }
                     Ok(_) => {}
