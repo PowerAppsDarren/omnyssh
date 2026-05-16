@@ -611,7 +611,7 @@ async fn run_command_on_host(host: &Host, command: &str) -> Result<String, Strin
 
 /// Replaces `{{param_name}}` placeholders in `command` with the
 /// corresponding values from `param_values` (parallel to `param_names`).
-fn substitute_params(
+pub(crate) fn substitute_params(
     command: &str,
     param_names: Option<&[String]>,
     param_values: &[String],
@@ -624,4 +624,89 @@ fn substitute_params(
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &str) -> String {
+        v.to_string()
+    }
+
+    // --- substitute_params (P0.1) -----------------------------------------
+
+    #[test]
+    fn subst_single_placeholder() {
+        let out = substitute_params("echo {{name}}", Some(&[s("name")]), &[s("world")]);
+        assert_eq!(out, "echo world");
+    }
+
+    #[test]
+    fn subst_multiple_placeholders() {
+        let out = substitute_params("{{a}}-{{b}}", Some(&[s("a"), s("b")]), &[s("x"), s("y")]);
+        assert_eq!(out, "x-y");
+    }
+
+    #[test]
+    fn subst_repeated_placeholder_replaces_all() {
+        let out = substitute_params("{{x}} {{x}}", Some(&[s("x")]), &[s("v")]);
+        assert_eq!(out, "v v");
+    }
+
+    #[test]
+    fn subst_no_params_returns_command_unchanged() {
+        let out = substitute_params("echo hi", None, &[]);
+        assert_eq!(out, "echo hi");
+    }
+
+    #[test]
+    fn subst_empty_value_removes_placeholder() {
+        let out = substitute_params("a{{p}}b", Some(&[s("p")]), &[s("")]);
+        assert_eq!(out, "ab");
+    }
+
+    #[test]
+    fn subst_missing_value_leaves_placeholder_literal() {
+        // More names than values: zip stops short, {{b}} stays untouched.
+        let out = substitute_params("{{a}} {{b}}", Some(&[s("a"), s("b")]), &[s("x")]);
+        assert_eq!(out, "x {{b}}");
+    }
+
+    #[test]
+    fn subst_extra_values_ignored() {
+        let out = substitute_params("{{a}}", Some(&[s("a")]), &[s("x"), s("y")]);
+        assert_eq!(out, "x");
+    }
+
+    #[test]
+    fn subst_unused_name_is_noop() {
+        let out = substitute_params("echo hi", Some(&[s("unused")]), &[s("v")]);
+        assert_eq!(out, "echo hi");
+    }
+
+    #[test]
+    fn subst_value_inserted_verbatim_no_shell_escaping() {
+        // Pins current behaviour: substitution does NOT escape shell metachars.
+        let out = substitute_params("sh -c {{cmd}}", Some(&[s("cmd")]), &[s("; rm -rf /")]);
+        assert_eq!(out, "sh -c ; rm -rf /");
+    }
+
+    #[test]
+    fn subst_unknown_braces_in_value_not_reexpanded() {
+        let out = substitute_params("{{a}}", Some(&[s("a")]), &[s("{{evil}}")]);
+        assert_eq!(out, "{{evil}}");
+    }
+
+    #[test]
+    fn subst_single_brace_untouched() {
+        let out = substitute_params("{name}", Some(&[s("name")]), &[s("v")]);
+        assert_eq!(out, "{name}");
+    }
+
+    #[test]
+    fn subst_name_with_spaces() {
+        let out = substitute_params("{{db name}}", Some(&[s("db name")]), &[s("v")]);
+        assert_eq!(out, "v");
+    }
 }

@@ -607,3 +607,138 @@ impl App {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a host form from the 8 field values, in `FORM_FIELD_LABELS` order.
+    fn host_form(values: [&str; 8]) -> HostForm {
+        let mut form = HostForm::empty();
+        for (i, v) in values.iter().enumerate() {
+            form.fields[i] = FormField::with_value(*v);
+        }
+        form
+    }
+
+    // --- HostForm::to_host (P0.2) -----------------------------------------
+
+    #[test]
+    fn to_host_empty_name_errs() {
+        let form = host_form(["", "h", "u", "22", "", "", "", ""]);
+        assert!(form.to_host(HostSource::Manual).is_err());
+    }
+
+    #[test]
+    fn to_host_whitespace_name_errs() {
+        let form = host_form(["   ", "h", "u", "22", "", "", "", ""]);
+        assert!(form.to_host(HostSource::Manual).is_err());
+    }
+
+    #[test]
+    fn to_host_empty_hostname_errs() {
+        let form = host_form(["n", "", "u", "22", "", "", "", ""]);
+        assert!(form.to_host(HostSource::Manual).is_err());
+    }
+
+    #[test]
+    fn to_host_empty_user_defaults_root() {
+        let host = host_form(["n", "h", "", "22", "", "", "", ""])
+            .to_host(HostSource::Manual)
+            .unwrap();
+        assert_eq!(host.user, "root");
+    }
+
+    #[test]
+    fn to_host_whitespace_user_defaults_root() {
+        let host = host_form(["n", "h", "  ", "22", "", "", "", ""])
+            .to_host(HostSource::Manual)
+            .unwrap();
+        assert_eq!(host.user, "root");
+    }
+
+    #[test]
+    fn to_host_empty_port_defaults_22() {
+        let host = host_form(["n", "h", "u", "", "", "", "", ""])
+            .to_host(HostSource::Manual)
+            .unwrap();
+        assert_eq!(host.port, 22);
+    }
+
+    #[test]
+    fn to_host_valid_port_parsed() {
+        let host = host_form(["n", "h", "u", "2222", "", "", "", ""])
+            .to_host(HostSource::Manual)
+            .unwrap();
+        assert_eq!(host.port, 2222);
+    }
+
+    #[test]
+    fn to_host_port_max_accepted() {
+        let host = host_form(["n", "h", "u", "65535", "", "", "", ""])
+            .to_host(HostSource::Manual)
+            .unwrap();
+        assert_eq!(host.port, 65535);
+    }
+
+    #[test]
+    fn to_host_port_zero_accepted() {
+        // Port 0 is invalid for SSH but u16 accepts it — documents a latent bug.
+        let host = host_form(["n", "h", "u", "0", "", "", "", ""])
+            .to_host(HostSource::Manual)
+            .unwrap();
+        assert_eq!(host.port, 0);
+    }
+
+    #[test]
+    fn to_host_port_overflow_errs() {
+        let err = host_form(["n", "h", "u", "65536", "", "", "", ""])
+            .to_host(HostSource::Manual)
+            .unwrap_err();
+        assert!(err.contains("between 1 and 65535"));
+    }
+
+    #[test]
+    fn to_host_port_non_numeric_errs() {
+        assert!(host_form(["n", "h", "u", "abc", "", "", "", ""])
+            .to_host(HostSource::Manual)
+            .is_err());
+    }
+
+    #[test]
+    fn to_host_port_negative_errs() {
+        assert!(host_form(["n", "h", "u", "-1", "", "", "", ""])
+            .to_host(HostSource::Manual)
+            .is_err());
+    }
+
+    #[test]
+    fn to_host_optional_fields_none_when_empty() {
+        let host = host_form(["n", "h", "u", "22", "", "", "", ""])
+            .to_host(HostSource::Manual)
+            .unwrap();
+        assert!(host.identity_file.is_none());
+        assert!(host.password.is_none());
+        assert!(host.notes.is_none());
+        assert!(host.tags.is_empty());
+    }
+
+    #[test]
+    fn to_host_tags_split_and_trimmed() {
+        let host = host_form(["n", "h", "u", "22", "", "", "a, b ,c,,", ""])
+            .to_host(HostSource::Manual)
+            .unwrap();
+        assert_eq!(host.tags, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn to_host_source_and_metadata_propagated() {
+        let host = host_form(["n", "h", "u", "22", "", "", "", ""])
+            .to_host(HostSource::SshConfig)
+            .unwrap();
+        assert_eq!(host.source, HostSource::SshConfig);
+        assert!(host.original_ssh_host.is_none());
+        assert!(host.key_setup_date.is_none());
+        assert!(host.password_auth_disabled.is_none());
+    }
+}
