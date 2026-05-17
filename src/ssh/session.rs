@@ -26,7 +26,8 @@ use crate::ssh::client::Host;
 /// Minimal russh client handler for metric collection.
 ///
 /// Verifies the server's host key against `~/.ssh/known_hosts`.
-/// Unknown hosts (first connection) are accepted; changed keys are rejected.
+/// Unknown hosts are recorded on first connection (trust on first use);
+/// changed keys are rejected.
 struct MetricsHandler {
     /// Hostname used for known_hosts lookup.
     host: String,
@@ -43,19 +44,49 @@ impl client::Handler for MetricsHandler {
         server_public_key: &russh::keys::key::PublicKey,
     ) -> Result<bool, Self::Error> {
         match russh::keys::check_known_hosts(&self.host, self.port, server_public_key) {
-            Ok(true) => Ok(true),  // key is in known_hosts and matches
-            Ok(false) => Ok(true), // host unknown — accept (first-connection semantics)
+            // Key is in known_hosts and matches.
+            Ok(true) => Ok(true),
+            // Host not seen before — record the key (trust on first use) so a
+            // later key change is detected, then accept. Recording is
+            // best-effort: a connection must not fail just because
+            // known_hosts is unwritable.
+            Ok(false) => {
+                match russh::keys::known_hosts::learn_known_hosts(
+                    &self.host,
+                    self.port,
+                    server_public_key,
+                ) {
+                    Ok(()) => tracing::info!(
+                        host = %self.host,
+                        port = self.port,
+                        "recorded new host key in known_hosts"
+                    ),
+                    Err(e) => tracing::warn!(
+                        host = %self.host,
+                        error = %e,
+                        "could not record host key in known_hosts"
+                    ),
+                }
+                Ok(true)
+            }
+            // A previously recorded key changed — refuse; possible MITM.
             Err(russh::keys::Error::KeyChanged { .. }) => {
                 tracing::warn!(
                     host = %self.host,
                     port = self.port,
-                    "Server key mismatch in known_hosts — possible MITM attack, refusing connection"
+                    "server key mismatch in known_hosts — possible MITM attack, refusing connection"
                 );
                 Ok(false)
             }
+            // Unreadable or corrupt known_hosts — fail closed rather than
+            // accept an unverified key.
             Err(e) => {
-                tracing::warn!(error = %e, "known_hosts check failed; accepting key");
-                Ok(true)
+                tracing::warn!(
+                    host = %self.host,
+                    error = %e,
+                    "known_hosts check failed; refusing connection"
+                );
+                Ok(false)
             }
         }
     }
