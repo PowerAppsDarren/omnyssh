@@ -620,10 +620,11 @@ async fn setup_key_internal(
         }
     }
 
-    // Check sudo availability.
+    // Check sudo availability. `run_command_checked` is required here — the
+    // probe's exit status is the answer, and plain `run_command` ignores it.
     info!("Checking sudo availability");
     match password_session
-        .run_command("sudo -n true 2>/dev/null")
+        .run_command_checked("sudo -n true 2>/dev/null")
         .await
     {
         Ok(_) => {

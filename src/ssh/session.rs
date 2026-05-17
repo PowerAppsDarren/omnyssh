@@ -128,11 +128,33 @@ impl SshSession {
     /// Execute a shell command on the remote host and return its stdout.
     ///
     /// A new SSH channel is opened for each call so sessions can be
-    /// reused across multiple commands.
+    /// reused across multiple commands. The remote exit status is ignored —
+    /// use [`SshSession::run_command_checked`] when it carries the result.
     ///
     /// # Errors
     /// Returns an error on channel failure or if the command times out (30 s).
     pub async fn run_command(&self, cmd: &str) -> anyhow::Result<String> {
+        Ok(self.exec(cmd).await?.0)
+    }
+
+    /// Like [`SshSession::run_command`] but returns an error when the remote
+    /// command exits with a non-zero status. Use for `test`-style probes whose
+    /// exit code is the answer (e.g. `sudo -n true`).
+    ///
+    /// # Errors
+    /// As [`SshSession::run_command`], plus a non-zero remote exit status.
+    pub async fn run_command_checked(&self, cmd: &str) -> anyhow::Result<String> {
+        let (output, status) = self.exec(cmd).await?;
+        match status {
+            // A missing exit status is treated as success — failing a command
+            // that likely worked is worse than missing a rare edge case.
+            None | Some(0) => Ok(output),
+            Some(code) => Err(anyhow!("remote command exited with status {code}")),
+        }
+    }
+
+    /// Opens a channel, runs `cmd`, and returns its stdout and exit status.
+    async fn exec(&self, cmd: &str) -> anyhow::Result<(String, Option<u32>)> {
         let mut channel = self
             .handle
             .channel_open_session()
@@ -141,12 +163,10 @@ impl SshSession {
 
         channel.exec(true, cmd).await.context("exec SSH command")?;
 
-        let output = time::timeout(Duration::from_secs(30), collect_output(&mut channel))
+        time::timeout(Duration::from_secs(30), collect_output(&mut channel))
             .await
             .map_err(|_| anyhow!("command timed out (30 s): {}", cmd))?
-            .context("read command output")?;
-
-        Ok(output)
+            .context("read command output")
     }
 
     /// Opens a new SSH channel, requests the SFTP subsystem, and returns the
@@ -325,8 +345,9 @@ async fn try_password_auth(
 
 async fn collect_output(
     channel: &mut russh::Channel<russh::client::Msg>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Option<u32>)> {
     let mut buf = Vec::new();
+    let mut exit_status = None;
     loop {
         match channel.wait().await {
             Some(ChannelMsg::Data { ref data }) => {
@@ -335,16 +356,19 @@ async fn collect_output(
             Some(ChannelMsg::ExtendedData { .. }) => {
                 // stderr — discard to avoid corrupting stdout-only parser input
             }
-            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => break,
-            Some(ChannelMsg::ExitStatus { .. }) => break,
-            None => break,
+            Some(ChannelMsg::ExitStatus { exit_status: code }) => {
+                // Record it but keep reading: trailing stdout may still arrive
+                // before the channel is closed.
+                exit_status = Some(code);
+            }
+            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
             _ => {}
         }
     }
     // Use .lines() semantics: replace \r\n → \n for cross-platform safety.
     let raw = String::from_utf8_lossy(&buf);
     let normalised: String = raw.lines().flat_map(|l| [l, "\n"]).collect();
-    Ok(normalised)
+    Ok((normalised, exit_status))
 }
 
 // ---------------------------------------------------------------------------
