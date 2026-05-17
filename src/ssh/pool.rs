@@ -308,21 +308,11 @@ async fn collect_metrics(session: &SshSession, host_name: &str) -> anyhow::Resul
 ///
 /// Tries GNU `ps` (Linux) with a server-side sort first, then falls back to
 /// BSD `ps` (macOS). Returns `None` when neither variant yields usable output.
-///
-/// The whole pipeline runs in a single login shell (`$$`); its own processes
-/// (`ps`, `awk`, `head`) would otherwise pollute the snapshot — `ps` in
-/// particular reports a meaningless lifetime-average CPU% for itself. The `awk`
-/// filter drops the shell (`pid == $$`) and everything it forked
-/// (`ppid == $$`), leaving only genuine processes.
 async fn collect_top_processes(session: &SshSession) -> Option<Vec<ProcessInfo>> {
-    // Strip the two ID columns after filtering, leaving `pcpu pmem comm`.
-    const SELF_FILTER: &str =
-        r#"awk -v s=$$ '$1!=s && $2!=s {$1="";$2="";sub(/^[ \t]+/,"");print}'"#;
-
     // Linux: GNU ps with server-side sort by CPU; empty `=` headers suppressed.
     let linux_out = session
-        .run_command(&format!(
-            "ps -eo pid=,ppid=,pcpu=,pmem=,comm= --sort=-pcpu 2>/dev/null | {SELF_FILTER} | head -n 3"
+        .run_command(&top_processes_command(
+            "-eo pid=,ppid=,pcpu=,pmem=,comm= --sort=-pcpu",
         ))
         .await
         .unwrap_or_default();
@@ -331,12 +321,39 @@ async fn collect_top_processes(session: &SshSession) -> Option<Vec<ProcessInfo>>
     }
     // macOS: BSD ps sorted by CPU usage (-r).
     let macos_out = session
-        .run_command(&format!(
-            "ps -Aceo pid=,ppid=,pcpu=,pmem=,comm= -r 2>/dev/null | {SELF_FILTER} | head -n 3"
+        .run_command(&top_processes_command(
+            "-Aceo pid=,ppid=,pcpu=,pmem=,comm= -r",
         ))
         .await
         .unwrap_or_default();
     parse_top_processes(&macos_out)
+}
+
+/// Builds the remote shell command that lists the top processes by CPU with
+/// the monitoring connection's own process chain removed. `ps_args` selects
+/// the OS-specific `ps` columns and sort order.
+///
+/// The pipeline runs inside an SSH-spawned shell whose own processes — and the
+/// `sshd` hosting the connection — would otherwise dominate the snapshot on an
+/// idle server. The `awk` filter drops them strictly by PID:
+///
+/// - `s` (`$$`) — the shell, and everything it forked (`ps`, `awk`, `head`);
+/// - `p` (`$PPID`) — the connection's `sshd`, and its children;
+/// - `g` — the privileged `sshd` one level up (parent of `$PPID`).
+///
+/// Filtering is by PID only, never by process name, so a genuinely busy SSH
+/// session belonging to another user still appears. POSIX-sh syntax — a
+/// non-Bourne login shell simply yields no output and the panel degrades to
+/// "process data unavailable".
+fn top_processes_command(ps_args: &str) -> String {
+    format!(
+        "g=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' '); \
+         ps {ps_args} 2>/dev/null | \
+         awk -v s=$$ -v p=$PPID -v g=\"$g\" \
+         '$1!=s && $1!=p && $1!=g && $2!=s && $2!=p \
+         {{$1=\"\";$2=\"\";sub(/^[ \\t]+/,\"\");print}}' | \
+         head -n 3"
+    )
 }
 
 async fn parse_cpu_combined(top_out: &str, session: &SshSession) -> Option<f64> {
@@ -374,4 +391,36 @@ async fn parse_ram_combined(mem_out: &str, session: &SshSession) -> Option<f64> 
         return parse_ram_vmstat(mem_out, &memsize_out);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_processes_command_excludes_monitor_pid_chain() {
+        let cmd = top_processes_command("-eo pid=,ppid=,pcpu=,pmem=,comm= --sort=-pcpu");
+
+        // The grandparent PID is resolved before the pipeline runs.
+        assert!(cmd.contains("g=$(ps -o ppid= -p $PPID"));
+        // The awk filter binds the shell, its parent sshd and the grandparent.
+        assert!(cmd.contains("-v s=$$"));
+        assert!(cmd.contains("-v p=$PPID"));
+        assert!(cmd.contains("-v g=\"$g\""));
+        // It drops all three PIDs (and the children of the shell and sshd).
+        assert!(cmd.contains("$1!=s && $1!=p && $1!=g && $2!=s && $2!=p"));
+        // Filtering is by PID only — never by process name.
+        assert!(!cmd.contains("sshd"));
+        // Output is capped server-side.
+        assert!(cmd.trim_end().ends_with("head -n 3"));
+    }
+
+    #[test]
+    fn top_processes_command_splices_ps_args_verbatim() {
+        let linux = top_processes_command("-eo pid=,ppid=,pcpu=,pmem=,comm= --sort=-pcpu");
+        assert!(linux.contains("ps -eo pid=,ppid=,pcpu=,pmem=,comm= --sort=-pcpu 2>/dev/null"));
+
+        let macos = top_processes_command("-Aceo pid=,ppid=,pcpu=,pmem=,comm= -r");
+        assert!(macos.contains("ps -Aceo pid=,ppid=,pcpu=,pmem=,comm= -r 2>/dev/null"));
+    }
 }
