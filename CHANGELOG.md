@@ -7,6 +7,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## 1.0.3 — 2026-05-21
+
+### Features
+- **Termux / Android support**: Releases now include a statically linked `aarch64-unknown-linux-musl` build that runs on Termux. `install.sh` detects Termux via `$TERMUX_VERSION` / `$PREFIX` and installs the binary into `$PREFIX/bin` (and the man page into `$PREFIX/share/man/man1`) without `sudo`.
+
+---
+
 ## 1.0.2 — 2026-05-16
 
 ### Features

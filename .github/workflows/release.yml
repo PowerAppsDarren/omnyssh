@@ -41,10 +41,11 @@ jobs:
   # which the final "publish" job then attaches to the Release.
   #
   # runner → target mapping:
-  #   ubuntu-22.04   → x86_64-unknown-linux-gnu  (older glibc for wider compat)
-  #   macos-latest   → x86_64-apple-darwin       (ARM runner, cross-compiled)
-  #   macos-latest   → aarch64-apple-darwin      (Apple Silicon runner, native)
-  #   windows-latest → x86_64-pc-windows-msvc    (native)
+  #   ubuntu-22.04   → x86_64-unknown-linux-gnu   (older glibc for wider compat)
+  #   ubuntu-22.04   → aarch64-unknown-linux-musl (static, cross-compiled; runs on Termux)
+  #   macos-latest   → x86_64-apple-darwin        (ARM runner, cross-compiled)
+  #   macos-latest   → aarch64-apple-darwin       (Apple Silicon runner, native)
+  #   windows-latest → x86_64-pc-windows-msvc     (native)
   build:
     name: Build · ${{ matrix.target }}
     needs: ci
@@ -59,6 +60,14 @@ jobs:
             runner:  ubuntu-22.04
             binary:  omny
             archive: omny-x86_64-unknown-linux-gnu.tar.gz
+
+          # Statically linked aarch64 Linux build. The musl runtime is bundled
+          # into the binary so it runs anywhere with a Linux kernel — including
+          # Termux on Android, which does not ship glibc.
+          - target:  aarch64-unknown-linux-musl
+            runner:  ubuntu-22.04
+            binary:  omny
+            archive: omny-aarch64-unknown-linux-musl.tar.gz
 
           - target:  x86_64-apple-darwin
             runner:  macos-latest
@@ -92,8 +101,19 @@ jobs:
           restore-keys: |
             ${{ matrix.target }}-cargo-
 
+      # Cross-linker for the aarch64-musl target. Rust bundles the musl libc
+      # itself; gcc-aarch64-linux-gnu only supplies the ELF linker.
+      - name: Install aarch64 cross linker
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
       # Build the release binary (optimized, stripped)
       - name: Build release binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_musl: aarch64-linux-gnu-gcc
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       # Package for Unix (tar.gz)
@@ -176,6 +196,7 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             artifacts/omny-x86_64-unknown-linux-gnu.tar.gz
+            artifacts/omny-aarch64-unknown-linux-musl.tar.gz
             artifacts/omny-x86_64-apple-darwin.tar.gz
             artifacts/omny-aarch64-apple-darwin.tar.gz
             artifacts/omny-x86_64-pc-windows-msvc.zip
