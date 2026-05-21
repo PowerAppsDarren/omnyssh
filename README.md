@@ -250,15 +250,24 @@ Options:
 
 ### Configuration
 
-Config files live in:
-- **Linux/macOS:** `~/.config/omnyssh/`
-- **Windows:** `%APPDATA%\omnyssh\`
+Config files live in the native OS config directory:
+
+| OS | Path |
+|----|------|
+| **Linux** | `~/.config/omnyssh/` (or `$XDG_CONFIG_HOME/omnyssh/`) |
+| **macOS** | `~/Library/Application Support/omnyssh/` |
+| **Windows** | `%APPDATA%\omnyssh\` |
+| **Termux (Android)** | `~/.config/omnyssh/` |
+
+> On macOS the path contains a space, so quote it in the shell:
+> `ls "~/Library/Application Support/omnyssh/"` (or use `~/Library/'Application Support'/omnyssh/`).
 
 | File | Purpose |
 |------|---------|
 | `config.toml` | App settings, theme, keybindings |
 | `hosts.toml` | Managed host list |
 | `snippets.toml` | Saved commands |
+| `omnyssh.log.YYYY-MM-DD` | Daily rolling log file |
 
 The original `~/.ssh/config` is **never modified** — hosts are imported read-only at startup.
 
