@@ -36,27 +36,40 @@ print_warning() {
 detect_platform() {
     OS="$(uname -s)"
     ARCH="$(uname -m)"
+    IS_TERMUX=0
 
-    case "$OS" in
-        Linux*)
-            PLATFORM="unknown-linux-gnu"
-            INSTALL_DIR="/usr/local/bin"
-            ;;
-        Darwin*)
-            PLATFORM="apple-darwin"
-            INSTALL_DIR="/usr/local/bin"
-            ;;
-        MINGW*|MSYS*|CYGWIN*)
-            PLATFORM="pc-windows-msvc"
-            INSTALL_DIR="$HOME/bin"
-            EXT=".exe"
-            print_warning "Windows detected. Manual PATH configuration may be required."
-            ;;
-        *)
-            print_error "Unsupported OS: $OS"
-            exit 1
-            ;;
-    esac
+    # Termux reports OS=Linux from uname but uses Bionic libc and a
+    # non-standard prefix. Detect it first so we pick a static musl build
+    # and install into $PREFIX/bin instead of /usr/local/bin.
+    if [ -n "${TERMUX_VERSION:-}" ] || \
+       { [ -n "${PREFIX:-}" ] && [ -d "${PREFIX}/bin" ] && \
+         [ "${PREFIX#*/com.termux/}" != "${PREFIX}" ]; }; then
+        IS_TERMUX=1
+        PLATFORM="unknown-linux-musl"
+        INSTALL_DIR="$PREFIX/bin"
+        print_info "Termux detected"
+    else
+        case "$OS" in
+            Linux*)
+                PLATFORM="unknown-linux-gnu"
+                INSTALL_DIR="/usr/local/bin"
+                ;;
+            Darwin*)
+                PLATFORM="apple-darwin"
+                INSTALL_DIR="/usr/local/bin"
+                ;;
+            MINGW*|MSYS*|CYGWIN*)
+                PLATFORM="pc-windows-msvc"
+                INSTALL_DIR="$HOME/bin"
+                EXT=".exe"
+                print_warning "Windows detected. Manual PATH configuration may be required."
+                ;;
+            *)
+                print_error "Unsupported OS: $OS"
+                exit 1
+                ;;
+        esac
+    fi
 
     case "$ARCH" in
         x86_64|amd64)
@@ -161,6 +174,10 @@ download_and_install() {
     if [ -w "$INSTALL_DIR" ]; then
         mv "$BINARY_PATH" "$INSTALL_DIR/$BINARY_NAME${EXT}"
         chmod +x "$INSTALL_DIR/$BINARY_NAME${EXT}"
+    elif [ "$IS_TERMUX" = "1" ]; then
+        # Termux has no sudo; $PREFIX/bin should already be writable.
+        print_error "Install directory $INSTALL_DIR is not writable"
+        exit 1
     else
         # Need sudo for system directories
         print_warning "Installing to system directory requires sudo privileges"
@@ -217,7 +234,11 @@ install_man_page() {
     print_info "Installing man page..."
 
     MAN_URL="https://raw.githubusercontent.com/$REPO/main/doc/omny.1"
-    MAN_DIR="/usr/local/share/man/man1"
+    if [ "$IS_TERMUX" = "1" ]; then
+        MAN_DIR="$PREFIX/share/man/man1"
+    else
+        MAN_DIR="/usr/local/share/man/man1"
+    fi
 
     # Try to install man page if we can
     if [ -d "$MAN_DIR" ] || mkdir -p "$MAN_DIR" 2>/dev/null; then
