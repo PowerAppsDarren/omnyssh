@@ -19,8 +19,9 @@ pub fn ssh_config_path() -> Option<PathBuf> {
 
 /// Returns the application config directory.
 ///
-/// - Linux / macOS: `~/.config/omnyssh/`
-/// - Windows:       `%APPDATA%\omnyssh\`
+/// - Linux:   `~/.config/omnyssh/`
+/// - macOS:   `~/Library/Application Support/omnyssh/`
+/// - Windows: `%APPDATA%\omnyssh\`
 pub fn app_config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("omnyssh"))
 }

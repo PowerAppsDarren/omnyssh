@@ -1,6 +1,6 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH omny 1  "omny 1.0.3" 
+.TH omny 1  "omny 1.0.4" 
 .SH NAME
 omny \- TUI SSH dashboard & server manager
 .SH SYNOPSIS
@@ -12,7 +12,7 @@ TUI SSH dashboard & server manager
 \fB\-c\fR, \fB\-\-config\fR \fI<FILE>\fR
 Path to a custom config file.
 
-Defaults to ~/.config/omnyssh/config.toml (Linux/macOS) or %APPDATA%\\\\omnyssh\\\\config.toml (Windows).
+Defaults to ~/.config/omnyssh/config.toml (Linux), ~/Library/Application Support/omnyssh/config.toml (macOS), or %APPDATA%\\\\omnyssh\\\\config.toml (Windows).
 .TP
 \fB\-t\fR, \fB\-\-theme\fR \fI<THEME>\fR
 Override the color theme (default | dracula | nord | gruvbox).
@@ -28,4 +28,4 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 \fB\-V\fR, \fB\-\-version\fR
 Print version
 .SH VERSION
-v1.0.3
+v1.0.4
