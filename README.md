@@ -113,6 +113,7 @@ Download from the [**Releases**](https://github.com/timhartmann7/omnyssh/release
 |----------|---------|
 | Linux x86_64 | `omny-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux ARM64 | `omny-aarch64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 (static / Termux) | `omny-aarch64-unknown-linux-musl.tar.gz` |
 | macOS Intel | `omny-x86_64-apple-darwin.tar.gz` |
 | macOS Apple Silicon | `omny-aarch64-apple-darwin.tar.gz` |
 | Windows x86_64 | `omny-x86_64-pc-windows-msvc.zip` |
@@ -291,9 +292,9 @@ border_style = "rounded"       # rounded | plain | double
 quit         = "q"
 search       = "/"
 connect      = "Enter"
-dashboard    = "1"
-file_manager = "2"
-snippets     = "3"
+dashboard    = "F1"
+file_manager = "F2"
+snippets     = "F3"
 ```
 
 #### Example: hosts.toml
