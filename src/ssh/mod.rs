@@ -4,6 +4,7 @@
 /// metrics collection, PTY-backed multi-session terminal emulator,
 /// Smart Server Context with service discovery, and Auto SSH Key Setup
 /// for secure authentication.
+pub mod askpass;
 pub mod client;
 pub mod discovery;
 pub mod key_setup;

@@ -121,6 +121,22 @@ impl PtySession {
         }
         cmd.arg(format!("{}@{}", host.user, host.hostname));
 
+        // Password-auth hosts: hand the stored password to `ssh` via SSH_ASKPASS
+        // so the terminal connects without an interactive prompt. We point
+        // SSH_ASKPASS at our own binary (see `ssh::askpass` and main.rs) and pass
+        // the password through the child environment — never on disk or argv.
+        // `SSH_ASKPASS_REQUIRE=force` makes ssh use the helper even though a PTY
+        // is attached. Keys and the SSH agent are still tried first; the helper
+        // is only invoked when ssh actually needs a password. If `current_exe`
+        // is unavailable we skip this and fall back to the interactive prompt.
+        if let Some(ref password) = host.password {
+            if let Ok(exe) = std::env::current_exe() {
+                cmd.env("SSH_ASKPASS", exe);
+                cmd.env("SSH_ASKPASS_REQUIRE", "force");
+                cmd.env(crate::ssh::askpass::PASSWORD_ENV, password);
+            }
+        }
+
         // Spawn the child — slave is consumed and becomes the child's controlling TTY.
         let child = pair
             .slave
