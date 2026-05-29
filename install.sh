@@ -242,18 +242,26 @@ install_man_page() {
         MAN_DIR="/usr/local/share/man/man1"
     fi
 
-    # Try to install man page if we can
-    if [ -d "$MAN_DIR" ] || mkdir -p "$MAN_DIR" 2>/dev/null; then
-        if command -v curl >/dev/null 2>&1; then
-            if curl -fsSL "$MAN_URL" -o "$MAN_DIR/omny.1" 2>/dev/null; then
-                print_success "Man page installed. Run 'man omny' for documentation"
-                return
-            fi
-        fi
+    if ! command -v curl >/dev/null 2>&1; then
+        print_info "Man page installation skipped (curl not found)"
+        return
     fi
 
-    # If we get here, man page installation failed (not critical)
-    print_info "Man page installation skipped (optional)"
+    # Download to a temp file first — needs no privileges. Placing it into a
+    # system man directory may require sudo, mirroring the binary install above.
+    MAN_TMP="$TMP_DIR/omny.1"
+    if ! curl -fsSL "$MAN_URL" -o "$MAN_TMP" 2>/dev/null; then
+        print_info "Man page installation skipped (download failed)"
+        return
+    fi
+
+    if mkdir -p "$MAN_DIR" 2>/dev/null && cp "$MAN_TMP" "$MAN_DIR/omny.1" 2>/dev/null; then
+        print_success "Man page installed. Run 'man omny' for documentation"
+    elif [ "$IS_TERMUX" != "1" ] && sudo mkdir -p "$MAN_DIR" 2>/dev/null && sudo cp "$MAN_TMP" "$MAN_DIR/omny.1" 2>/dev/null; then
+        print_success "Man page installed. Run 'man omny' for documentation"
+    else
+        print_info "Man page installation skipped (optional)"
+    fi
 }
 
 # Main installation flow
