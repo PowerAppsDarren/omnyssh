@@ -84,6 +84,12 @@ detect_platform() {
             ;;
     esac
 
+    # aarch64 Linux ships only as a static musl build — one binary that runs on
+    # every ARM64 Linux distro (glibc or not). No gnu archive is released.
+    if [ "$PLATFORM" = "unknown-linux-gnu" ] && [ "$ARCH" = "aarch64" ]; then
+        PLATFORM="unknown-linux-musl"
+    fi
+
     TARGET="${ARCH}-${PLATFORM}"
     print_info "Detected platform: $TARGET"
 }
