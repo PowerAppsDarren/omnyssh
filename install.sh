@@ -290,9 +290,15 @@ main() {
     echo ""
     print_success "Installation complete!"
     echo ""
+    case "$PLATFORM" in
+        apple-darwin)    CONFIG_DIR="~/Library/Application Support/omnyssh/" ;;
+        pc-windows-msvc) CONFIG_DIR="%APPDATA%\\omnyssh\\" ;;
+        *)               CONFIG_DIR="~/.config/omnyssh/" ;;
+    esac
+
     print_info "Next steps:"
     print_info "  1. Run 'omny' to start the application"
-    print_info "  2. Configure your servers in ~/.config/omnyssh/"
+    print_info "  2. Configure your servers in $CONFIG_DIR"
     print_info "  3. Check 'man omny' for documentation (Linux/macOS)"
     print_info "  4. Visit https://github.com/$REPO for more info"
     echo ""
