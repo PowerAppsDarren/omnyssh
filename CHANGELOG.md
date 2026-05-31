@@ -16,6 +16,9 @@ Versions follow [Semantic Versioning](https://semver.org/).
 - **Log files no longer fill the disk**: On startup OmnySSH now prunes rolling log files older than 7 days from its config directory. The cleanup is best-effort and never blocks startup, works on every platform via the native config path, and only touches `omnyssh.log*` files — `config.toml`, `hosts.toml`, and `snippets.toml` are left untouched.
 - **Man page now installs reliably**: `install.sh` failed to install the man page into the system directory (e.g. `/usr/local/share/man` on macOS) because it never elevated with `sudo`, so `man omny` reported "No manual entry". The man page is now downloaded to a temp file first and installed with a `sudo` fallback, mirroring the binary install.
 
+### Documentation
+- Fixed inaccurate docs: `--verbose` now correctly states logs are written to a log file (not stderr) in `--help`, the man page, and the README; `install.sh` prints the OS-specific config directory; corrected the horizontal split keybinding in the changelog (`Ctrl+]`, not `Ctrl+-`).
+
 ### Other
 - Removed the vestigial empty `package.json` and `package-lock.json` (left over from an earlier project name); they served no purpose in this Rust project.
 
@@ -111,7 +114,7 @@ First production-ready release of OmnySSH.
 
 #### Multi-session terminal
 - PTY-backed terminal with tabs (`Ctrl+T` / `Ctrl+W`)
-- Split-view: `Ctrl+\` vertical, `Ctrl+-` horizontal
+- Split-view: `Ctrl+\` vertical, `Ctrl+]` horizontal
 - Tab navigation with `Ctrl+Right` / `Ctrl+Left`
 - Activity indicator on tabs with unseen output
 - Full VT100 terminal emulation (`portable-pty` + `vt100`)

@@ -243,7 +243,7 @@ omny [OPTIONS]
 Options:
   -c, --config <FILE>   Path to a custom config file
   -t, --theme <THEME>   Override the color theme (default | dracula | nord | gruvbox)
-  -v, --verbose         Enable debug logging (written to stderr)
+  -v, --verbose         Enable debug logging (written to a log file)
   -h, --help            Print help
   -V, --version         Print version
 ```

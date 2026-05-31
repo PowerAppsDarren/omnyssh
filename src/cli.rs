@@ -27,7 +27,7 @@ pub struct Cli {
     #[arg(short, long, value_name = "THEME")]
     pub theme: Option<String>,
 
-    /// Enable verbose debug logging (written to stderr).
+    /// Enable verbose debug logging (written to a log file in the config directory).
     #[arg(short, long)]
     pub verbose: bool,
 }
