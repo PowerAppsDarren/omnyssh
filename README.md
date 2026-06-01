@@ -61,7 +61,7 @@ Choose from **Default**, **Dracula**, **Nord**, or **Gruvbox**. Switch with `--t
 Remap global shortcuts in one TOML file. Make OmnySSH work the way you work.
 
 ### 🌍 **Cross-Platform**
-Linux, macOS, Windows. Single static binary, no runtime dependencies.
+Linux, macOS, Windows. Single self-contained binary — no runtime or interpreter to install.
 
 ---
 
