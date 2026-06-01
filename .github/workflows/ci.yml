@@ -42,6 +42,10 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      - name: Verify committed man page is up to date
+        if: runner.os == 'Linux'
+        run: git diff --exit-code doc/omny.1
+
       - name: Run tests
         run: cargo test --verbose
 
