@@ -377,17 +377,6 @@ pub fn sanitize_hostname(hostname: &str) -> String {
     }
 }
 
-/// Returns the key file path that would be used for a given host.
-pub fn key_path_for_host(host_name: &str, key_type: KeyType) -> PathBuf {
-    let sanitized = sanitize_hostname(host_name);
-    let key_filename = format!("omnyssh_{}_{}", sanitized, key_type.extension());
-
-    dirs::home_dir()
-        .expect("Cannot determine home directory")
-        .join(".ssh")
-        .join(key_filename)
-}
-
 // ---------------------------------------------------------------------------
 // SSH Command Builders
 // ---------------------------------------------------------------------------

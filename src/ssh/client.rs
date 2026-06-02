@@ -96,16 +96,6 @@ impl Default for Host {
     }
 }
 
-impl Host {
-    /// Returns the stable host identifier used as a key in metrics/status maps.
-    ///
-    /// Currently this is simply `host.name`. Using a method keeps callers
-    /// decoupled from the implementation detail.
-    pub fn id(&self) -> &str {
-        &self.name
-    }
-}
-
 /// Runtime connection status for a host. Never serialised to disk.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum ConnectionStatus {
