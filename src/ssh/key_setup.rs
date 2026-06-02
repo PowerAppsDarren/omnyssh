@@ -146,11 +146,6 @@ impl KeySetupMachine {
         &self.state
     }
 
-    /// Returns whether password authentication has been disabled.
-    pub fn password_disabled(&self) -> bool {
-        self.password_disabled
-    }
-
     /// Sets the sudo availability flag.
     pub fn set_has_sudo(&mut self, has_sudo: bool) {
         self.has_sudo = has_sudo;
@@ -858,7 +853,7 @@ mod tests {
 
         // Password must NOT be disabled.
         assert_eq!(machine.state(), &KeySetupState::FailedSafe);
-        assert!(!machine.password_disabled());
+        assert!(!machine.password_disabled);
     }
 
     #[test]
@@ -872,7 +867,7 @@ mod tests {
 
         // Key works but no sudo → PartialSuccess.
         assert_eq!(machine.state(), &KeySetupState::PartialSuccess);
-        assert!(!machine.password_disabled());
+        assert!(!machine.password_disabled);
     }
 
     #[test]
@@ -887,7 +882,7 @@ mod tests {
 
         // Password is disabled but key doesn't work → rollback needed.
         assert_eq!(machine.state(), &KeySetupState::NeedsRollback);
-        assert!(machine.password_disabled());
+        assert!(machine.password_disabled);
     }
 
     #[test]
