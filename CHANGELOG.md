@@ -24,6 +24,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 - Removed the vestigial empty `package.json` and `package-lock.json` (left over from an earlier project name); they served no purpose in this Rust project.
 - Removed the unused `config/default.toml` template — it was never read by the app, and the README already carries the canonical config example.
 - CI now fails if the committed `doc/omny.1` man page drifts from `src/cli.rs`, so the generated man page can no longer go stale.
+- Removed dead code with no effect on runtime behaviour: unused functions with no callers (`Screen::title`, `Host::id`, `key_path_for_host`, the superseded `host_list` render path, and two unused popup renderers), plus three methods that were only reachable from their own tests (`FileManagerPanel::clamp_scroll`, `ProbeOutput::section_names`, `KeySetupMachine::password_disabled`) and those tests.
 
 ---
 
