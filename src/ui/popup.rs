@@ -40,35 +40,6 @@ pub fn centred_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 // ---------------------------------------------------------------------------
-// Generic popup
-// ---------------------------------------------------------------------------
-
-/// Renders a centred modal popup with `title` and `content` text lines.
-pub fn render_popup(frame: &mut Frame, title: &str, content: &[&str], theme: &Theme) {
-    let area = centred_rect(60, 40, frame.area());
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(format!(" {} ", title))
-        .title_alignment(Alignment::Center)
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.popup_border));
-
-    let lines: Vec<Line> = content
-        .iter()
-        .map(|&s| {
-            Line::from(Span::styled(
-                format!("  {}", s),
-                Style::default().fg(theme.text_primary),
-            ))
-        })
-        .collect();
-
-    frame.render_widget(Paragraph::new(lines).block(block), area);
-}
-
-// ---------------------------------------------------------------------------
 // Help popup
 // ---------------------------------------------------------------------------
 
@@ -1255,68 +1226,6 @@ fn render_single_result(
 
     frame.render_widget(Paragraph::new(lines), text_area);
     frame.render_widget(Paragraph::new(hint), hint_area);
-}
-// ---------------------------------------------------------------------------
-// Quick View popup
-// ---------------------------------------------------------------------------
-
-/// Renders a Quick View popup for service-specific details.
-///
-/// Shows a scrollable view of service metrics, status, and suggested actions.
-/// This is a simplified implementation showing a placeholder that can be
-/// enhanced to display actual service data.
-pub fn render_quick_view(
-    frame: &mut Frame,
-    service_kind: &crate::event::ServiceKind,
-    _scroll: usize,
-    theme: &Theme,
-) {
-    let area = centred_rect(70, 70, frame.area());
-    frame.render_widget(Clear, area);
-
-    let service_name = match service_kind {
-        crate::event::ServiceKind::Docker => "Docker Containers",
-        crate::event::ServiceKind::Nginx => "Nginx Status",
-        crate::event::ServiceKind::PostgreSQL => "PostgreSQL Connections",
-        crate::event::ServiceKind::Redis => "Redis Info",
-        crate::event::ServiceKind::NodeJS => "Node.js Processes",
-    };
-
-    let block = Block::default()
-        .title(format!(" Quick View: {} ", service_name))
-        .title_alignment(Alignment::Center)
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.popup_border));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    // Simple placeholder content
-    let content = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("  {} Quick View", service_name),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Detailed service metrics will appear here.",
-            Style::default().fg(theme.text_secondary),
-        )),
-        Line::from(""),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Press Esc to close",
-            Style::default()
-                .fg(theme.text_muted)
-                .add_modifier(Modifier::ITALIC),
-        )),
-    ];
-
-    frame.render_widget(Paragraph::new(content), inner);
 }
 
 // ---------------------------------------------------------------------------

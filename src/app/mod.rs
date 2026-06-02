@@ -59,19 +59,6 @@ pub enum Screen {
     Terminal,
 }
 
-impl Screen {
-    /// Human-readable title used in the status bar.
-    pub fn title(&self) -> &'static str {
-        match self {
-            Screen::Dashboard => "Dashboard",
-            Screen::DetailView => "Server Details",
-            Screen::FileManager => "File Manager",
-            Screen::Snippets => "Snippets",
-            Screen::Terminal => "Terminal",
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Sort order
 // ---------------------------------------------------------------------------

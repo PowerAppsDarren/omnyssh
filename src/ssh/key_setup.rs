@@ -146,11 +146,6 @@ impl KeySetupMachine {
         &self.state
     }
 
-    /// Returns whether password authentication has been disabled.
-    pub fn password_disabled(&self) -> bool {
-        self.password_disabled
-    }
-
     /// Sets the sudo availability flag.
     pub fn set_has_sudo(&mut self, has_sudo: bool) {
         self.has_sudo = has_sudo;
@@ -375,17 +370,6 @@ pub fn sanitize_hostname(hostname: &str) -> String {
     } else {
         sanitized
     }
-}
-
-/// Returns the key file path that would be used for a given host.
-pub fn key_path_for_host(host_name: &str, key_type: KeyType) -> PathBuf {
-    let sanitized = sanitize_hostname(host_name);
-    let key_filename = format!("omnyssh_{}_{}", sanitized, key_type.extension());
-
-    dirs::home_dir()
-        .expect("Cannot determine home directory")
-        .join(".ssh")
-        .join(key_filename)
 }
 
 // ---------------------------------------------------------------------------
@@ -869,7 +853,7 @@ mod tests {
 
         // Password must NOT be disabled.
         assert_eq!(machine.state(), &KeySetupState::FailedSafe);
-        assert!(!machine.password_disabled());
+        assert!(!machine.password_disabled);
     }
 
     #[test]
@@ -883,7 +867,7 @@ mod tests {
 
         // Key works but no sudo → PartialSuccess.
         assert_eq!(machine.state(), &KeySetupState::PartialSuccess);
-        assert!(!machine.password_disabled());
+        assert!(!machine.password_disabled);
     }
 
     #[test]
@@ -898,7 +882,7 @@ mod tests {
 
         // Password is disabled but key doesn't work → rollback needed.
         assert_eq!(machine.state(), &KeySetupState::NeedsRollback);
-        assert!(machine.password_disabled());
+        assert!(machine.password_disabled);
     }
 
     #[test]

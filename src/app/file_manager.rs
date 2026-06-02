@@ -80,20 +80,6 @@ impl FilePanelView {
     pub fn select_prev(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);
     }
-
-    /// Adjust `scroll` so that `cursor` is always visible in `visible_rows` rows.
-    pub fn clamp_scroll(&mut self, visible_rows: usize) {
-        if visible_rows == 0 {
-            return;
-        }
-        let scroll = self.scroll.get();
-        if self.cursor < scroll {
-            self.scroll.set(self.cursor);
-        } else if self.cursor >= scroll + visible_rows {
-            self.scroll
-                .set(self.cursor.saturating_sub(visible_rows - 1));
-        }
-    }
 }
 
 /// Active popup on the File Manager screen.
@@ -688,32 +674,5 @@ mod tests {
         let mut p = panel(vec![entry("a", "/a")]);
         p.select_prev();
         assert_eq!(p.cursor, 0);
-    }
-
-    #[test]
-    fn clamp_scroll_pulls_view_up_to_cursor() {
-        let mut p = panel(vec![]);
-        p.cursor = 2;
-        p.scroll.set(5);
-        p.clamp_scroll(10);
-        assert_eq!(p.scroll.get(), 2);
-    }
-
-    #[test]
-    fn clamp_scroll_pushes_view_down_to_cursor() {
-        let mut p = panel(vec![]);
-        p.cursor = 20;
-        p.scroll.set(0);
-        p.clamp_scroll(10);
-        assert_eq!(p.scroll.get(), 11);
-    }
-
-    #[test]
-    fn clamp_scroll_zero_rows_is_noop() {
-        let mut p = panel(vec![]);
-        p.cursor = 20;
-        p.scroll.set(5);
-        p.clamp_scroll(0);
-        assert_eq!(p.scroll.get(), 5);
     }
 }

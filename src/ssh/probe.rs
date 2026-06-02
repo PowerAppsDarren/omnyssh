@@ -93,11 +93,6 @@ impl ProbeOutput {
         self.sections.get(name).map(|s| s.as_str())
     }
 
-    /// Get all section names that exist in the output.
-    pub fn section_names(&self) -> Vec<&str> {
-        self.sections.keys().map(|s| s.as_str()).collect()
-    }
-
     /// Parse OS information from the OS section.
     ///
     /// Extracts OS name and version from /etc/os-release format.
@@ -163,13 +158,13 @@ mod tests {
     #[test]
     fn test_parse_probe_empty_output() {
         let result = ProbeOutput::parse("").expect("should parse empty");
-        assert_eq!(result.section_names().len(), 0);
+        assert!(result.sections.is_empty());
     }
 
     #[test]
     fn test_parse_probe_garbage_output() {
         let result = ProbeOutput::parse("random\ngarbage\ntext").expect("should parse garbage");
-        assert_eq!(result.section_names().len(), 0);
+        assert!(result.sections.is_empty());
     }
 
     #[test]
@@ -226,15 +221,5 @@ def456	db-master	Up 5 days	postgres:15
         assert!(script.contains("/etc/os-release"));
         assert!(script.contains("systemctl list-units"));
         assert!(script.contains("docker ps"));
-    }
-
-    #[test]
-    fn test_section_names() {
-        let output = "===OMNYSSH:OS===\ndata\n===OMNYSSH:DOCKER===\nmore data\n";
-        let result = ProbeOutput::parse(output).expect("should parse");
-        let names = result.section_names();
-        assert_eq!(names.len(), 2);
-        assert!(names.contains(&"OS"));
-        assert!(names.contains(&"DOCKER"));
     }
 }
