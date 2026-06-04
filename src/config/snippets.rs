@@ -79,13 +79,22 @@ pub fn save_snippets(snippets: &[Snippet]) -> anyhow::Result<()> {
     let tmp_path = path.with_extension("toml.tmp");
     std::fs::write(&tmp_path, &content)
         .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &path).with_context(|| {
-        format!(
-            "Failed to rename {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
+    if let Err(e) = std::fs::rename(&tmp_path, &path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e).with_context(|| {
+            format!(
+                "Failed to rename {} to {}",
+                tmp_path.display(),
+                path.display()
+            )
+        });
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        let _ = std::fs::set_permissions(&path, perms);
+    }
 
     Ok(())
 }
