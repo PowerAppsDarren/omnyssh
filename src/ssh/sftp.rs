@@ -132,7 +132,7 @@ impl SftpManager {
                     host_name: host_name.clone(),
                 })
                 .await;
-            sftp_task_loop(session, sftp, cmd_rx, event_tx.clone()).await;
+            sftp_task_loop(session, sftp, cmd_rx, event_tx.clone(), host_name.clone()).await;
             tracing::info!("SFTP task for '{}' exited", host_name);
         });
 
@@ -159,6 +159,7 @@ async fn sftp_task_loop(
     sftp: russh_sftp::client::SftpSession,
     mut cmd_rx: mpsc::Receiver<SftpCommand>,
     event_tx: mpsc::Sender<AppEvent>,
+    host_name: String,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
@@ -171,7 +172,7 @@ async fn sftp_task_loop(
                 Err(e) => {
                     let _ = event_tx
                         .send(AppEvent::SftpDisconnected {
-                            host_name: String::new(),
+                            host_name: host_name.clone(),
                             reason: format!("ListDir failed: {e}"),
                         })
                         .await;
@@ -345,6 +346,9 @@ async fn do_download(
     {
         anyhow::bail!("Download destination path contains '..': {local}");
     }
+    if local.contains('\0') || remote.contains('\0') {
+        anyhow::bail!("Path contains null bytes");
+    }
 
     // Fetch size for progress (best-effort).
     let total = sftp
@@ -392,6 +396,17 @@ async fn do_upload(
     transfer_id: TransferId,
     event_tx: &mpsc::Sender<AppEvent>,
 ) -> anyhow::Result<()> {
+    // Guard against path traversal in the local source.
+    if std::path::Path::new(local)
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        anyhow::bail!("Upload source path contains '..': {local}");
+    }
+    if local.contains('\0') || remote.contains('\0') {
+        anyhow::bail!("Path contains null bytes");
+    }
+
     let mut local_file = tokio::fs::File::open(local)
         .await
         .context("open local file for upload")?;
