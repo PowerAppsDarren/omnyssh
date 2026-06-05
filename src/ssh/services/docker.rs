@@ -68,7 +68,7 @@ docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' 2>/de
 echo "===COMPOSE==="
 docker compose ls --format json 2>/dev/null || echo "[]"
 echo "===RESTARTS==="
-docker inspect --format '{{.Name}}\t{{.RestartCount}}' $(docker ps -aq) 2>/dev/null
+docker ps -aq 2>/dev/null | xargs -r -n 50 docker inspect --format '{{.Name}}\t{{.RestartCount}}' 2>/dev/null
 "#,
             )
             .await?;
