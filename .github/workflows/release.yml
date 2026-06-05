@@ -16,13 +16,13 @@ jobs:
     name: CI checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e18c1f174b91b07 # stable
         with:
           components: clippy, rustfmt
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -85,13 +85,13 @@ jobs:
             archive: omny-x86_64-pc-windows-msvc.zip
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e18c1f174b91b07 # stable
         with:
           targets: ${{ matrix.target }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -134,7 +134,7 @@ jobs:
 
       # Upload the archive as an artifact — the publish job downloads it
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
@@ -150,11 +150,11 @@ jobs:
       contents: write   # required to create the Release
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       # Download all four archives from the previous jobs
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           merge-multiple: true
@@ -187,7 +187,7 @@ jobs:
 
       # Create the Release and attach all binaries in one step
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@7b4da11513bf3f43f9999e90eabced41ab8f3c11 # v2
         with:
           name: OmnySSH ${{ github.ref_name }}
           body: ${{ steps.changelog.outputs.body }}

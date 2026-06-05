@@ -153,6 +153,20 @@ download_and_install() {
         exit 1
     fi
 
+    # Verify download integrity
+    SHA_URL="https://github.com/$REPO/releases/download/$VERSION/SHA256SUMS"
+    echo "Verifying checksum..."
+    if curl -fsSL "$SHA_URL" -o "$TMP_DIR/SHA256SUMS" 2>/dev/null; then
+        (cd "$TMP_DIR" && grep "${ARCHIVE_NAME}.${ARCHIVE_EXT}" SHA256SUMS | sha256sum -c -) || {
+            echo "ERROR: Checksum verification failed!"
+            rm -rf "$TMP_DIR"
+            exit 1
+        }
+        echo "Checksum verified ✓"
+    else
+        echo "WARNING: Could not download SHA256SUMS — skipping verification"
+    fi
+
     print_info "Extracting archive..."
 
     # Extract based on archive type
@@ -241,7 +255,7 @@ install_man_page() {
 
     print_info "Installing man page..."
 
-    MAN_URL="https://raw.githubusercontent.com/$REPO/main/doc/omny.1"
+    MAN_URL="https://raw.githubusercontent.com/$REPO/$VERSION/doc/omny.1"
     if [ "$IS_TERMUX" = "1" ]; then
         MAN_DIR="$PREFIX/share/man/man1"
     else
