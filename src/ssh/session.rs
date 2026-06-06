@@ -51,6 +51,11 @@ impl client::Handler for MetricsHandler {
             // best-effort: a connection must not fail just because
             // known_hosts is unwritable.
             Ok(false) => {
+                tracing::warn!(
+                    host = %self.host,
+                    port = self.port,
+                    "Accepting unknown host key for {} (Trust On First Use)", self.host
+                );
                 match russh::keys::known_hosts::learn_known_hosts(
                     &self.host,
                     self.port,
@@ -302,7 +307,6 @@ fn default_key_paths() -> Vec<std::path::PathBuf> {
         "id_ecdsa",
         "id_ecdsa_sk",
         "id_ed25519_sk",
-        "id_dsa",
     ]
     .iter()
     .map(|name| ssh.join(name))
@@ -392,7 +396,10 @@ async fn collect_output(
                 // before the channel is closed.
                 exit_status = Some(code);
             }
-            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+            Some(ChannelMsg::Eof) => {
+                // Continue reading — ExitStatus may arrive after Eof.
+            }
+            Some(ChannelMsg::Close) | None => break,
             _ => {}
         }
     }

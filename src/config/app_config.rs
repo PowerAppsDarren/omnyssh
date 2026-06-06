@@ -415,6 +415,12 @@ fn persist_config<F: FnOnce(&mut AppConfig)>(mutator: F) -> anyhow::Result<()> {
     let content = toml::to_string_pretty(&config).context("Failed to serialize config")?;
     std::fs::write(&config_path, content)
         .with_context(|| format!("Failed to write config: {}", config_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        let _ = std::fs::set_permissions(&config_path, perms);
+    }
 
     Ok(())
 }
