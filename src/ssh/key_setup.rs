@@ -493,7 +493,7 @@ pub fn build_reload_sshd_command() -> String {
 ///
 /// Restores the most recent OmnySSH backup of sshd_config and reloads the daemon.
 pub fn build_rollback_command() -> String {
-    r#"BACKUP=$(find /etc/ssh -maxdepth 1 -name 'sshd_config.omnyssh_backup.*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-); \
+    r#"BACKUP=$(find /etc/ssh -maxdepth 1 -name 'sshd_config.omnyssh_backup.*' 2>/dev/null | sort | tail -1); \
        if [ -n "$BACKUP" ]; then \
            sudo cp "$BACKUP" /etc/ssh/sshd_config && \
            (sudo systemctl reload sshd 2>/dev/null || sudo systemctl reload ssh 2>/dev/null || sudo service sshd reload 2>/dev/null || sudo service ssh reload); \
