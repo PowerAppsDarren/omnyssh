@@ -156,8 +156,18 @@ download_and_install() {
     # Verify download integrity
     SHA_URL="https://github.com/$REPO/releases/download/$VERSION/SHA256SUMS"
     echo "Verifying checksum..."
-    if curl -fsSL "$SHA_URL" -o "$TMP_DIR/SHA256SUMS" 2>/dev/null; then
-        (cd "$TMP_DIR" && grep "${ARCHIVE_NAME}.${ARCHIVE_EXT}" SHA256SUMS | sha256sum -c -) || {
+    # Pick whichever checksum tool is present: sha256sum on Linux, shasum on macOS.
+    if command -v sha256sum >/dev/null 2>&1; then
+        SHA_CHECK="sha256sum -c -"
+    elif command -v shasum >/dev/null 2>&1; then
+        SHA_CHECK="shasum -a 256 -c -"
+    else
+        SHA_CHECK=""
+    fi
+    if [ -z "$SHA_CHECK" ]; then
+        echo "WARNING: no sha256 tool found — skipping verification"
+    elif curl -fsSL "$SHA_URL" -o "$TMP_DIR/SHA256SUMS" 2>/dev/null; then
+        (cd "$TMP_DIR" && grep "${ARCHIVE_NAME}.${ARCHIVE_EXT}" SHA256SUMS | $SHA_CHECK) || {
             echo "ERROR: Checksum verification failed!"
             rm -rf "$TMP_DIR"
             exit 1
