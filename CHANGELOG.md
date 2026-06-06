@@ -12,9 +12,20 @@ Versions follow [Semantic Versioning](https://semver.org/).
 ### Features
 - **Terminal no longer prompts for the password on password-auth hosts**: When a host is configured with a stored password, the interactive terminal now supplies it automatically via `SSH_ASKPASS` instead of asking on every connection (metrics, quick-commands, and snippets already did this). Keys and the SSH agent are still tried first; the password is only used as a fallback. The password is passed to `ssh` through the child process environment — never written to disk, shown on the command line, or sent to the remote.
 
+### Security
+- Validate public-key format and reject control characters before embedding keys in remote shell commands.
+- Sanitize `sshd_config` directive edits and scope the disabled `Include` to the cloud-init drop-in only.
+- Store `config.toml`, `hosts.toml`, and `snippets.toml` with `0600` permissions, and remove temp files left by a failed save.
+- Reject `..` traversal and null bytes in SFTP upload/download paths.
+- Pin all GitHub Actions to commit SHAs and verify release archives against `SHA256SUMS` in `install.sh` (with a `shasum` fallback on macOS).
+
 ### Bug Fixes
 - **Log files no longer fill the disk**: On startup OmnySSH now prunes rolling log files older than 7 days from its config directory. The cleanup is best-effort and never blocks startup, works on every platform via the native config path, and only touches `omnyssh.log*` files — `config.toml`, `hosts.toml`, and `snippets.toml` are left untouched.
 - **Man page now installs reliably**: `install.sh` failed to install the man page into the system directory (e.g. `/usr/local/share/man` on macOS) because it never elevated with `sudo`, so `man omny` reported "No manual entry". The man page is now downloaded to a temp file first and installed with a `sudo` fallback, mirroring the binary install.
+- **Remote command exit status is no longer lost** when it arrives after EOF.
+- **Multi-file deletes fixed**: all in-flight remote deletes are tracked before the panel refreshes, and every error from a multi-file local delete is reported.
+- **Terminal is always restored on exit**, even if an earlier teardown step fails.
+- **Docker view scales to many containers**: `docker inspect` is batched to stay under `ARG_MAX`.
 
 ### Documentation
 - Fixed inaccurate docs: `--verbose` now correctly states logs are written to a log file (not stderr) in `--help`, the man page, and the README; `install.sh` prints the OS-specific config directory; corrected the horizontal split keybinding in the changelog (`Ctrl+]`, not `Ctrl+-`).
@@ -25,6 +36,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 - Removed the unused `config/default.toml` template — it was never read by the app, and the README already carries the canonical config example.
 - CI now fails if the committed `doc/omny.1` man page drifts from `src/cli.rs`, so the generated man page can no longer go stale.
 - Removed dead code with no effect on runtime behaviour: unused functions with no callers (`Screen::title`, `Host::id`, `key_path_for_host`, the superseded `host_list` render path, and two unused popup renderers), plus three methods that were only reachable from their own tests (`FileManagerPanel::clamp_scroll`, `ProbeOutput::section_names`, `KeySetupMachine::password_disabled`) and those tests.
+- Made the `sshd` rollback backup lookup portable so it also works on BusyBox/Alpine hosts.
 
 ---
 
