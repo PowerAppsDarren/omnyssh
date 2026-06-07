@@ -598,9 +598,6 @@ mod tests {
             path: path.to_string(),
             size: 0,
             is_dir: false,
-            is_symlink: false,
-            permissions: 0,
-            modified: None,
         }
     }
 

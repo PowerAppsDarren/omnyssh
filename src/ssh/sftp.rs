@@ -6,7 +6,6 @@
 //! All operations are non-blocking from the UI perspective.
 //! Progress is reported via [`AppEvent::FileTransferProgress`].
 
-use std::time::SystemTime;
 
 use anyhow::Context;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -31,12 +30,6 @@ pub struct FileEntry {
     pub size: u64,
     /// `true` when this entry is a directory.
     pub is_dir: bool,
-    /// `true` when this entry is a symbolic link.
-    pub is_symlink: bool,
-    /// Unix permission bits (e.g. 0o755). `0` if unavailable.
-    pub permissions: u32,
-    /// Last-modified timestamp, if available.
-    pub modified: Option<SystemTime>,
 }
 
 // ---------------------------------------------------------------------------
@@ -286,9 +279,6 @@ async fn do_list_dir(
             path: parent_str.to_string(),
             size: 0,
             is_dir: true,
-            is_symlink: false,
-            permissions: 0,
-            modified: None,
         });
     }
 
@@ -308,9 +298,6 @@ async fn do_list_dir(
             path: full_path,
             size: meta.size.unwrap_or(0),
             is_dir: ft.is_dir(),
-            is_symlink: ft.is_symlink(),
-            permissions: meta.permissions.unwrap_or(0),
-            modified: meta.modified().ok(),
         });
     }
 
@@ -479,9 +466,6 @@ pub async fn list_local_dir(path: &str) -> anyhow::Result<Vec<FileEntry>> {
             path: parent_str.to_string(),
             size: 0,
             is_dir: true,
-            is_symlink: false,
-            permissions: 0,
-            modified: None,
         });
     }
 
@@ -492,21 +476,8 @@ pub async fn list_local_dir(path: &str) -> anyhow::Result<Vec<FileEntry>> {
     {
         let file_type = entry.file_type().await.ok();
         let is_dir = file_type.as_ref().map(|ft| ft.is_dir()).unwrap_or(false);
-        let is_symlink = file_type
-            .as_ref()
-            .map(|ft| ft.is_symlink())
-            .unwrap_or(false);
         let meta = entry.metadata().await.ok();
         let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-        let modified = meta.as_ref().and_then(|m| m.modified().ok());
-
-        #[cfg(unix)]
-        let permissions = {
-            use std::os::unix::fs::MetadataExt;
-            meta.as_ref().map(|m| m.mode()).unwrap_or(0)
-        };
-        #[cfg(not(unix))]
-        let permissions = 0u32;
 
         let name = entry.file_name().to_string_lossy().into_owned();
         let path_str = entry.path().to_string_lossy().into_owned();
@@ -516,9 +487,6 @@ pub async fn list_local_dir(path: &str) -> anyhow::Result<Vec<FileEntry>> {
             path: path_str,
             size,
             is_dir,
-            is_symlink,
-            permissions,
-            modified,
         });
     }
 

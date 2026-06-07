@@ -212,7 +212,6 @@ pub enum HostPopup {
     KeySetupConfirm(usize),
     /// Showing key setup progress.
     KeySetupProgress {
-        host_idx: usize,
         host_name: String,
         current_step: Option<crate::ssh::key_setup::KeySetupStep>,
     },
