@@ -6,7 +6,6 @@
 //! All operations are non-blocking from the UI perspective.
 //! Progress is reported via [`AppEvent::FileTransferProgress`].
 
-
 use anyhow::Context;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -163,9 +162,7 @@ async fn sftp_task_loop(
                 let result = do_download(&sftp, &remote, &local, transfer_id, &event_tx)
                     .await
                     .map_err(|e| e.to_string());
-                let _ = event_tx
-                    .send(AppEvent::SftpOpDone { result })
-                    .await;
+                let _ = event_tx.send(AppEvent::SftpOpDone { result }).await;
             }
 
             SftpCommand::Upload {
@@ -176,9 +173,7 @@ async fn sftp_task_loop(
                 let result = do_upload(&local, &sftp, &remote, transfer_id, &event_tx)
                     .await
                     .map_err(|e| e.to_string());
-                let _ = event_tx
-                    .send(AppEvent::SftpOpDone { result })
-                    .await;
+                let _ = event_tx.send(AppEvent::SftpOpDone { result }).await;
             }
 
             SftpCommand::Delete(path) => {
@@ -187,23 +182,17 @@ async fn sftp_task_loop(
                     Ok(()) => Ok(()),
                     Err(_) => sftp.remove_dir(&path).await.map_err(|e| e.to_string()),
                 };
-                let _ = event_tx
-                    .send(AppEvent::SftpOpDone { result })
-                    .await;
+                let _ = event_tx.send(AppEvent::SftpOpDone { result }).await;
             }
 
             SftpCommand::MkDir(path) => {
                 let result = sftp.create_dir(&path).await.map_err(|e| e.to_string());
-                let _ = event_tx
-                    .send(AppEvent::SftpOpDone { result })
-                    .await;
+                let _ = event_tx.send(AppEvent::SftpOpDone { result }).await;
             }
 
             SftpCommand::Rename { from, to } => {
                 let result = sftp.rename(&from, &to).await.map_err(|e| e.to_string());
-                let _ = event_tx
-                    .send(AppEvent::SftpOpDone { result })
-                    .await;
+                let _ = event_tx.send(AppEvent::SftpOpDone { result }).await;
             }
 
             SftpCommand::ReadPreview(path) => {

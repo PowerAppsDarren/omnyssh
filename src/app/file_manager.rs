@@ -328,9 +328,7 @@ impl App {
                         let _ = tx.send(AppEvent::LocalDirListed { path, entries }).await;
                     }
                     Err(e) => {
-                        let _ = tx
-                            .send(AppEvent::Error(e.to_string()))
-                            .await;
+                        let _ = tx.send(AppEvent::Error(e.to_string())).await;
                     }
                 }
             });
@@ -496,9 +494,7 @@ impl App {
                 } else {
                     Err(errors.join("; "))
                 };
-                let _ = tx
-                    .send(AppEvent::SftpOpDone { result })
-                    .await;
+                let _ = tx.send(AppEvent::SftpOpDone { result }).await;
             });
         }
     }
@@ -522,9 +518,7 @@ impl App {
                 let result = tokio::fs::create_dir(&new_path)
                     .await
                     .map_err(|e| e.to_string());
-                let _ = tx
-                    .send(AppEvent::SftpOpDone { result })
-                    .await;
+                let _ = tx.send(AppEvent::SftpOpDone { result }).await;
             });
         }
     }
@@ -560,9 +554,7 @@ impl App {
                 let result = tokio::fs::rename(&old_path, &new_path)
                     .await
                     .map_err(|e| e.to_string());
-                let _ = tx
-                    .send(AppEvent::SftpOpDone { result })
-                    .await;
+                let _ = tx.send(AppEvent::SftpOpDone { result }).await;
             });
         }
     }

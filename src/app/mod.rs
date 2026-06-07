@@ -147,11 +147,6 @@ pub struct ViewState {
     pub keybindings: ParsedKeybindings,
     /// Monotonically-incrementing tick counter for animations (e.g. spinner).
     pub tick_count: u64,
-    /// Quick View popup state for Detail View service quick views.
-    /// Contains the service kind if a Quick View is currently open.
-    pub quick_view: Option<ServiceKind>,
-    /// Scroll offset for Quick View popup content.
-    pub quick_view_scroll: usize,
     /// Startup update-notification popup, shown when a newer release exists.
     pub update_popup: Option<UpdatePopup>,
 }
@@ -171,8 +166,6 @@ impl ViewState {
             theme: Theme::default(),
             keybindings: ParsedKeybindings::default(),
             tick_count: 0,
-            quick_view: None,
-            quick_view_scroll: 0,
             update_popup: None,
         }
     }
