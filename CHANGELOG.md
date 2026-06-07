@@ -10,7 +10,10 @@ Versions follow [Semantic Versioning](https://semver.org/).
 ## 1.0.4 — 2026-05-29
 
 ### Features
-- **Terminal no longer prompts for the password on password-auth hosts**: When a host is configured with a stored password, the interactive terminal now supplies it automatically via `SSH_ASKPASS` instead of asking on every connection (metrics, quick-commands, and snippets already did this). Keys and the SSH agent are still tried first; the password is only used as a fallback. The password is passed to `ssh` through the child process environment — never written to disk, shown on the command line, or sent to the remote.
+- **Terminal now uses the native russh client (fixes the dead Windows terminal)**: The interactive terminal no longer spawns the system `ssh` binary inside a local pseudo-console (ConPTY on Windows). It now runs over the same pure-Rust russh client as metrics and SFTP, so the terminal works identically on every OS — the blank, unresponsive Terminal tab on Windows is fixed. The terminal reuses the app's existing key, SSH agent, password, and `known_hosts` (trust-on-first-use) authentication, so password-auth hosts still connect without prompting and the separate `SSH_ASKPASS` helper has been removed.
+  - ProxyJump (`-J`) is not yet supported in the terminal and is refused with a clear message instead of connecting direct; metrics/SFTP never used it. Tracked as a follow-up.
+  - Passphrase-protected keys without an SSH agent cannot be unlocked interactively in the terminal anymore. Use an SSH agent or an unencrypted key. On Windows there is no agent fallback yet, so prefer an unencrypted key there.
+  - The terminal no longer reads `~/.ssh/config` directly, so exotic directives such as `ProxyCommand` no longer apply (the parsed HostName/User/Port/IdentityFile/ProxyJump still do). This makes the terminal consistent with the rest of the app.
 
 ### Security
 - Validate public-key format and reject control characters before embedding keys in remote shell commands.
