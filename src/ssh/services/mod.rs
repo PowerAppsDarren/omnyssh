@@ -88,12 +88,10 @@ impl Default for ServiceRegistry {
 }
 
 /// Helper to create a simple service metric.
-pub fn metric_int(name: impl Into<String>, value: i64, unit: impl Into<String>) -> ServiceMetric {
+pub fn metric_int(name: impl Into<String>, value: i64) -> ServiceMetric {
     ServiceMetric {
         name: name.into(),
         value: crate::event::MetricValue::Integer(value),
-        unit: unit.into(),
-        threshold: None,
     }
 }
 

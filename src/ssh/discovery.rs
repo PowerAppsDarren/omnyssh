@@ -67,11 +67,7 @@ pub async fn quick_scan(
 
         services.push(DetectedService {
             kind: kind.clone(),
-            version: None,
-            status: crate::event::ServiceStatus::Unknown,
             metrics: quick_metrics,
-            alerts: Vec::new(),
-            suggested_snippets: Vec::new(),
         });
     }
 

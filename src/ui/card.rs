@@ -371,20 +371,11 @@ fn render_services_lines(
     width: u16,
     max_lines: usize,
 ) -> Vec<Line<'static>> {
-    use crate::event::ServiceStatus;
-
     let mut lines = Vec::new();
 
     for service in services.iter().take(max_lines) {
-        let (icon, base_color) = service_icon(&service.kind);
-
-        // Color by status: red for critical, yellow for degraded, green for healthy
-        let color = match &service.status {
-            ServiceStatus::Critical(_) => Color::Red,
-            ServiceStatus::Degraded(_) => Color::Yellow,
-            ServiceStatus::Healthy => base_color,
-            ServiceStatus::Unknown => Color::DarkGray,
-        };
+        let (icon, _) = service_icon(&service.kind);
+        let color = Color::DarkGray;
 
         // Format: "🐳 Docker: 4 running"
         let service_name = service_name_short(&service.kind);
@@ -478,22 +469,11 @@ fn service_info(service: &DetectedService) -> String {
             let mut restarting = 0i64;
 
             for metric in &service.metrics {
+                let MetricValue::Integer(n) = metric.value;
                 match metric.name.as_str() {
-                    "containers_running" => {
-                        if let MetricValue::Integer(n) = metric.value {
-                            running = n;
-                        }
-                    }
-                    "containers_stopped" => {
-                        if let MetricValue::Integer(n) = metric.value {
-                            stopped = n;
-                        }
-                    }
-                    "containers_restarting" => {
-                        if let MetricValue::Integer(n) = metric.value {
-                            restarting = n;
-                        }
-                    }
+                    "containers_running" => running = n,
+                    "containers_stopped" => stopped = n,
+                    "containers_restarting" => restarting = n,
                     _ => {}
                 }
             }
@@ -521,14 +501,9 @@ fn service_info(service: &DetectedService) -> String {
             // Show replication lag if present (A.4.1: "repl lag 2.3s")
             for metric in &service.metrics {
                 if metric.name == "replication_lag_seconds" {
-                    if let MetricValue::Integer(lag) = metric.value {
-                        if lag > 0 {
-                            return format!("repl lag {}s", lag);
-                        }
-                    } else if let MetricValue::Float(lag) = metric.value {
-                        if lag > 0.0 {
-                            return format!("repl lag {:.1}s", lag);
-                        }
+                    let MetricValue::Integer(lag) = metric.value;
+                    if lag > 0 {
+                        return format!("repl lag {}s", lag);
                     }
                 }
             }
@@ -538,10 +513,9 @@ fn service_info(service: &DetectedService) -> String {
             // Show error count (A.4.1 format)
             for metric in &service.metrics {
                 if metric.name == "recent_502_504_errors" {
-                    if let MetricValue::Integer(errors) = metric.value {
-                        if errors > 0 {
-                            return format!("{} errors/5min", errors);
-                        }
+                    let MetricValue::Integer(errors) = metric.value;
+                    if errors > 0 {
+                        return format!("{} errors/5min", errors);
                     }
                 }
             }
@@ -552,9 +526,8 @@ fn service_info(service: &DetectedService) -> String {
             let mut mem_used = 0i64;
             for metric in &service.metrics {
                 if metric.name == "memory_used_mb" {
-                    if let MetricValue::Integer(mb) = metric.value {
-                        mem_used = mb;
-                    }
+                    let MetricValue::Integer(mb) = metric.value;
+                    mem_used = mb;
                 }
             }
             if mem_used > 0 {
@@ -568,9 +541,8 @@ fn service_info(service: &DetectedService) -> String {
             let mut node_processes = 0i64;
             for metric in &service.metrics {
                 if metric.name == "node_processes" {
-                    if let MetricValue::Integer(count) = metric.value {
-                        node_processes = count;
-                    }
+                    let MetricValue::Integer(count) = metric.value;
+                    node_processes = count;
                 }
             }
             if node_processes > 0 {

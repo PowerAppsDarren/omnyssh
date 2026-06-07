@@ -45,8 +45,8 @@ impl ServiceProvider for DockerProvider {
                 })
                 .count() as i64;
 
-            metrics.push(metric_int("containers_total", total, ""));
-            metrics.push(metric_int("containers_running", running, ""));
+            metrics.push(metric_int("containers_total", total));
+            metrics.push(metric_int("containers_running", running));
         }
 
         metrics

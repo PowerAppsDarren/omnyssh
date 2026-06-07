@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 use crate::app::{AppAction, AppState, SnippetPopup, ViewState};
-use crate::event::{Alert, AlertSeverity, DetectedService, Metrics, ServiceKind, ServiceStatus};
+use crate::event::{Alert, AlertSeverity, DetectedService, Metrics, ServiceKind};
 use crate::ssh::client::ConnectionStatus;
 use crate::ssh::metrics::threshold_color;
 use crate::ui::theme::Theme;
@@ -459,13 +459,8 @@ fn render_services(frame: &mut Frame, area: Rect, services: &[DetectedService], 
         )));
     } else {
         for service in services.iter() {
-            let (icon, base_color) = service_icon(&service.kind);
-            let color = match &service.status {
-                ServiceStatus::Critical(_) => Color::Red,
-                ServiceStatus::Degraded(_) => Color::Yellow,
-                ServiceStatus::Healthy => base_color,
-                ServiceStatus::Unknown => Color::DarkGray,
-            };
+            let (icon, _) = service_icon(&service.kind);
+            let color = Color::DarkGray;
 
             let service_name = service_name_display(&service.kind);
             let status_info = service_status_display(service);
@@ -537,17 +532,10 @@ fn service_status_display(service: &DetectedService) -> String {
             let mut running = 0i64;
             let mut stopped = 0i64;
             for metric in &service.metrics {
+                let MetricValue::Integer(n) = metric.value;
                 match metric.name.as_str() {
-                    "containers_running" => {
-                        if let MetricValue::Integer(n) = metric.value {
-                            running = n;
-                        }
-                    }
-                    "containers_stopped" => {
-                        if let MetricValue::Integer(n) = metric.value {
-                            stopped = n;
-                        }
-                    }
+                    "containers_running" => running = n,
+                    "containers_stopped" => stopped = n,
                     _ => {}
                 }
             }
@@ -560,14 +548,9 @@ fn service_status_display(service: &DetectedService) -> String {
         ServiceKind::PostgreSQL => {
             for metric in &service.metrics {
                 if metric.name == "replication_lag_seconds" {
-                    if let MetricValue::Integer(lag) = metric.value {
-                        if lag > 0 {
-                            return format!("repl lag: {}s", lag);
-                        }
-                    } else if let MetricValue::Float(lag) = metric.value {
-                        if lag > 0.0 {
-                            return format!("repl lag: {:.1}s", lag);
-                        }
+                    let MetricValue::Integer(lag) = metric.value;
+                    if lag > 0 {
+                        return format!("repl lag: {}s", lag);
                     }
                 }
             }
@@ -576,9 +559,8 @@ fn service_status_display(service: &DetectedService) -> String {
         ServiceKind::Nginx => {
             for metric in &service.metrics {
                 if metric.name == "recent_502_504_errors" {
-                    if let MetricValue::Integer(errors) = metric.value {
-                        return format!("active, {} errors/5min", errors);
-                    }
+                    let MetricValue::Integer(errors) = metric.value;
+                    return format!("active, {} errors/5min", errors);
                 }
             }
             "active, 0 errors/5min".to_string()
@@ -587,9 +569,8 @@ fn service_status_display(service: &DetectedService) -> String {
             let mut mem_used = 0i64;
             for metric in &service.metrics {
                 if metric.name.as_str() == "memory_used_mb" {
-                    if let MetricValue::Integer(mem) = metric.value {
-                        mem_used = mem;
-                    }
+                    let MetricValue::Integer(mem) = metric.value;
+                    mem_used = mem;
                 }
             }
             if mem_used > 0 {
@@ -602,9 +583,8 @@ fn service_status_display(service: &DetectedService) -> String {
             let mut node_processes = 0i64;
             for metric in &service.metrics {
                 if metric.name == "node_processes" {
-                    if let MetricValue::Integer(count) = metric.value {
-                        node_processes = count;
-                    }
+                    let MetricValue::Integer(count) = metric.value;
+                    node_processes = count;
                 }
             }
             if node_processes > 0 {
