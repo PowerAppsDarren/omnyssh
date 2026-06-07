@@ -1,284 +1,162 @@
-//! PTY-backed SSH sessions for multi-session terminal.
+//! russh-backed SSH sessions for the multi-session terminal.
 //!
-//! Each [`PtySession`] spawns the system `ssh` binary inside a PTY, drives a
-//! [`vt100::Parser`] in a background reader thread, and exposes the parsed
-//! screen state via an `Arc<Mutex<vt100::Parser>>` that the render loop can
-//! snapshot without blocking.
+//! Each session is a tokio task that owns a russh [`Channel`] with a
+//! server-allocated PTY (via `request_pty` + `request_shell`), drives a
+//! [`vt100::Parser`], and multiplexes I/O over a control channel. The parsed
+//! screen state is exposed via an `Arc<Mutex<vt100::Parser>>` that the render
+//! loop can snapshot without blocking. Using russh over a plain TCP socket
+//! avoids the local pseudo-console entirely, so the same code path works on
+//! every OS (notably fixing the dead Windows terminal).
 //!
 //! [`PtyManager`] owns all active sessions and provides a simple API for the
 //! application layer.
 
-use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use russh::client::Handle;
+use russh::ChannelMsg;
 use tokio::sync::mpsc;
 
 use crate::event::AppEvent;
 use crate::ssh::client::Host;
+use crate::ssh::session::{connect_and_auth, KnownHostsHandler};
 
 /// Stable numeric identifier for a PTY session (mirrors [`crate::event::SessionId`]).
 pub type SessionId = u64;
 
 // ---------------------------------------------------------------------------
-// SendMasterPty — newtype that re-adds the Send bound erased by the trait object
+// Control messages — main thread → session task
 // ---------------------------------------------------------------------------
 
-/// Wraps `Box<dyn MasterPty>` and asserts `Send`.
-///
-/// # Safety
-/// `portable_pty::native_pty_system()` returns `UnixMasterPty` on Unix and
-/// `ConPtyMasterPty` on Windows — both are `Send` in their concrete types but
-/// the trait object erases that bound.  We only ever access the master from the
-/// single async task that owns this `PtySession`, so there is no cross-thread
-/// aliasing.
-struct SendMasterPty(Box<dyn MasterPty>);
-
-// SAFETY: see struct-level doc above.
-unsafe impl Send for SendMasterPty {}
-
-impl std::ops::Deref for SendMasterPty {
-    type Target = dyn MasterPty;
-    fn deref(&self) -> &Self::Target {
-        &*self.0
-    }
+/// A command sent to a session's owning task.
+enum Ctrl {
+    /// Keystrokes or pasted bytes for the remote shell.
+    Input(Vec<u8>),
+    /// Window resize; forwarded to the server as `window_change`.
+    Resize { cols: u16, rows: u16 },
+    /// Request the task to end and close the connection.
+    Close,
 }
 
 // ---------------------------------------------------------------------------
-// PtySession
+// PtySession — a handle to a running session task
 // ---------------------------------------------------------------------------
 
-/// A running SSH process inside a PTY together with its VT100 parser state.
-///
-/// Dropping this struct kills the child SSH process and joins the reader thread.
-pub struct PtySession {
+/// Handle to a session task. Holds the shared parser for rendering and the
+/// control sender; dropping the sender (or sending [`Ctrl::Close`]) ends the
+/// task, which closes the russh connection.
+struct PtySession {
     /// Unique identifier for this session.
-    pub id: SessionId,
-    /// Display name (= `host.name`).
-    pub host_name: String,
-    /// Shared VT100 parser. The reader thread writes into it; the render loop
-    /// takes a read-side snapshot. Never held for more than a few microseconds
-    /// to avoid blocking the reader.
-    screen: Arc<Mutex<vt100::Parser>>,
-    /// Keyboard / paste input → PTY master stdin.
-    writer: Box<dyn Write + Send>,
-    /// PTY master handle kept for `resize()`. `take_writer()` takes the write fd
-    /// out of the master but leaves the master object (and its resize fd) intact,
-    /// so we hold it here to send `TIOCSWINSZ` / `SIGWINCH` on resize.
-    ///
-    /// PTY master — wrapped in [`SendMasterPty`] to restore the `Send` bound that
-    /// the `Box<dyn MasterPty>` trait object erases.  Only ever accessed from the
-    /// async task that owns this `PtySession`.
-    master: SendMasterPty,
-    /// Kept alive so the SSH process stays connected. Dropping this sends
-    /// SIGHUP to the child, causing the reader to see EOF.
-    _child: Box<dyn portable_pty::Child + Send + Sync>,
-    /// Background reader thread handle (joined on drop).
-    reader_thread: Option<std::thread::JoinHandle<()>>,
+    id: SessionId,
+    /// Shared VT100 parser. The task writes into it; the render loop takes a
+    /// read-side snapshot. Held only for microseconds to avoid blocking.
+    parser: Arc<Mutex<vt100::Parser>>,
+    /// Control channel to the session task (input / resize / close).
+    ctrl_tx: mpsc::UnboundedSender<Ctrl>,
 }
 
-impl PtySession {
-    /// Spawns `ssh <args>` inside a freshly-allocated PTY.
-    ///
-    /// * `cols` / `rows` — initial PTY dimensions (should match the render area).
-    /// * `tx` — application event channel; `PtyOutput` / `PtyExited` are sent here.
-    ///
-    /// # Errors
-    /// Returns an error if the PTY cannot be allocated or SSH cannot be spawned.
-    pub fn spawn(
-        id: SessionId,
-        host: &Host,
-        cols: u16,
-        rows: u16,
-        tx: mpsc::Sender<AppEvent>,
-    ) -> Result<Self> {
-        let pty_system = native_pty_system();
-        let size = PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
-        let pair = pty_system
-            .openpty(size)
-            .context("failed to open PTY pair")?;
-
-        // Build SSH command (same flags as the former connect_system_ssh).
-        let mut cmd = CommandBuilder::new("ssh");
-        cmd.args(["-o", "ConnectTimeout=10"]);
-        // Ensure the remote side allocates a PTY (-t) for interactive use.
-        cmd.arg("-t");
-        if host.port != 22 {
-            cmd.args(["-p", &host.port.to_string()]);
+/// Feeds bytes to the parser in 256-byte sub-chunks, releasing the lock between
+/// chunks so a large burst does not starve the render loop.
+fn feed_parser(parser: &Arc<Mutex<vt100::Parser>>, data: &[u8]) {
+    const CHUNK: usize = 256;
+    let mut off = 0;
+    while off < data.len() {
+        let end = (off + CHUNK).min(data.len());
+        if let Ok(mut p) = parser.lock() {
+            p.process(&data[off..end]);
         }
-        if let Some(ref key) = host.identity_file {
-            cmd.args(["-i", key]);
+        off = end;
+    }
+}
+
+/// Opens a channel and requests a remote PTY + shell (the `ssh -t` equivalent).
+async fn open_shell(
+    handle: &Handle<KnownHostsHandler>,
+    cols: u16,
+    rows: u16,
+) -> Result<russh::Channel<russh::client::Msg>> {
+    let channel = handle
+        .channel_open_session()
+        .await
+        .context("open terminal channel")?;
+    channel
+        .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
+        .await
+        .context("request remote pty")?;
+    channel
+        .request_shell(false)
+        .await
+        .context("request remote shell")?;
+    Ok(channel)
+}
+
+/// Owns the russh channel for one session and multiplexes I/O until close/EOF.
+async fn session_task(
+    id: SessionId,
+    host: Host,
+    cols: u16,
+    rows: u16,
+    parser: Arc<Mutex<vt100::Parser>>,
+    mut ctrl_rx: mpsc::UnboundedReceiver<Ctrl>,
+    tx: mpsc::Sender<AppEvent>,
+) {
+    // Phase A/B: connect, authenticate, and open the remote shell. Failures are
+    // reported in the status bar and tear the tab down via PtyExited.
+    let result = async {
+        let handle = connect_and_auth(&host).await?;
+        open_shell(&handle, cols, rows).await.map(|ch| (handle, ch))
+    }
+    .await;
+    let (_handle, mut channel) = match result {
+        Ok(pair) => pair,
+        Err(e) => {
+            let _ = tx
+                .send(AppEvent::Error(host.name.clone(), format!("Terminal: {e}")))
+                .await;
+            let _ = tx.send(AppEvent::PtyExited(id)).await;
+            return;
         }
-        if let Some(ref jump) = host.proxy_jump {
-            cmd.args(["-J", jump]);
-        }
-        cmd.arg(format!("{}@{}", host.user, host.hostname));
+    };
 
-        // Password-auth hosts: hand the stored password to `ssh` via SSH_ASKPASS
-        // so the terminal connects without an interactive prompt. We point
-        // SSH_ASKPASS at our own binary (see `ssh::askpass` and main.rs) and pass
-        // the password through the child environment — never on disk or argv.
-        // `SSH_ASKPASS_REQUIRE=force` makes ssh use the helper even though a PTY
-        // is attached. Keys and the SSH agent are still tried first; the helper
-        // is only invoked when ssh actually needs a password. If `current_exe`
-        // is unavailable we skip this and fall back to the interactive prompt.
-        if let Some(ref password) = host.password {
-            if let Ok(exe) = std::env::current_exe() {
-                cmd.env("SSH_ASKPASS", exe);
-                cmd.env("SSH_ASKPASS_REQUIRE", "force");
-                cmd.env(crate::ssh::askpass::PASSWORD_ENV, password);
-            }
-        }
-
-        // Spawn the child — slave is consumed and becomes the child's controlling TTY.
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .context("failed to spawn SSH in PTY")?;
-
-        // Writer (keyboard → SSH stdin) and reader (SSH stdout → parser).
-        // take_writer() takes the write-fd out of the master but leaves the master
-        // object intact, so we can still call resize() on it later.
-        let writer = pair
-            .master
-            .take_writer()
-            .context("failed to get PTY writer")?;
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .context("failed to clone PTY reader")?;
-        let master = SendMasterPty(pair.master);
-
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
-        let parser_clone = Arc::clone(&parser);
-
-        // Reader thread: blocking I/O, forwards bytes to the vt100 parser and
-        // sends a lightweight PtyOutput notification (no bulk data copy) so the
-        // main loop can update `has_activity` state.
-        let reader_thread = std::thread::Builder::new()
-            .name(format!("pty-reader-{id}"))
-            .spawn(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        match reader.read(&mut buf) {
-                            Ok(0) | Err(_) => {
-                                let _ = tx.blocking_send(AppEvent::PtyExited(id));
-                                break;
-                            }
-                            Ok(n) => {
-                                // Process in small sub-chunks (256 B) so the mutex
-                                // is released between chunks.  Without this, a single
-                                // 4 KB read holds the lock for the entire vt100 parse
-                                // pass, starving the render thread and causing UI freeze
-                                // during large output (e.g. `cat big_file`).
-                                const CHUNK: usize = 256;
-                                let mut off = 0;
-                                while off < n {
-                                    let end = (off + CHUNK).min(n);
-                                    if let Ok(mut p) = parser_clone.lock() {
-                                        p.process(&buf[off..end]);
-                                    }
-                                    off = end;
-                                }
-                                let _ = tx.blocking_send(AppEvent::PtyOutput(id));
-                            }
-                        }
-                    }
-                }));
-                if let Err(e) = result {
-                    tracing::error!(session = id, "PTY reader thread panicked: {:?}", e);
-                    // Notify the app so the tab can be cleaned up.
-                    let _ = tx.blocking_send(AppEvent::PtyExited(id));
+    // Phase C: pump loop (official russh interactive idiom). `wait` is the only
+    // &mut method, so a single owning task can select over it and the control
+    // receiver without aliasing.
+    loop {
+        tokio::select! {
+            msg = channel.wait() => match msg {
+                // stdout and remote stderr both render in a real terminal.
+                Some(ChannelMsg::Data { data })
+                | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    feed_parser(&parser, &data);
+                    let _ = tx.send(AppEvent::PtyOutput(id)).await;
                 }
-            })
-            .context("failed to spawn PTY reader thread")?;
-
-        tracing::info!("PTY session {} opened for host '{}'", id, host.name);
-        Ok(Self {
-            id,
-            host_name: host.name.clone(),
-            screen: parser,
-            writer,
-            master,
-            _child: child,
-            reader_thread: Some(reader_thread),
-        })
-    }
-
-    /// Sends raw bytes to the PTY (keystrokes, pasted text, etc.).
-    ///
-    /// # Errors
-    /// Returns an error if the write fails (e.g. the PTY master was closed).
-    pub fn write_input(&mut self, data: &[u8]) -> Result<()> {
-        self.writer.write_all(data).context("PTY write failed")?;
-        self.writer.flush().context("PTY flush failed")
-    }
-
-    /// Notifies the PTY and the vt100 parser about a dimension change.
-    ///
-    /// Should be called whenever the render area allocated to this session
-    /// changes (terminal resize or split-view toggle).
-    ///
-    /// # Errors
-    /// Returns an error if the PTY resize syscall fails.
-    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
-        // Resize the kernel PTY — this triggers SIGWINCH in the child process so
-        // interactive programs (vim, htop, less) reflow to the new dimensions.
-        self.master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .context("PTY resize (TIOCSWINSZ) failed")?;
-        // Also update the vt100 parser so the local screen model matches.
-        if let Ok(mut p) = self.screen.lock() {
-            p.set_size(rows, cols);
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                _ => {} // ExitStatus etc.: ignore, wait for Close.
+            },
+            cmd = ctrl_rx.recv() => match cmd {
+                Some(Ctrl::Input(bytes)) => {
+                    let _ = channel.data(&bytes[..]).await;
+                }
+                Some(Ctrl::Resize { cols, rows }) => {
+                    let _ = channel.window_change(cols as u32, rows as u32, 0, 0).await;
+                }
+                Some(Ctrl::Close) | None => break,
+            },
         }
-        Ok(())
     }
 
-    /// Returns a clone of the `Arc` so the renderer can lock and snapshot the
-    /// screen without requiring a mutable reference to `PtySession`.
-    pub fn parser_arc(&self) -> Arc<Mutex<vt100::Parser>> {
-        Arc::clone(&self.screen)
-    }
-}
-
-impl Drop for PtySession {
-    fn drop(&mut self) {
-        // Drop order matters:
-        //   1. writer is dropped first → SSH stdin gets EOF → SSH may exit cleanly.
-        //   2. _child is dropped   → SIGHUP/SIGTERM sent to child process.
-        //   3. When the child exits, the slave PTY fd closes → the master returns
-        //      EIO on the next read → the reader thread breaks out of its loop.
-        //
-        // We intentionally do NOT call t.join() here. `Drop` runs on the main
-        // tokio task; join() would block the entire async runtime until the
-        // reader thread exits (which requires the PTY read to return — may take
-        // hundreds of milliseconds). Dropping the JoinHandle detaches the thread
-        // instead; it self-terminates once the child exits.
-        if let Some(t) = self.reader_thread.take() {
-            drop(t); // detach — thread exits on its own after PTY closes
-        }
-        tracing::info!("PTY session {} closed", self.id);
-    }
+    let _ = channel.eof().await;
+    let _ = tx.send(AppEvent::PtyExited(id)).await;
+    // _handle drops here → russh closes the TCP connection.
 }
 
 // ---------------------------------------------------------------------------
 // PtyManager
 // ---------------------------------------------------------------------------
 
-/// Manages all active [`PtySession`]s.
+/// Manages all active terminal sessions.
 ///
 /// Stored in [`crate::app::App`] (not in `AppState`) to avoid reference cycles.
 /// Dropping `PtyManager` or calling [`PtyManager::shutdown`] closes all
@@ -297,10 +175,14 @@ impl PtyManager {
         }
     }
 
-    /// Opens a new PTY tab for `host` and returns the assigned [`SessionId`].
+    /// Opens a new terminal tab for `host` and returns the assigned [`SessionId`].
+    ///
+    /// Returns immediately; the connection runs in a background task. Connection
+    /// or auth errors surface later via `AppEvent::Error` + `PtyExited`.
     ///
     /// # Errors
-    /// Propagates errors from [`PtySession::spawn`].
+    /// Currently infallible, but kept fallible so the caller's error handling
+    /// (and the public API) stays unchanged.
     pub fn open(
         &mut self,
         host: &Host,
@@ -310,43 +192,66 @@ impl PtyManager {
     ) -> Result<SessionId> {
         let id = self.next_id;
         self.next_id += 1;
-        let session = PtySession::spawn(id, host, cols, rows, tx)?;
-        self.sessions.push(session);
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 1000)));
+        let (ctrl_tx, ctrl_rx) = mpsc::unbounded_channel();
+        tokio::spawn(session_task(
+            id,
+            host.clone(),
+            cols,
+            rows,
+            Arc::clone(&parser),
+            ctrl_rx,
+            tx,
+        ));
+        self.sessions.push(PtySession {
+            id,
+            parser,
+            ctrl_tx,
+        });
+        tracing::info!("terminal session {} opened for host '{}'", id, host.name);
         Ok(id)
     }
 
-    /// Sends raw bytes to the session identified by `id`.
+    /// Sends raw bytes to the session identified by `id`. Unknown id is a no-op.
     ///
     /// # Errors
-    /// Returns an error if the write fails or the session does not exist.
+    /// Infallible in practice; a dropped task is ignored like a closed session.
     pub fn write(&mut self, id: SessionId, data: &[u8]) -> Result<()> {
-        match self.sessions.iter_mut().find(|s| s.id == id) {
-            Some(s) => s.write_input(data),
-            None => Ok(()), // session already gone — silently ignore
+        if let Some(s) = self.sessions.iter().find(|s| s.id == id) {
+            let _ = s.ctrl_tx.send(Ctrl::Input(data.to_vec()));
         }
+        Ok(())
     }
 
-    /// Resizes the session identified by `id`. No-op if the session was not found.
+    /// Forwards a resize to the session identified by `id`. No-op if not found.
+    ///
+    /// The vt100 parser is resized by the app layer; the task only relays
+    /// `window_change` to the server.
     ///
     /// # Errors
-    /// Propagates errors from [`PtySession::resize`].
+    /// Infallible; kept fallible to preserve the public signature.
     pub fn resize(&mut self, id: SessionId, cols: u16, rows: u16) -> Result<()> {
-        if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
-            s.resize(cols, rows)?;
+        if let Some(s) = self.sessions.iter().find(|s| s.id == id) {
+            let _ = s.ctrl_tx.send(Ctrl::Resize { cols, rows });
         }
         Ok(())
     }
 
     /// Closes and removes the session with the given `id`.
-    ///
-    /// Dropping `PtySession` kills the child process and joins the reader thread.
     pub fn close(&mut self, id: SessionId) {
-        self.sessions.retain(|s| s.id != id);
+        if let Some(pos) = self.sessions.iter().position(|s| s.id == id) {
+            let s = self.sessions.remove(pos);
+            let _ = s.ctrl_tx.send(Ctrl::Close);
+            tracing::info!("terminal session {} closed", id);
+        }
     }
 
     /// Gracefully shuts down all sessions.
-    pub fn shutdown(mut self) {
-        self.sessions.clear(); // Drop in order → each PtySession drops, killing child + joining thread.
+    pub fn shutdown(self) {
+        for s in self.sessions {
+            let _ = s.ctrl_tx.send(Ctrl::Close);
+        }
+        // Dropping each ctrl_tx also ends its task as a backstop.
     }
 
     /// Returns the parser `Arc` for the session with the given `id`, if any.
@@ -354,7 +259,7 @@ impl PtyManager {
         self.sessions
             .iter()
             .find(|s| s.id == id)
-            .map(|s| s.parser_arc())
+            .map(|s| Arc::clone(&s.parser))
     }
 }
 
@@ -461,5 +366,50 @@ pub fn key_to_bytes(key: KeyEvent) -> Vec<u8> {
 
         // Unknown — produce nothing so callers can skip the write.
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_tx() -> mpsc::Sender<AppEvent> {
+        mpsc::channel(1).0
+    }
+
+    #[tokio::test]
+    async fn open_assigns_incrementing_ids() {
+        let mut mgr = PtyManager::new();
+        let host = Host::default();
+        let a = mgr.open(&host, 80, 24, dummy_tx()).unwrap();
+        let b = mgr.open(&host, 80, 24, dummy_tx()).unwrap();
+        assert_eq!((a, b), (1, 2));
+        assert_eq!(mgr.sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn close_removes_only_the_target() {
+        let mut mgr = PtyManager::new();
+        let host = Host::default();
+        let a = mgr.open(&host, 80, 24, dummy_tx()).unwrap();
+        let b = mgr.open(&host, 80, 24, dummy_tx()).unwrap();
+        mgr.close(a);
+        assert_eq!(mgr.sessions.len(), 1);
+        assert_eq!(mgr.sessions[0].id, b);
+    }
+
+    #[tokio::test]
+    async fn write_and_resize_unknown_id_are_noops() {
+        let mut mgr = PtyManager::new();
+        assert!(mgr.write(999, b"x").is_ok());
+        assert!(mgr.resize(999, 80, 24).is_ok());
+    }
+
+    #[tokio::test]
+    async fn parser_for_returns_open_session_only() {
+        let mut mgr = PtyManager::new();
+        let id = mgr.open(&Host::default(), 80, 24, dummy_tx()).unwrap();
+        assert!(mgr.parser_for(id).is_some());
+        assert!(mgr.parser_for(id + 1).is_none());
     }
 }
