@@ -349,7 +349,10 @@ async fn try_key_auth(
 }
 
 #[cfg(unix)]
-async fn try_agent_auth(handle: &mut Handle<KnownHostsHandler>, user: &str) -> anyhow::Result<bool> {
+async fn try_agent_auth(
+    handle: &mut Handle<KnownHostsHandler>,
+    user: &str,
+) -> anyhow::Result<bool> {
     use russh::keys::agent::client::AgentClient;
 
     let mut agent = AgentClient::connect_env()
