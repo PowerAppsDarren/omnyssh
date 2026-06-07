@@ -7,6 +7,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## 1.0.5 — 2026-06-07
+
+### Bug Fixes
+- **docs.rs documentation build fixed**: The build script wrote the generated man page into the source tree (`doc/omny.1`), which fails on docs.rs because it mounts the sources read-only. The man page is now skipped when building on docs.rs (detected via the `DOCS_RS` environment variable); normal builds still generate and check it in as before.
+
+---
+
 ## 1.0.4 — 2026-05-29
 
 ### Features
