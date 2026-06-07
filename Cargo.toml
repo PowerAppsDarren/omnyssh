@@ -57,8 +57,7 @@ dirs = "5"
 # Feature B: Auto SSH Key Setup — timestamp generation
 chrono = "0.4"
 
-# Stage 5 — PTY terminal emulator
-portable-pty = "0.9"
+# Terminal emulator — vt100 screen model (PTY is provided by russh channels)
 vt100 = { package = "vt100-omnyssh", version = "0.15" }
 
 # Update checker — GitHub Releases query, archive extraction, self-replace
