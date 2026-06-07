@@ -11,7 +11,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::event::{Alert, DetectedService, Metrics, ServiceKind};
+use crate::event::{DetectedService, Metrics, ServiceKind};
 use crate::ssh::client::ConnectionStatus;
 use crate::ssh::metrics::threshold_color;
 use crate::ui::theme::Theme;
@@ -24,7 +24,7 @@ use crate::ui::theme::Theme;
 /// Increased to 34 to properly display enriched format (A.4.1).
 pub const CARD_MIN_WIDTH: u16 = 34;
 /// Fixed card height (lines), including borders (increased for services display).
-pub const CARD_HEIGHT: u16 = 10;
+pub const CARD_HEIGHT: u16 = 9;
 
 // ---------------------------------------------------------------------------
 // Status indicators
@@ -54,8 +54,6 @@ pub struct CardData<'a> {
     pub status: Option<&'a ConnectionStatus>,
     /// Detected services.
     pub services: Option<&'a [DetectedService]>,
-    /// Active alerts.
-    pub alerts: Option<&'a [Alert]>,
 }
 
 /// Render a single server card into `rect`.
@@ -119,15 +117,14 @@ pub fn render_card(
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    // ---- Inner layout: 8 rows (Enriched format per A.4.1) ----
+    // ---- Inner layout: 7 rows (Enriched format per A.4.1) ----
     // Row 0: hostname + user:port
     // Row 1: CPU + RAM (combined)
     // Row 2: DSK + Uptime (combined)
     // Row 3: horizontal separator
-    // Row 4: services
-    // Row 5: alerts
-    // Row 6: alerts continued
-    // Row 7: tags
+    // Row 4: services line 1
+    // Row 5: services line 2
+    // Row 6: tags
     if inner.height == 0 || inner.width == 0 {
         return;
     }
@@ -139,9 +136,8 @@ pub fn render_card(
             Constraint::Length(1), // cpu + ram
             Constraint::Length(1), // disk + uptime
             Constraint::Length(1), // separator
-            Constraint::Length(1), // services
-            Constraint::Length(1), // alerts line 1
-            Constraint::Length(1), // alerts line 2
+            Constraint::Length(1), // services line 1
+            Constraint::Length(1), // services line 2
             Constraint::Length(1), // tags
             Constraint::Min(0),    // remainder (safety)
         ])
@@ -205,36 +201,18 @@ pub fn render_card(
 
     // Rows 4-5: services
     // Use TWO lines for services to avoid "+N" overflow
-    let mut service_row_offset = 0;
     if let Some(services) = data.services {
         if !services.is_empty() {
             let service_lines = render_services_lines(services, inner.width, 2);
             for (i, line) in service_lines.iter().enumerate() {
                 if i < 2 {
                     frame.render_widget(Paragraph::new(line.clone()), rows[4 + i]);
-                    service_row_offset = i + 1;
                 }
             }
         }
     }
 
-    // Rows 6-7 (or 5-6 if no services): alerts
-    // Show up to 2 alert lines for important issues, but shift down if services used both rows
-    if let Some(alerts) = data.alerts {
-        if !alerts.is_empty() {
-            let alert_start_row = 4 + service_row_offset;
-            let alert_lines = render_alert_lines(alerts, inner.width, 2);
-            for (i, line) in alert_lines.iter().enumerate() {
-                let row_idx = alert_start_row + i;
-                if row_idx < 7 {
-                    // Don't overlap with tags row
-                    frame.render_widget(Paragraph::new(line.clone()), rows[row_idx]);
-                }
-            }
-        }
-    }
-
-    // Row 7: tags
+    // Row 6: tags
     if !tags.is_empty() {
         let tag_spans: Vec<Span> = tags
             .iter()
@@ -246,7 +224,7 @@ pub fn render_card(
                 ]
             })
             .collect();
-        frame.render_widget(Paragraph::new(Line::from(tag_spans)), rows[7]);
+        frame.render_widget(Paragraph::new(Line::from(tag_spans)), rows[6]);
     }
 }
 
@@ -360,7 +338,7 @@ fn render_disk_uptime_line(disk: Option<f64>, uptime: &str, _width: u16) -> Line
 }
 
 // ---------------------------------------------------------------------------
-// Service and Alert rendering
+// Service rendering
 // ---------------------------------------------------------------------------
 
 /// Render services, ONE service per line (user requirement).
@@ -396,35 +374,6 @@ fn render_services_lines(
             truncated,
             Style::default().fg(color),
         )));
-    }
-
-    lines
-}
-
-/// Render alert lines (A.4.1 format).
-/// Example: "⚠ nginx-proxy restarting (x5)"
-fn render_alert_lines(alerts: &[Alert], width: u16, max_lines: usize) -> Vec<Line<'static>> {
-    use crate::event::AlertSeverity;
-
-    let mut lines = Vec::new();
-
-    // Prioritize: critical first, then warnings, then info
-    let mut sorted_alerts = alerts.to_vec();
-    sorted_alerts.sort_by(|a, b| b.severity.cmp(&a.severity));
-
-    for alert in sorted_alerts.iter().take(max_lines) {
-        let (icon, color) = match alert.severity {
-            AlertSeverity::Critical => ("⚠", Color::Red),
-            AlertSeverity::Warning => ("⚠", Color::Yellow),
-            AlertSeverity::Info => ("ℹ", Color::Cyan),
-        };
-
-        let msg = truncate(&alert.message, width.saturating_sub(3) as usize);
-        lines.push(Line::from(vec![
-            Span::styled(icon, Style::default().fg(color)),
-            Span::raw(" "),
-            Span::styled(msg, Style::default().fg(color)),
-        ]));
     }
 
     lines

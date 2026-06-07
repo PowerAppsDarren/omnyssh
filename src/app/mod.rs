@@ -119,8 +119,6 @@ pub struct AppState {
     pub snippets: Vec<Snippet>,
     /// Detected services per host.
     pub services: HashMap<String, Vec<crate::event::DetectedService>>,
-    /// Active alerts per host.
-    pub alerts: HashMap<String, Vec<crate::event::Alert>>,
 }
 
 // ---------------------------------------------------------------------------
