@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use super::*;
-use crate::ssh::sftp::{self, FileEntry, SftpCommand, SftpManager, SftpOpKind};
+use crate::ssh::sftp::{self, FileEntry, SftpCommand, SftpManager};
 
 // ---------------------------------------------------------------------------
 // File Manager state (ViewState-only)
@@ -289,7 +289,6 @@ impl App {
                         Err(e) => {
                             let _ = tx
                                 .send(AppEvent::SftpDisconnected {
-                                    host_name: host_clone.name.clone(),
                                     reason: e.to_string(),
                                 })
                                 .await;
@@ -299,7 +298,6 @@ impl App {
                 _ = timeout_future => {
                     let _ = tx
                         .send(AppEvent::SftpDisconnected {
-                            host_name: host_clone.name.clone(),
                             reason: "connection timed out (30s)".to_string(),
                         })
                         .await;
@@ -331,7 +329,7 @@ impl App {
                     }
                     Err(e) => {
                         let _ = tx
-                            .send(AppEvent::Error("local".to_string(), e.to_string()))
+                            .send(AppEvent::Error(e.to_string()))
                             .await;
                     }
                 }
@@ -499,10 +497,7 @@ impl App {
                     Err(errors.join("; "))
                 };
                 let _ = tx
-                    .send(AppEvent::SftpOpDone {
-                        kind: SftpOpKind::Delete,
-                        result,
-                    })
+                    .send(AppEvent::SftpOpDone { result })
                     .await;
             });
         }
@@ -528,10 +523,7 @@ impl App {
                     .await
                     .map_err(|e| e.to_string());
                 let _ = tx
-                    .send(AppEvent::SftpOpDone {
-                        kind: SftpOpKind::MkDir,
-                        result,
-                    })
+                    .send(AppEvent::SftpOpDone { result })
                     .await;
             });
         }
@@ -569,10 +561,7 @@ impl App {
                     .await
                     .map_err(|e| e.to_string());
                 let _ = tx
-                    .send(AppEvent::SftpOpDone {
-                        kind: SftpOpKind::Rename,
-                        result,
-                    })
+                    .send(AppEvent::SftpOpDone { result })
                     .await;
             });
         }

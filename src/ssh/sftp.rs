@@ -65,21 +65,6 @@ pub enum SftpCommand {
 }
 
 // ---------------------------------------------------------------------------
-// SftpOpKind — identifies which mutating operation completed
-// ---------------------------------------------------------------------------
-
-/// Identifies which mutating SFTP operation completed (used in
-/// [`AppEvent::SftpOpDone`]).
-#[derive(Debug, Clone, Copy)]
-pub enum SftpOpKind {
-    Delete,
-    MkDir,
-    Rename,
-    Upload,
-    Download,
-}
-
-// ---------------------------------------------------------------------------
 // SftpManager — handle held by App to communicate with the background task
 // ---------------------------------------------------------------------------
 
@@ -125,7 +110,7 @@ impl SftpManager {
                     host_name: host_name.clone(),
                 })
                 .await;
-            sftp_task_loop(session, sftp, cmd_rx, event_tx.clone(), host_name.clone()).await;
+            sftp_task_loop(session, sftp, cmd_rx, event_tx.clone()).await;
             tracing::info!("SFTP task for '{}' exited", host_name);
         });
 
@@ -152,7 +137,6 @@ async fn sftp_task_loop(
     sftp: russh_sftp::client::SftpSession,
     mut cmd_rx: mpsc::Receiver<SftpCommand>,
     event_tx: mpsc::Sender<AppEvent>,
-    host_name: String,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
@@ -165,7 +149,6 @@ async fn sftp_task_loop(
                 Err(e) => {
                     let _ = event_tx
                         .send(AppEvent::SftpDisconnected {
-                            host_name: host_name.clone(),
                             reason: format!("ListDir failed: {e}"),
                         })
                         .await;
@@ -181,10 +164,7 @@ async fn sftp_task_loop(
                     .await
                     .map_err(|e| e.to_string());
                 let _ = event_tx
-                    .send(AppEvent::SftpOpDone {
-                        kind: SftpOpKind::Download,
-                        result,
-                    })
+                    .send(AppEvent::SftpOpDone { result })
                     .await;
             }
 
@@ -197,10 +177,7 @@ async fn sftp_task_loop(
                     .await
                     .map_err(|e| e.to_string());
                 let _ = event_tx
-                    .send(AppEvent::SftpOpDone {
-                        kind: SftpOpKind::Upload,
-                        result,
-                    })
+                    .send(AppEvent::SftpOpDone { result })
                     .await;
             }
 
@@ -211,30 +188,21 @@ async fn sftp_task_loop(
                     Err(_) => sftp.remove_dir(&path).await.map_err(|e| e.to_string()),
                 };
                 let _ = event_tx
-                    .send(AppEvent::SftpOpDone {
-                        kind: SftpOpKind::Delete,
-                        result,
-                    })
+                    .send(AppEvent::SftpOpDone { result })
                     .await;
             }
 
             SftpCommand::MkDir(path) => {
                 let result = sftp.create_dir(&path).await.map_err(|e| e.to_string());
                 let _ = event_tx
-                    .send(AppEvent::SftpOpDone {
-                        kind: SftpOpKind::MkDir,
-                        result,
-                    })
+                    .send(AppEvent::SftpOpDone { result })
                     .await;
             }
 
             SftpCommand::Rename { from, to } => {
                 let result = sftp.rename(&from, &to).await.map_err(|e| e.to_string());
                 let _ = event_tx
-                    .send(AppEvent::SftpOpDone {
-                        kind: SftpOpKind::Rename,
-                        result,
-                    })
+                    .send(AppEvent::SftpOpDone { result })
                     .await;
             }
 

@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use crate::config::snippets::Snippet;
 use crate::ssh::client::{ConnectionStatus, Host};
 use crate::ssh::key_setup::KeySetupStep;
-use crate::ssh::sftp::{FileEntry, SftpOpKind};
+use crate::ssh::sftp::FileEntry;
 
 /// Placeholder type aliases for future stages.
 /// `HostId` is the host's `name` field — stable, human-readable key.
@@ -70,8 +70,8 @@ pub enum AppEvent {
     HostStatusChanged(HostId, ConnectionStatus),
     /// File transfer progress: (transfer_id, bytes_done, bytes_total).
     FileTransferProgress(TransferId, u64, u64),
-    /// An error associated with a particular host.
-    Error(HostId, String),
+    /// An error message surfaced to the user.
+    Error(String),
     /// Host list loaded from disk / SSH config in a background task.
     HostsLoaded(Vec<Host>),
     /// Snippet list loaded from disk in a background task.
@@ -105,14 +105,11 @@ pub enum AppEvent {
         manager: Box<crate::ssh::sftp::SftpManager>,
     },
     /// SFTP session closed or failed.
-    SftpDisconnected { host_name: String, reason: String },
+    SftpDisconnected { reason: String },
     /// Preview bytes available for a file.
     FilePreviewReady { path: String, content: String },
     /// A mutating SFTP operation (delete, mkdir, rename, upload, download) finished.
-    SftpOpDone {
-        kind: SftpOpKind,
-        result: Result<(), String>,
-    },
+    SftpOpDone { result: Result<(), String> },
 
     // -----------------------------------------------------------------------
     // PTY multi-session terminal events

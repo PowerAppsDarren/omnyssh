@@ -722,7 +722,7 @@ impl App {
                     }
                 }
 
-                AppEvent::Error(_, msg) => {
+                AppEvent::Error(msg) => {
                     self.view.status_message = Some(msg);
                 }
 
@@ -781,10 +781,7 @@ impl App {
                     self.view.status_message = Some(format!("Connected to '{}'", host_name));
                 }
 
-                AppEvent::SftpDisconnected {
-                    host_name: _,
-                    reason,
-                } => {
+                AppEvent::SftpDisconnected { reason } => {
                     self.sftp_manager = None;
                     self.view.file_manager.connected_host = None;
                     self.view.file_manager.sftp_connecting = false;
@@ -818,7 +815,7 @@ impl App {
                     self.view.file_manager.preview_path = Some(path);
                 }
 
-                AppEvent::SftpOpDone { kind: _, result } => {
+                AppEvent::SftpOpDone { result } => {
                     self.view.file_manager.pending_ops =
                         self.view.file_manager.pending_ops.saturating_sub(1);
                     let remaining = self.view.file_manager.pending_ops;
