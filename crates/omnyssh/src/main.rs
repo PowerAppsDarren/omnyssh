@@ -30,8 +30,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Prune stale rolling log files so they don't accumulate indefinitely.
-    let pruned_logs =
-        utils::platform::cleanup_old_logs(&log_dir, utils::platform::LOG_RETENTION_DAYS);
+    let pruned_logs = omnyssh_core::utils::platform::cleanup_old_logs(
+        &log_dir,
+        omnyssh_core::utils::platform::LOG_RETENTION_DAYS,
+    );
 
     // Use daily rolling file appender
     // IMPORTANT: _guard must live for the entire duration of the program.

@@ -1,7 +1,7 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::utils::platform;
+use omnyssh_core::utils::platform;
 
 /// Scope of a command snippet.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

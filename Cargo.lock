@@ -1598,6 +1598,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "flate2",
+ "omnyssh-core",
  "ratatui",
  "reqwest",
  "russh",
@@ -1614,6 +1615,14 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "vt100-omnyssh",
+]
+
+[[package]]
+name = "omnyssh-core"
+version = "1.1.0"
+dependencies = [
+ "dirs",
  "vt100-omnyssh",
 ]
 
