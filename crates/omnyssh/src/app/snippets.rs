@@ -2,8 +2,8 @@
 //! execute snippets, quick-execute commands, and quick views.
 
 use super::*;
-use crate::config::snippets::SnippetScope;
-use crate::ssh::session::SshSession;
+use omnyssh_core::config::snippets::SnippetScope;
+use omnyssh_core::ssh::session::SshSession;
 
 // ---------------------------------------------------------------------------
 // Snippets structs

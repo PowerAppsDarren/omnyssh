@@ -4,7 +4,7 @@
 //! Alpine Linux (BusyBox), and macOS 14. All parsers must return `None` on
 //! empty or malformed input without panicking.
 
-use omnyssh::ssh::metrics::{
+use omnyssh_core::ssh::metrics::{
     parse_cpu_proc_stat, parse_cpu_top, parse_cpu_top_macos, parse_disk_df, parse_loadavg,
     parse_ram_free, parse_ram_vmstat, parse_uptime, threshold_level, ThresholdLevel,
 };

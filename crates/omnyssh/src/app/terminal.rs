@@ -4,8 +4,8 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use crate::event::SessionId;
-use crate::ssh::pty::PtyManager;
+use omnyssh_core::event::SessionId;
+use omnyssh_core::ssh::pty::PtyManager;
 
 // ---------------------------------------------------------------------------
 // Terminal multi-session view state

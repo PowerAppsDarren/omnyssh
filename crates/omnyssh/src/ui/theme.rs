@@ -18,7 +18,7 @@
 
 use ratatui::style::Color;
 
-use crate::ssh::metrics::{threshold_level, ThresholdLevel};
+use omnyssh_core::ssh::metrics::{threshold_level, ThresholdLevel};
 
 /// Returns the display colour for a metric percentage.
 ///

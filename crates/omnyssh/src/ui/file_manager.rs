@@ -21,7 +21,7 @@ use ratatui::{
 use crate::app::{
     AppAction, FileManagerPopup, FileManagerView, FilePanelView, FmPanel, FormField, ViewState,
 };
-use crate::ssh::client::Host;
+use omnyssh_core::ssh::client::Host;
 
 // ---------------------------------------------------------------------------
 // Public entry points

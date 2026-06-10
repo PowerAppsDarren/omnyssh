@@ -10,8 +10,8 @@ use crate::app::{
     FormField, HostForm, SnippetForm, SnippetResultEntry, UpdateButton, UpdatePopup,
     UpdatePopupPhase, FORM_FIELD_LABELS, SNIPPET_FORM_FIELD_LABELS, UPDATE_BUTTONS,
 };
-use crate::ssh::client::Host;
 use crate::ui::theme::Theme;
+use omnyssh_core::ssh::client::Host;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1238,7 +1238,7 @@ fn render_single_result(
 /// and offers y/Enter to confirm or n/Esc to cancel.
 pub fn render_key_setup_confirm(
     frame: &mut Frame,
-    host: Option<&crate::ssh::client::Host>,
+    host: Option<&omnyssh_core::ssh::client::Host>,
     theme: &Theme,
 ) {
     let area = centred_rect(55, 40, frame.area());
@@ -1352,10 +1352,10 @@ pub fn render_key_setup_confirm(
 pub fn render_key_setup_progress(
     frame: &mut Frame,
     host_name: &str,
-    current_step: Option<&crate::ssh::key_setup::KeySetupStep>,
+    current_step: Option<&omnyssh_core::ssh::key_setup::KeySetupStep>,
     theme: &Theme,
 ) {
-    use crate::ssh::key_setup::KeySetupStep;
+    use omnyssh_core::ssh::key_setup::KeySetupStep;
 
     let area = centred_rect(55, 55, frame.area());
     frame.render_widget(Clear, area);

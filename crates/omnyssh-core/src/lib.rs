@@ -5,5 +5,8 @@
 //! this crate and never the other way around: nothing here may reference
 //! `ratatui`, `crossterm`, or `clap`.
 
+pub mod config;
+pub mod event;
+pub mod ssh;
 pub mod update;
 pub mod utils;

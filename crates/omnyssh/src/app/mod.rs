@@ -15,17 +15,18 @@ use std::time::Duration;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::{mpsc, RwLock};
 
-use crate::config;
-use crate::config::app_config::AppConfig;
-use crate::config::snippets::Snippet;
-use crate::event::{spawn_event_thread, AppEvent, CoreEvent, Metrics, ServiceKind, TransferId};
+use crate::event::{spawn_event_thread, AppEvent};
 use crate::keybindings::ParsedKeybindings;
-use crate::ssh::client::{ConnectionStatus, Host};
-use crate::ssh::pool::PollManager;
-use crate::ssh::pty::PtyManager;
-use crate::ssh::sftp::{SftpCommand, SftpManager};
 use crate::ui;
 use crate::ui::theme::Theme;
+use omnyssh_core::config;
+use omnyssh_core::config::app_config::AppConfig;
+use omnyssh_core::config::snippets::Snippet;
+use omnyssh_core::event::{CoreEvent, Metrics, ServiceKind, TransferId};
+use omnyssh_core::ssh::client::{ConnectionStatus, Host};
+use omnyssh_core::ssh::pool::PollManager;
+use omnyssh_core::ssh::pty::PtyManager;
+use omnyssh_core::ssh::sftp::{SftpCommand, SftpManager};
 
 mod action;
 mod actions;
@@ -119,7 +120,7 @@ pub struct AppState {
     /// Saved command snippets.
     pub snippets: Vec<Snippet>,
     /// Detected services per host.
-    pub services: HashMap<String, Vec<crate::event::DetectedService>>,
+    pub services: HashMap<String, Vec<omnyssh_core::event::DetectedService>>,
 }
 
 // ---------------------------------------------------------------------------

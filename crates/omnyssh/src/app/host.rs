@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::ssh::client::HostSource;
+use omnyssh_core::ssh::client::HostSource;
 
 // ---------------------------------------------------------------------------
 // Host form (used in Add / Edit popups)
@@ -213,7 +213,7 @@ pub enum HostPopup {
     /// Showing key setup progress.
     KeySetupProgress {
         host_name: String,
-        current_step: Option<crate::ssh::key_setup::KeySetupStep>,
+        current_step: Option<omnyssh_core::ssh::key_setup::KeySetupStep>,
     },
 }
 

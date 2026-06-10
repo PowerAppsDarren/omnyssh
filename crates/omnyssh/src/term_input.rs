@@ -1,7 +1,7 @@
 //! Translation of crossterm key events into PTY stdin bytes.
 //!
 //! This is TUI-side input handling: the SSH core only accepts raw `&[u8]`
-//! for PTY input (see [`crate::ssh::pty::PtyManager::write`]).
+//! for PTY input (see [`omnyssh_core::ssh::pty::PtyManager::write`]).
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 

@@ -15,7 +15,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::ssh::client::{Host, HostSource};
-use omnyssh_core::utils::platform;
+use crate::utils::platform;
 
 // ---------------------------------------------------------------------------
 // hosts.toml I/O

@@ -2,10 +2,8 @@ use clap::Parser;
 
 mod app;
 mod cli;
-mod config;
 mod event;
 mod keybindings;
-mod ssh;
 mod term_input;
 mod ui;
 mod utils;
@@ -69,27 +67,28 @@ async fn main() -> anyhow::Result<()> {
     // Load application config.
     // A missing file is silently ignored; a malformed file is reported and
     // we fall back to defaults so the app always starts.
-    let mut app_config = match config::app_config::load_app_config(cli.config.as_deref()) {
-        Ok(cfg) => {
-            if let Some(ref path) = cli.config {
-                tracing::info!("Loaded config from: {}", path.display());
+    let mut app_config =
+        match omnyssh_core::config::app_config::load_app_config(cli.config.as_deref()) {
+            Ok(cfg) => {
+                if let Some(ref path) = cli.config {
+                    tracing::info!("Loaded config from: {}", path.display());
+                }
+                cfg
             }
-            cfg
-        }
-        Err(e) => {
-            tracing::warn!("Config load error (using defaults): {}", e);
-            config::app_config::AppConfig::default()
-        }
-    };
+            Err(e) => {
+                tracing::warn!("Config load error (using defaults): {}", e);
+                omnyssh_core::config::app_config::AppConfig::default()
+            }
+        };
 
     // Apply CLI theme override if provided and save it to config.
     if let Some(ref theme) = cli.theme {
-        if config::app_config::UiConfig::is_valid_theme(theme) {
+        if omnyssh_core::config::app_config::UiConfig::is_valid_theme(theme) {
             tracing::info!("Applying theme '{}' and saving to config", theme);
             app_config.ui.theme = theme.clone();
 
             // Save theme to config file for persistence
-            if let Err(e) = config::app_config::save_theme_to_config(theme) {
+            if let Err(e) = omnyssh_core::config::app_config::save_theme_to_config(theme) {
                 eprintln!("Warning: Failed to save theme to config: {}", e);
                 eprintln!("Theme will be applied for this session only.");
             } else {
@@ -99,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
             eprintln!(
                 "Error: Unknown theme '{}'. Available themes: {}",
                 theme,
-                config::app_config::UiConfig::available_themes().join(", ")
+                omnyssh_core::config::app_config::UiConfig::available_themes().join(", ")
             );
             eprintln!(
                 "Falling back to theme from config: '{}'",

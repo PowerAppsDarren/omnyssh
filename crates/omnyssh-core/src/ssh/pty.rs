@@ -155,7 +155,7 @@ async fn session_task(
 
 /// Manages all active terminal sessions.
 ///
-/// Stored in [`crate::app::App`] (not in `AppState`) to avoid reference cycles.
+/// Stored by the frontend outside of its shared state to avoid reference cycles.
 /// Dropping `PtyManager` or calling [`PtyManager::shutdown`] closes all
 /// sessions gracefully.
 pub struct PtyManager {

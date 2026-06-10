@@ -58,7 +58,7 @@ pub struct UiConfig {
 impl UiConfig {
     /// Returns the list of all available built-in theme names.
     ///
-    /// These names correspond to themes defined in [`crate::ui::theme::Theme`].
+    /// These names correspond to the built-in themes of the TUI frontend.
     pub fn available_themes() -> &'static [&'static str] {
         &["default", "dracula", "nord", "gruvbox"]
     }
@@ -67,7 +67,7 @@ impl UiConfig {
     ///
     /// # Examples
     /// ```
-    /// # use omnyssh::config::app_config::UiConfig;
+    /// # use omnyssh_core::config::app_config::UiConfig;
     /// assert!(UiConfig::is_valid_theme("dracula"));
     /// assert!(!UiConfig::is_valid_theme("unknown"));
     /// ```
@@ -210,7 +210,7 @@ impl Default for KeybindingsConfig {
 /// # Errors
 /// Returns an error only if the file exists but cannot be read or parsed.
 pub fn load_app_config(path: Option<&std::path::Path>) -> anyhow::Result<AppConfig> {
-    use omnyssh_core::utils::platform;
+    use crate::utils::platform;
 
     let config_path = match path {
         Some(p) => p.to_path_buf(),
@@ -239,7 +239,7 @@ pub fn load_app_config(path: Option<&std::path::Path>) -> anyhow::Result<AppConf
 /// # Errors
 /// Returns an error if the config file cannot be read, parsed, or written.
 fn persist_config<F: FnOnce(&mut AppConfig)>(mutator: F) -> anyhow::Result<()> {
-    use omnyssh_core::utils::platform;
+    use crate::utils::platform;
 
     let config_path = match platform::app_config_path() {
         Some(p) => p,

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use super::*;
-use crate::ssh::sftp::{self, FileEntry, SftpCommand, SftpManager};
+use omnyssh_core::ssh::sftp::{self, FileEntry, SftpCommand, SftpManager};
 
 // ---------------------------------------------------------------------------
 // File Manager state (ViewState-only)

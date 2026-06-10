@@ -2,8 +2,8 @@
 //! shared state, spawns background tasks, and delegates to feature methods.
 
 use super::*;
-use crate::config::snippets::SnippetScope;
-use crate::ssh::session::SshSession;
+use omnyssh_core::config::snippets::SnippetScope;
+use omnyssh_core::ssh::session::SshSession;
 
 impl App {
     /// Executes an [`AppAction`] that requires access to shared state or the
@@ -162,7 +162,9 @@ impl App {
                     let tx = self.core_tx.clone();
                     let host_clone = host.clone();
                     tokio::spawn(async move {
-                        use crate::ssh::key_setup::{setup_key_for_host, KeySetupStep, KeyType};
+                        use omnyssh_core::ssh::key_setup::{
+                            setup_key_for_host, KeySetupStep, KeyType,
+                        };
 
                         // Create a channel for progress updates.
                         let (progress_tx, mut progress_rx) = mpsc::channel::<KeySetupStep>(10);
@@ -201,7 +203,7 @@ impl App {
                         .await
                         {
                             Ok(result) => {
-                                use crate::ssh::key_setup::KeySetupState;
+                                use omnyssh_core::ssh::key_setup::KeySetupState;
                                 match result.state {
                                     KeySetupState::Success | KeySetupState::PartialSuccess => {
                                         let _ = tx

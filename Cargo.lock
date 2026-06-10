@@ -1623,14 +1623,23 @@ name = "omnyssh-core"
 version = "1.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "chrono",
  "dirs",
  "flate2",
  "reqwest",
+ "russh",
+ "russh-keys",
+ "russh-sftp",
  "self-replace",
  "semver",
  "serde",
  "sha2",
  "tar",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
  "vt100-omnyssh",
 ]
 

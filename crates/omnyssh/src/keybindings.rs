@@ -6,7 +6,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::config::app_config::KeybindingsConfig;
+use omnyssh_core::config::app_config::KeybindingsConfig;
 
 /// A resolved key binding that may optionally require the `Ctrl` modifier.
 #[derive(Debug, Clone, Copy)]

@@ -9,11 +9,29 @@ keywords = ["ssh", "devops"]
 categories = ["network-programming"]
 
 [dependencies]
+tokio = { workspace = true }
+
+# SSH
+russh = "0.46"
+russh-sftp = "2.0"
+russh-keys = "0.46"
+
 # Serialization
 serde = { workspace = true }
+toml = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Required for implementing russh::client::Handler (uses #[async_trait])
+async-trait = "0.1"
+
+# Feature B: Auto SSH Key Setup — timestamp generation
+chrono = { workspace = true }
 
 # Cross-platform paths (P-CROSS-01)
 dirs = { workspace = true }

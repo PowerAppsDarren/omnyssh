@@ -4,10 +4,8 @@
 //! internal modules so that files under `tests/` can reach them.
 
 pub mod app;
-pub mod config;
 pub mod event;
 pub mod keybindings;
-pub mod ssh;
 pub mod term_input;
 pub mod ui;
 pub mod utils;

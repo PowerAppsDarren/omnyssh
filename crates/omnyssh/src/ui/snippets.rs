@@ -21,8 +21,8 @@ use ratatui::{
 };
 
 use crate::app::{AppAction, AppState, SnippetPopup, SnippetsView, ViewState};
-use crate::config::snippets::SnippetScope;
 use crate::ui::popup;
+use omnyssh_core::config::snippets::SnippetScope;
 
 // ---------------------------------------------------------------------------
 // Render

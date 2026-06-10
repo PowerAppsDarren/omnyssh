@@ -330,7 +330,7 @@ pub async fn generate_key_pair(host_name: &str, key_type: KeyType) -> Result<(Pa
 ///
 /// # Examples
 /// ```
-/// use omnyssh::ssh::key_setup::sanitize_hostname;
+/// use omnyssh_core::ssh::key_setup::sanitize_hostname;
 ///
 /// assert_eq!(sanitize_hostname("web-prod-1"), "web-prod-1");
 /// assert_eq!(sanitize_hostname("my server (prod)"), "my_server__prod_");
