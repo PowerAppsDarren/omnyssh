@@ -163,12 +163,12 @@ impl App {
             let start = dirs::home_dir()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "/".to_string());
-            let tx = self.event_tx.clone();
+            let tx = self.core_tx.clone();
             let path = start.clone();
             tokio::spawn(async move {
                 match sftp::list_local_dir(&path).await {
                     Ok(entries) => {
-                        let _ = tx.send(AppEvent::LocalDirListed { path, entries }).await;
+                        let _ = tx.send(CoreEvent::LocalDirListed { path, entries }).await;
                     }
                     Err(e) => tracing::warn!("Local bootstrap failed: {e}"),
                 }
@@ -209,10 +209,10 @@ impl App {
                 mgr.send(SftpCommand::ReadPreview(path));
             }
         } else {
-            let tx = self.event_tx.clone();
+            let tx = self.core_tx.clone();
             tokio::spawn(async move {
                 if let Ok(content) = sftp::preview_local_file(&path).await {
-                    let _ = tx.send(AppEvent::FilePreviewReady { path, content }).await;
+                    let _ = tx.send(CoreEvent::FilePreviewReady { path, content }).await;
                 }
             });
         }
@@ -222,12 +222,12 @@ impl App {
     pub(crate) async fn refresh_active_panels(&mut self) {
         let local_path = self.view.file_manager.local.cwd.clone();
         if !local_path.is_empty() {
-            let tx = self.event_tx.clone();
+            let tx = self.core_tx.clone();
             tokio::spawn(async move {
                 match sftp::list_local_dir(&local_path).await {
                     Ok(entries) => {
                         let _ = tx
-                            .send(AppEvent::LocalDirListed {
+                            .send(CoreEvent::LocalDirListed {
                                 path: local_path,
                                 entries,
                             })
@@ -268,7 +268,7 @@ impl App {
         self.view.file_manager.sftp_connecting = true;
 
         // Spawn connection in background with 30s timeout to prevent UI freeze
-        let tx = self.event_tx.clone();
+        let tx = self.core_tx.clone();
         let host_clone = host.clone();
         tokio::spawn(async move {
             let connect_future = SftpManager::connect(&host_clone, tx.clone());
@@ -280,7 +280,7 @@ impl App {
                         Ok(mgr) => {
                             // Send the manager through a new event type
                             let _ = tx
-                                .send(AppEvent::SftpManagerReady {
+                                .send(CoreEvent::SftpManagerReady {
                                     host_name: host_clone.name.clone(),
                                     manager: Box::new(mgr),
                                 })
@@ -288,7 +288,7 @@ impl App {
                         }
                         Err(e) => {
                             let _ = tx
-                                .send(AppEvent::SftpDisconnected {
+                                .send(CoreEvent::SftpDisconnected {
                                     reason: e.to_string(),
                                 })
                                 .await;
@@ -297,7 +297,7 @@ impl App {
                 }
                 _ = timeout_future => {
                     let _ = tx
-                        .send(AppEvent::SftpDisconnected {
+                        .send(CoreEvent::SftpDisconnected {
                             reason: "connection timed out (30s)".to_string(),
                         })
                         .await;
@@ -321,14 +321,14 @@ impl App {
             }
         } else {
             let path = entry.path.clone();
-            let tx = self.event_tx.clone();
+            let tx = self.core_tx.clone();
             tokio::spawn(async move {
                 match sftp::list_local_dir(&path).await {
                     Ok(entries) => {
-                        let _ = tx.send(AppEvent::LocalDirListed { path, entries }).await;
+                        let _ = tx.send(CoreEvent::LocalDirListed { path, entries }).await;
                     }
                     Err(e) => {
-                        let _ = tx.send(AppEvent::Error(e.to_string())).await;
+                        let _ = tx.send(CoreEvent::Error(e.to_string())).await;
                     }
                 }
             });
@@ -356,12 +356,12 @@ impl App {
                 mgr.send(SftpCommand::ListDir(parent));
             }
         } else {
-            let tx = self.event_tx.clone();
+            let tx = self.core_tx.clone();
             tokio::spawn(async move {
                 match sftp::list_local_dir(&parent).await {
                     Ok(entries) => {
                         let _ = tx
-                            .send(AppEvent::LocalDirListed {
+                            .send(CoreEvent::LocalDirListed {
                                 path: parent,
                                 entries,
                             })
@@ -474,7 +474,7 @@ impl App {
                 }
             }
         } else {
-            let tx = self.event_tx.clone();
+            let tx = self.core_tx.clone();
             tokio::spawn(async move {
                 let mut errors: Vec<String> = Vec::new();
                 for path in paths {
@@ -494,7 +494,7 @@ impl App {
                 } else {
                     Err(errors.join("; "))
                 };
-                let _ = tx.send(AppEvent::SftpOpDone { result }).await;
+                let _ = tx.send(CoreEvent::SftpOpDone { result }).await;
             });
         }
     }
@@ -513,12 +513,12 @@ impl App {
         } else {
             let cwd = self.view.file_manager.local.cwd.clone();
             let new_path = format!("{}/{}", cwd.trim_end_matches('/'), name);
-            let tx = self.event_tx.clone();
+            let tx = self.core_tx.clone();
             tokio::spawn(async move {
                 let result = tokio::fs::create_dir(&new_path)
                     .await
                     .map_err(|e| e.to_string());
-                let _ = tx.send(AppEvent::SftpOpDone { result }).await;
+                let _ = tx.send(CoreEvent::SftpOpDone { result }).await;
             });
         }
     }
@@ -549,12 +549,12 @@ impl App {
                 });
             }
         } else {
-            let tx = self.event_tx.clone();
+            let tx = self.core_tx.clone();
             tokio::spawn(async move {
                 let result = tokio::fs::rename(&old_path, &new_path)
                     .await
                     .map_err(|e| e.to_string());
-                let _ = tx.send(AppEvent::SftpOpDone { result }).await;
+                let _ = tx.send(CoreEvent::SftpOpDone { result }).await;
             });
         }
     }

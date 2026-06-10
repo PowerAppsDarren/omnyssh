@@ -18,7 +18,7 @@ use russh::client::Handle;
 use russh::ChannelMsg;
 use tokio::sync::mpsc;
 
-use crate::event::AppEvent;
+use crate::event::CoreEvent;
 use crate::ssh::client::Host;
 use crate::ssh::session::{connect_and_auth, KnownHostsHandler};
 
@@ -99,7 +99,7 @@ async fn session_task(
     rows: u16,
     parser: Arc<Mutex<vt100::Parser>>,
     mut ctrl_rx: mpsc::UnboundedReceiver<Ctrl>,
-    tx: mpsc::Sender<AppEvent>,
+    tx: mpsc::Sender<CoreEvent>,
 ) {
     // Phase A/B: connect, authenticate, and open the remote shell. Failures are
     // reported in the status bar and tear the tab down via PtyExited.
@@ -111,8 +111,8 @@ async fn session_task(
     let (_handle, mut channel) = match result {
         Ok(pair) => pair,
         Err(e) => {
-            let _ = tx.send(AppEvent::Error(format!("Terminal: {e}"))).await;
-            let _ = tx.send(AppEvent::PtyExited(id)).await;
+            let _ = tx.send(CoreEvent::Error(format!("Terminal: {e}"))).await;
+            let _ = tx.send(CoreEvent::PtyExited(id)).await;
             return;
         }
     };
@@ -127,7 +127,7 @@ async fn session_task(
                 Some(ChannelMsg::Data { data })
                 | Some(ChannelMsg::ExtendedData { data, .. }) => {
                     feed_parser(&parser, &data);
-                    let _ = tx.send(AppEvent::PtyOutput(id)).await;
+                    let _ = tx.send(CoreEvent::PtyOutput(id)).await;
                 }
                 Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
                 _ => {} // ExitStatus etc.: ignore, wait for Close.
@@ -145,7 +145,7 @@ async fn session_task(
     }
 
     let _ = channel.eof().await;
-    let _ = tx.send(AppEvent::PtyExited(id)).await;
+    let _ = tx.send(CoreEvent::PtyExited(id)).await;
     // _handle drops here → russh closes the TCP connection.
 }
 
@@ -175,7 +175,7 @@ impl PtyManager {
     /// Opens a new terminal tab for `host` and returns the assigned [`SessionId`].
     ///
     /// Returns immediately; the connection runs in a background task. Connection
-    /// or auth errors surface later via `AppEvent::Error` + `PtyExited`.
+    /// or auth errors surface later via `CoreEvent::Error` + `PtyExited`.
     ///
     /// # Errors
     /// Currently infallible, but kept fallible so the caller's error handling
@@ -185,7 +185,7 @@ impl PtyManager {
         host: &Host,
         cols: u16,
         rows: u16,
-        tx: mpsc::Sender<AppEvent>,
+        tx: mpsc::Sender<CoreEvent>,
     ) -> Result<SessionId> {
         // ProxyJump is not yet wired into the russh terminal path. Refuse rather
         // than silently connecting direct to the wrong host.
@@ -275,7 +275,7 @@ impl Default for PtyManager {
 mod tests {
     use super::*;
 
-    fn dummy_tx() -> mpsc::Sender<AppEvent> {
+    fn dummy_tx() -> mpsc::Sender<CoreEvent> {
         mpsc::channel(1).0
     }
 

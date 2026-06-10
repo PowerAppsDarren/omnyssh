@@ -4,13 +4,13 @@
 //! session and processes [`SftpCommand`] messages sent from the UI thread.
 //!
 //! All operations are non-blocking from the UI perspective.
-//! Progress is reported via [`AppEvent::FileTransferProgress`].
+//! Progress is reported via [`CoreEvent::FileTransferProgress`].
 
 use anyhow::Context;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-use crate::event::{AppEvent, TransferId};
+use crate::event::{CoreEvent, TransferId};
 use crate::ssh::client::Host;
 use crate::ssh::session::SshSession;
 
@@ -79,12 +79,12 @@ pub struct SftpManager {
 impl SftpManager {
     /// Connects to `host` via SSH + SFTP subsystem and spawns the background task.
     ///
-    /// On success sends [`AppEvent::SftpConnected`] through `event_tx`.
-    /// On failure the task sends [`AppEvent::SftpDisconnected`].
+    /// On success sends [`CoreEvent::SftpConnected`] through `event_tx`.
+    /// On failure the task sends [`CoreEvent::SftpDisconnected`].
     ///
     /// # Errors
     /// Returns an error if the SSH connection fails before the task is spawned.
-    pub async fn connect(host: &Host, event_tx: mpsc::Sender<AppEvent>) -> anyhow::Result<Self> {
+    pub async fn connect(host: &Host, event_tx: mpsc::Sender<CoreEvent>) -> anyhow::Result<Self> {
         let session = SshSession::connect(host)
             .await
             .context("SFTP SSH connect")?;
@@ -105,7 +105,7 @@ impl SftpManager {
         // released even in the panic path.  No explicit catch_unwind needed.
         tokio::spawn(async move {
             let _ = event_tx
-                .send(AppEvent::SftpConnected {
+                .send(CoreEvent::SftpConnected {
                     host_name: host_name.clone(),
                 })
                 .await;
@@ -135,19 +135,19 @@ async fn sftp_task_loop(
     _ssh: SshSession, // kept alive to hold the SSH connection open
     sftp: russh_sftp::client::SftpSession,
     mut cmd_rx: mpsc::Receiver<SftpCommand>,
-    event_tx: mpsc::Sender<AppEvent>,
+    event_tx: mpsc::Sender<CoreEvent>,
 ) {
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             SftpCommand::ListDir(path) => match do_list_dir(&sftp, &path).await {
                 Ok(entries) => {
                     let _ = event_tx
-                        .send(AppEvent::FileDirListed { path, entries })
+                        .send(CoreEvent::FileDirListed { path, entries })
                         .await;
                 }
                 Err(e) => {
                     let _ = event_tx
-                        .send(AppEvent::SftpDisconnected {
+                        .send(CoreEvent::SftpDisconnected {
                             reason: format!("ListDir failed: {e}"),
                         })
                         .await;
@@ -162,7 +162,7 @@ async fn sftp_task_loop(
                 let result = do_download(&sftp, &remote, &local, transfer_id, &event_tx)
                     .await
                     .map_err(|e| e.to_string());
-                let _ = event_tx.send(AppEvent::SftpOpDone { result }).await;
+                let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
             }
 
             SftpCommand::Upload {
@@ -173,7 +173,7 @@ async fn sftp_task_loop(
                 let result = do_upload(&local, &sftp, &remote, transfer_id, &event_tx)
                     .await
                     .map_err(|e| e.to_string());
-                let _ = event_tx.send(AppEvent::SftpOpDone { result }).await;
+                let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
             }
 
             SftpCommand::Delete(path) => {
@@ -182,23 +182,23 @@ async fn sftp_task_loop(
                     Ok(()) => Ok(()),
                     Err(_) => sftp.remove_dir(&path).await.map_err(|e| e.to_string()),
                 };
-                let _ = event_tx.send(AppEvent::SftpOpDone { result }).await;
+                let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
             }
 
             SftpCommand::MkDir(path) => {
                 let result = sftp.create_dir(&path).await.map_err(|e| e.to_string());
-                let _ = event_tx.send(AppEvent::SftpOpDone { result }).await;
+                let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
             }
 
             SftpCommand::Rename { from, to } => {
                 let result = sftp.rename(&from, &to).await.map_err(|e| e.to_string());
-                let _ = event_tx.send(AppEvent::SftpOpDone { result }).await;
+                let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
             }
 
             SftpCommand::ReadPreview(path) => {
                 if let Ok(content) = do_read_preview(&sftp, &path).await {
                     let _ = event_tx
-                        .send(AppEvent::FilePreviewReady { path, content })
+                        .send(CoreEvent::FilePreviewReady { path, content })
                         .await;
                 }
             }
@@ -281,7 +281,7 @@ async fn do_download(
     remote: &str,
     local: &str,
     transfer_id: TransferId,
-    event_tx: &mpsc::Sender<AppEvent>,
+    event_tx: &mpsc::Sender<CoreEvent>,
 ) -> anyhow::Result<()> {
     // Guard against path traversal in the local destination.
     if std::path::Path::new(local)
@@ -326,7 +326,7 @@ async fn do_download(
             .context("write local file")?;
         done += n as u64;
         let _ = event_tx
-            .send(AppEvent::FileTransferProgress(transfer_id, done, total))
+            .send(CoreEvent::FileTransferProgress(transfer_id, done, total))
             .await;
     }
 
@@ -338,7 +338,7 @@ async fn do_upload(
     sftp: &russh_sftp::client::SftpSession,
     remote: &str,
     transfer_id: TransferId,
-    event_tx: &mpsc::Sender<AppEvent>,
+    event_tx: &mpsc::Sender<CoreEvent>,
 ) -> anyhow::Result<()> {
     // Guard against path traversal in the local source.
     if std::path::Path::new(local)
@@ -375,7 +375,7 @@ async fn do_upload(
             .context("write remote file")?;
         done += n as u64;
         let _ = event_tx
-            .send(AppEvent::FileTransferProgress(transfer_id, done, total))
+            .send(CoreEvent::FileTransferProgress(transfer_id, done, total))
             .await;
     }
 

@@ -187,7 +187,7 @@ impl App {
         let pty_rows = rows.saturating_sub(4);
         let pty_cols = cols.saturating_sub(2);
         let mgr = self.pty_manager.get_or_insert_with(PtyManager::new);
-        match mgr.open(&host, pty_cols, pty_rows, self.event_tx.clone()) {
+        match mgr.open(&host, pty_cols, pty_rows, self.core_tx.clone()) {
             Ok(session_id) => {
                 let Some(parser) = mgr.parser_for(session_id) else {
                     tracing::error!(
@@ -256,7 +256,7 @@ impl App {
         let pty_cols = cols.saturating_sub(2);
         let mgr = self.pty_manager.get_or_insert_with(PtyManager::new);
 
-        match mgr.open(&host, pty_cols, pty_rows, self.event_tx.clone()) {
+        match mgr.open(&host, pty_cols, pty_rows, self.core_tx.clone()) {
             Ok(session_id) => {
                 let Some(parser) = mgr.parser_for(session_id) else {
                     tracing::error!(

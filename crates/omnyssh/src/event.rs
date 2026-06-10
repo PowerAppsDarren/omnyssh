@@ -55,7 +55,9 @@ impl Default for Metrics {
     }
 }
 
-/// Central event type. All event sources funnel into this enum.
+/// Central event type consumed by the main loop. Input events are produced by
+/// the crossterm event thread; everything domain-side arrives wrapped in
+/// [`AppEvent::Core`] via the forwarder task in `App::run`.
 #[derive(Debug)]
 pub enum AppEvent {
     /// Keyboard or mouse input from the user.
@@ -64,6 +66,19 @@ pub enum AppEvent {
     Paste(String),
     /// Render tick (~30 FPS).
     Tick,
+    /// The terminal window was resized to the given dimensions (cols, rows).
+    TerminalResized(u16, u16),
+    /// Mouse-wheel scroll in the terminal pane: positive = up, negative = down.
+    TermScroll(i16),
+    /// A domain event produced by the SSH engine or a background task.
+    Core(CoreEvent),
+}
+
+/// Domain events produced by the SSH engine, config loaders, and the update
+/// checker. Background tasks send these over a dedicated channel; the TUI
+/// wraps them into [`AppEvent::Core`].
+#[derive(Debug)]
+pub enum CoreEvent {
     /// SSH metrics received from a background task.
     MetricsUpdate(HostId, Metrics),
     /// Connection status changed for a host (reported by metrics poller).
@@ -121,10 +136,6 @@ pub enum AppEvent {
     PtyOutput(SessionId),
     /// The PTY child process exited (reader thread reached EOF or I/O error).
     PtyExited(SessionId),
-    /// The terminal window was resized to the given dimensions (cols, rows).
-    TerminalResized(u16, u16),
-    /// Mouse-wheel scroll in the terminal pane: positive = up, negative = down.
-    TermScroll(i16),
 
     // -----------------------------------------------------------------------
     // Smart Server Context — Discovery events

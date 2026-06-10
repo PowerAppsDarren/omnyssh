@@ -8,7 +8,7 @@
 //! - One `HostPoller` task per host — loops indefinitely until aborted.
 //! - Implements exponential backoff on connection failures.
 //! - One SSH connection per host, reused across polls.
-//! - All data sent to the main event loop via `mpsc::Sender<AppEvent>`.
+//! - All data sent to the main event loop via `mpsc::Sender<CoreEvent>`.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::event::{AppEvent, Metrics, ProcessInfo};
+use crate::event::{CoreEvent, Metrics, ProcessInfo};
 use crate::ssh::client::{ConnectionStatus, Host};
 use crate::ssh::metrics::{
     parse_cpu_proc_stat, parse_cpu_top, parse_cpu_top_macos, parse_disk_df, parse_loadavg,
@@ -65,7 +65,7 @@ pub struct PollManager {
 
 impl PollManager {
     /// Spawn one poller task per host.
-    pub fn start(hosts: Vec<Host>, tx: mpsc::Sender<AppEvent>, poll_interval: Duration) -> Self {
+    pub fn start(hosts: Vec<Host>, tx: mpsc::Sender<CoreEvent>, poll_interval: Duration) -> Self {
         let mut task_handles = Vec::with_capacity(hosts.len());
         let mut refresh_txs = HashMap::with_capacity(hosts.len());
 
@@ -110,7 +110,7 @@ impl PollManager {
 
 async fn run_host_poller(
     host: Host,
-    tx: mpsc::Sender<AppEvent>,
+    tx: mpsc::Sender<CoreEvent>,
     poll_interval: Duration,
     mut refresh_rx: mpsc::Receiver<()>,
 ) {
@@ -163,7 +163,7 @@ async fn run_host_poller(
                         Err(e) => {
                             tracing::warn!(host = %host_name, error = %e, "quick scan failed");
                             let _ = tx_clone
-                                .send(AppEvent::DiscoveryFailed(host_name, e.to_string()))
+                                .send(CoreEvent::DiscoveryFailed(host_name, e.to_string()))
                                 .await;
                         }
                     }
@@ -181,7 +181,7 @@ async fn run_host_poller(
         match collect_metrics(sess, &host.name).await {
             Ok(metrics) => {
                 if tx
-                    .send(AppEvent::MetricsUpdate(host.name.clone(), metrics))
+                    .send(CoreEvent::MetricsUpdate(host.name.clone(), metrics))
                     .await
                     .is_err()
                 {
@@ -212,9 +212,9 @@ async fn wait_or_refresh(delay: Duration, refresh_rx: &mut mpsc::Receiver<()>) {
     }
 }
 
-async fn send_status(tx: &mpsc::Sender<AppEvent>, name: &str, status: ConnectionStatus) {
+async fn send_status(tx: &mpsc::Sender<CoreEvent>, name: &str, status: ConnectionStatus) {
     let _ = tx
-        .send(AppEvent::HostStatusChanged(name.to_string(), status))
+        .send(CoreEvent::HostStatusChanged(name.to_string(), status))
         .await;
 }
 

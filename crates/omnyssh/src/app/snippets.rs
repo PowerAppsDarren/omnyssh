@@ -347,13 +347,13 @@ impl App {
 
         // Spawn one task per host.
         for host in hosts {
-            let tx = self.event_tx.clone();
+            let tx = self.core_tx.clone();
             let cmd = command.clone();
             let sname = snippet.name.clone();
             tokio::spawn(async move {
                 let result = run_command_on_host(&host, &cmd).await;
                 let _ = tx
-                    .send(AppEvent::SnippetResult {
+                    .send(CoreEvent::SnippetResult {
                         host_name: host.name.clone(),
                         snippet_name: sname,
                         output: result,
@@ -423,12 +423,12 @@ impl App {
             scroll: 0,
         });
 
-        let tx = self.event_tx.clone();
+        let tx = self.core_tx.clone();
         let cmd = command.clone();
         tokio::spawn(async move {
             let result = run_command_on_host(&host, &cmd).await;
             let _ = tx
-                .send(AppEvent::SnippetResult {
+                .send(CoreEvent::SnippetResult {
                     host_name: host.name.clone(),
                     snippet_name: "(quick-execute)".to_string(),
                     output: result,
@@ -500,13 +500,13 @@ impl App {
             scroll: 0,
         });
 
-        let tx = self.event_tx.clone();
+        let tx = self.core_tx.clone();
         let cmd = command.to_string();
         let sname = format!("Quick View: {}", service_name);
         tokio::spawn(async move {
             let result = run_command_on_host(&host, &cmd).await;
             let _ = tx
-                .send(AppEvent::SnippetResult {
+                .send(CoreEvent::SnippetResult {
                     host_name: host.name.clone(),
                     snippet_name: sname,
                     output: result,

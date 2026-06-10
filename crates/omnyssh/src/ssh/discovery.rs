@@ -7,12 +7,12 @@
 //! - Quick Scan runs once per connection, discovers which services exist
 //! - Deep Probe runs periodically to collect detailed metrics
 //! - All operations are async and use the existing SSH session
-//! - Results are sent via AppEvent to the main loop
+//! - Results are sent via CoreEvent to the main loop
 
 use anyhow::Result;
 use tokio::sync::mpsc;
 
-use crate::event::{AppEvent, DetectedService};
+use crate::event::{CoreEvent, DetectedService};
 use crate::ssh::probe::{generate_quick_scan_script, ProbeOutput};
 use crate::ssh::services::ServiceRegistry;
 use crate::ssh::session::SshSession;
@@ -33,7 +33,7 @@ use crate::ssh::session::SshSession;
 pub async fn quick_scan(
     session: &SshSession,
     host_id: String,
-    tx: mpsc::Sender<AppEvent>,
+    tx: mpsc::Sender<CoreEvent>,
 ) -> Result<()> {
     tracing::debug!(host = %host_id, "starting quick scan");
 
@@ -82,13 +82,13 @@ pub async fn quick_scan(
             ..Metrics::default()
         };
 
-        tx.send(AppEvent::MetricsUpdate(host_id.clone(), metrics))
+        tx.send(CoreEvent::MetricsUpdate(host_id.clone(), metrics))
             .await
             .ok(); // Don't fail discovery if we can't send OS info
     }
 
     // Send event to main loop
-    tx.send(AppEvent::DiscoveryQuickScanDone(host_id, services))
+    tx.send(CoreEvent::DiscoveryQuickScanDone(host_id, services))
         .await
         .map_err(|_| anyhow::anyhow!("event channel closed"))?;
 

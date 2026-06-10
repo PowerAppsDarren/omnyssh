@@ -102,12 +102,12 @@ impl App {
                 if let Some(popup) = &mut self.view.update_popup {
                     popup.phase = UpdatePopupPhase::Installing;
                 }
-                let tx = self.event_tx.clone();
+                let tx = self.core_tx.clone();
                 tokio::spawn(async move {
                     let result = crate::update::perform_update(&info)
                         .await
                         .map_err(|e| e.to_string());
-                    let _ = tx.send(AppEvent::UpdateInstalled(result)).await;
+                    let _ = tx.send(CoreEvent::UpdateInstalled(result)).await;
                 });
             }
             // No self-update available — just dismiss; check again next launch.

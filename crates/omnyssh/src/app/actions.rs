@@ -46,11 +46,11 @@ impl App {
             }
 
             AppAction::ReloadHosts => {
-                let tx = self.event_tx.clone();
+                let tx = self.core_tx.clone();
                 tokio::spawn(async move {
                     match config::load_all_hosts() {
                         Ok(hosts) => {
-                            let _ = tx.send(AppEvent::HostsLoaded(hosts)).await;
+                            let _ = tx.send(CoreEvent::HostsLoaded(hosts)).await;
                         }
                         Err(e) => tracing::warn!("Reload failed: {}", e),
                     }
@@ -159,7 +159,7 @@ impl App {
                     drop(state);
 
                     // Spawn background key setup task.
-                    let tx = self.event_tx.clone();
+                    let tx = self.core_tx.clone();
                     let host_clone = host.clone();
                     tokio::spawn(async move {
                         use crate::ssh::key_setup::{setup_key_for_host, KeySetupStep, KeyType};
@@ -173,7 +173,7 @@ impl App {
                         tokio::spawn(async move {
                             while let Some(step) = progress_rx.recv().await {
                                 let _ = event_tx
-                                    .send(AppEvent::KeySetupProgress(host_name.clone(), step))
+                                    .send(CoreEvent::KeySetupProgress(host_name.clone(), step))
                                     .await;
                             }
                         });
@@ -183,7 +183,7 @@ impl App {
                             Ok(s) => s,
                             Err(e) => {
                                 let _ = tx
-                                    .send(AppEvent::KeySetupFailed(
+                                    .send(CoreEvent::KeySetupFailed(
                                         host_clone.name.clone(),
                                         format!("Connection failed: {}", e),
                                     ))
@@ -205,7 +205,7 @@ impl App {
                                 match result.state {
                                     KeySetupState::Success | KeySetupState::PartialSuccess => {
                                         let _ = tx
-                                            .send(AppEvent::KeySetupComplete(
+                                            .send(CoreEvent::KeySetupComplete(
                                                 host_clone.name.clone(),
                                                 result.key_path,
                                             ))
@@ -216,7 +216,7 @@ impl App {
                                             .error_message
                                             .unwrap_or_else(|| "Rolled back.".to_string());
                                         let _ = tx
-                                            .send(AppEvent::KeySetupRollback(
+                                            .send(CoreEvent::KeySetupRollback(
                                                 host_clone.name.clone(),
                                                 msg,
                                             ))
@@ -227,7 +227,7 @@ impl App {
                                             .error_message
                                             .unwrap_or_else(|| "Unknown failure.".to_string());
                                         let _ = tx
-                                            .send(AppEvent::KeySetupFailed(
+                                            .send(CoreEvent::KeySetupFailed(
                                                 host_clone.name.clone(),
                                                 msg,
                                             ))
@@ -237,7 +237,7 @@ impl App {
                             }
                             Err(e) => {
                                 let _ = tx
-                                    .send(AppEvent::KeySetupFailed(
+                                    .send(CoreEvent::KeySetupFailed(
                                         host_clone.name.clone(),
                                         format!("{:#}", e),
                                     ))

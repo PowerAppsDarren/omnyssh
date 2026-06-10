@@ -410,7 +410,7 @@ impl App {
                             }
                             self.poll_manager = Some(PollManager::start(
                                 state.hosts.clone(),
-                                self.event_tx.clone(),
+                                self.core_tx.clone(),
                                 Duration::from_secs(30),
                             ));
                         }
