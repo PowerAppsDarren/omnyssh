@@ -4,7 +4,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
-use crate::ssh::pty as ssh_pty;
+use crate::term_input;
 use crate::ui;
 
 impl App {
@@ -326,7 +326,7 @@ impl App {
         }
 
         // Forward everything else as raw bytes to the PTY.
-        let bytes = ssh_pty::key_to_bytes(key);
+        let bytes = term_input::key_to_bytes(key);
         if bytes.is_empty() {
             None
         } else {

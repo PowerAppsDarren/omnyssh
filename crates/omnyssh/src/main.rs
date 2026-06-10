@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod event;
 mod ssh;
+mod term_input;
 mod ui;
 mod update;
 mod utils;
