@@ -147,8 +147,10 @@ cargo build --release
 
 ### ❄️ Nix (Flakes)
 
-A `flake.nix` is provided for [Nix](https://nixos.org/) users. Requires flakes
-enabled (`experimental-features = nix-command flakes` in `~/.config/nix/nix.conf`).
+A `flake.nix` is provided for [Nix](https://nixos.org/) users who want a
+reproducible build, app entry point, and development shell. Enable flakes first
+if your Nix installation does not already do so
+(`experimental-features = nix-command flakes` in `~/.config/nix/nix.conf`).
 
 **Run without installing:**
 
@@ -180,10 +182,21 @@ nix develop            # drops you into a shell with rustc, cargo, clippy,
 cargo build
 ```
 
-The flake exposes `packages.default` (the `omny` binary plus man page),
-`apps.default` (for `nix run`), and `devShells.default`. It evaluates
-cleanly across `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and
-`aarch64-darwin`.
+**Validate the flake:**
+
+```bash
+nix flake check        # builds, formats, lints, and tests the workspace
+```
+
+The flake exposes:
+
+- `packages.default` and `packages.omnyssh` for the `omny` binary plus man page
+- `apps.default` for `nix run`
+- `checks` for the package build, rustfmt, clippy, and workspace tests
+- `devShells.default` for day-to-day Rust development
+
+It evaluates cleanly across `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`,
+and `aarch64-darwin`.
 
 ---
 

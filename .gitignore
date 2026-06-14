@@ -2,3 +2,6 @@
 .claude
 demo.tape
 .DS_Store
+
+# Local symlink created by `nix build`.
+/result
