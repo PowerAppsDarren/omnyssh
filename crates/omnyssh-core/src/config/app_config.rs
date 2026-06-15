@@ -97,7 +97,6 @@ impl Default for UiConfig {
 pub struct KeybindingsConfig {
     pub quit: String,
     pub search: String,
-    pub connect: String,
     pub dashboard: String,
     pub file_manager: String,
     pub snippets: String,
@@ -187,7 +186,6 @@ impl Default for KeybindingsConfig {
         Self {
             quit: String::from("q"),
             search: String::from("/"),
-            connect: String::from("Enter"),
             dashboard: String::from("F1"),
             file_manager: String::from("F2"),
             snippets: String::from("F3"),

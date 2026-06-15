@@ -299,7 +299,6 @@ theme = "default"              # default | dracula | nord | gruvbox
 [keybindings]
 quit         = "q"
 search       = "/"
-connect      = "Enter"
 dashboard    = "F1"
 file_manager = "F2"
 snippets     = "F3"
@@ -371,7 +370,9 @@ Set the theme in `config.toml`, or pass `--theme` once — it is written back to
 | `0.3.0` | 3 | Snippets & quick-execute |
 | `0.4.0` | 4 | SFTP file manager |
 | `0.5.0` | 5 | Multi-session tabs & split-view |
-| **`1.0.4`** | **6** | **Polish, themes, configurable keybindings — current** ✅ |
+| `1.0.4` | 6 | Polish, themes, configurable keybindings |
+| `1.0.5` | 6 | Dead-code cleanup, docs.rs build fix |
+| **`1.1.0`** | **6** | **Cargo workspace — frontend-agnostic `omnyssh-core` crate — current** ✅ |
 
 ---
 
