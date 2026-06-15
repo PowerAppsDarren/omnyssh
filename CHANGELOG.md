@@ -9,6 +9,10 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## 1.1.0 — 2026-06-10
 
+### Documentation
+- README "Development Roadmap" now lists the current `1.1.0` release (and `1.0.5`); it previously stopped at `1.0.4`.
+- Removed the dead `connect` keybinding from the `config.toml` example and the `[keybindings]` config struct. Enter-to-connect was always hard-coded, so the field never had any effect.
+
 ### Internal
 - **Repository converted to a cargo workspace; the engine now lives in its own crate**: The SSH engine, host/snippet/app configuration, metrics parsers, domain events, and the self-updater moved into the new `omnyssh-core` library crate (`crates/omnyssh-core`), which has no dependency on terminal-UI or CLI crates. The TUI application keeps the `omnyssh` package name and the `omny` binary (`crates/omnyssh`) and consumes the core as a regular dependency. This prepares the architecture for additional frontends (e.g. a GUI) without duplicating the engine.
   - The event bus is split: background tasks emit `CoreEvent` values; the TUI wraps them into its own `AppEvent` stream alongside input events.
