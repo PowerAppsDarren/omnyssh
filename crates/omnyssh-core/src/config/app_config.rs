@@ -9,7 +9,6 @@ pub struct AppConfig {
     pub general: GeneralConfig,
     pub ui: UiConfig,
     pub keybindings: KeybindingsConfig,
-    pub smart_context: SmartContextConfig,
     pub auto_key_setup: AutoKeySetupConfig,
     pub update: UpdateConfig,
 }
@@ -107,25 +106,6 @@ pub struct KeybindingsConfig {
     /// Key to cycle terminal tabs / split panes.
     /// Default: `"Tab"`.
     pub next_tab: String,
-}
-
-/// Smart Server Context configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SmartContextConfig {
-    /// Enable automatic service discovery and monitoring.
-    pub enabled: bool,
-    /// Seconds between deep probe scans (set to 0 to disable periodic scans).
-    pub scan_interval: u64,
-}
-
-impl Default for SmartContextConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            scan_interval: 300, // 5 minutes
-        }
-    }
 }
 
 /// Auto SSH Key Setup configuration.
