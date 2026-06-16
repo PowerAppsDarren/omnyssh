@@ -20,6 +20,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
   - Keybinding parsing (config strings → key codes) and PTY key-to-bytes translation moved from the engine into the TUI crate; the core PTY API accepts raw bytes only.
   - Removed the unused `nucleo` dependency.
   - No user-facing changes: behavior, appearance, the binary name, and install paths are unchanged.
+- **Removed leftover Alerts/Deep Probe remnants**: Deleted the unused `[smart_context]` config (`SmartContextConfig` was parsed but never read) and reworded stale "Deep Probe" comments left after the subsystem was removed in 1.0.5. No user-facing change — existing config files containing a `[smart_context]` section still load, as the section is ignored.
 
 ---
 
