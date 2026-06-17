@@ -147,6 +147,10 @@ pub fn render_help(frame: &mut Frame, theme: &Theme) {
         Span::styled("        Quick exec", desc_style),
     ]));
     col1_lines.push(Line::from(vec![
+        Span::styled("  K", key_style),
+        Span::styled("        Setup SSH key", desc_style),
+    ]));
+    col1_lines.push(Line::from(vec![
         Span::styled("  hjkl", key_style),
         Span::styled("    Navigate", desc_style),
     ]));
