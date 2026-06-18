@@ -10,6 +10,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 ## 1.1.0 — 2026-06-10
 
 ### Documentation
+- Documented the Auto SSH Key Setup feature (`Shift+K`): added a README Features entry, a Quick Start key reference, and a Help popup shortcut. The feature already existed but was undiscoverable.
 - README "Development Roadmap" now lists the current `1.1.0` release (and `1.0.5`); it previously stopped at `1.0.4`.
 - Removed the dead `connect` keybinding from the `config.toml` example and the `[keybindings]` config struct. Enter-to-connect was always hard-coded, so the field never had any effect.
 

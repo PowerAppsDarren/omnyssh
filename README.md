@@ -48,6 +48,9 @@ Split-panel SFTP browser (local ↔ remote) with progress bars, multi-selection,
 ### ⚡ **Command Snippets**
 Save frequently-used commands and execute them on any server with one keypress. Broadcast a command to multiple hosts simultaneously.
 
+### 🔐 **Auto SSH Key Setup**
+Press `Shift+K` on a password-based host to generate an Ed25519 key, install it in the server's `authorized_keys`, and switch the host to key authentication. After verifying the key works, it can disable password login on the server — with an automatic `sshd_config` backup and rollback if anything fails.
+
 ### 🖥️ **Multi-Session Terminal**
 PTY tabs and split-view for working on several servers at once. Switch between hosts without leaving the app.
 
@@ -236,6 +239,7 @@ and `aarch64-darwin`.
    - `3` — Snippets (saved commands)
    - `4` — Terminal (multi-session)
    - `/` — Fuzzy search
+   - `Shift+K` — Set up SSH key auth on the selected host
    - `?` — Help popup
 
 ---
