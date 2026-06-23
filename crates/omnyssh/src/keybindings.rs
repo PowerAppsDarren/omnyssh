@@ -39,7 +39,7 @@ pub struct ParsedKeybindings {
     pub snippets: KeyCode,
     /// Key that cycles to the next screen / switches FM panels (default: `Tab`).
     pub next_screen: KeyBind,
-    /// Key that cycles terminal tabs / split panes (default: `Tab`).
+    /// Key that cycles terminal tabs / split panes (default: `Ctrl+N`).
     pub next_tab: KeyBind,
 }
 
