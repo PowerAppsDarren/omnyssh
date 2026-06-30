@@ -889,20 +889,14 @@ impl App {
             CoreEvent::FileDirListed { path, entries } => {
                 let rp = &mut self.view.file_manager.remote;
                 rp.cwd = path;
-                rp.entries = entries;
-                rp.cursor = 0;
-                rp.scroll.set(0);
-                rp.marked.clear();
+                rp.apply_listing(entries);
                 self.request_preview_for_active();
             }
 
             CoreEvent::LocalDirListed { path, entries } => {
                 let lp = &mut self.view.file_manager.local;
                 lp.cwd = path;
-                lp.entries = entries;
-                lp.cursor = 0;
-                lp.scroll.set(0);
-                lp.marked.clear();
+                lp.apply_listing(entries);
                 self.request_preview_for_active();
             }
 

@@ -78,7 +78,8 @@ pub struct TerminalView {
     /// Host-picker popup for creating a new tab (Ctrl+T).
     pub host_picker: Option<TermHostPicker>,
     /// When `true`, the next digit key 1–9 jumps directly to that tab.
-    /// Activated by pressing Tab (which also cycles to the next tab).
+    /// Activated by the next-tab key (`Ctrl+N` by default, which also cycles
+    /// to the next tab).
     pub tab_select_mode: bool,
 }
 
