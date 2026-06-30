@@ -189,9 +189,9 @@ fn render_tab_bar(
 
     // "[+]" hint for new tab + copy instruction.
     let hint = if tv.split.is_some() {
-        " Ctrl+T:new  Ctrl+W:close  Ctrl+H:switch-pane  Ctrl+\\ :split-v  Ctrl+]:split-h  │  Opt/Shift+Drag to select"
+        " Ctrl+T:new  Ctrl+W:close  Ctrl+N:next  Ctrl+H:switch-pane  Ctrl+\\ :split-v  Ctrl+]:split-h  │  Opt/Shift+Drag to select"
     } else {
-        " Ctrl+T:new  Ctrl+W:close  Ctrl+\\ :split-v  Ctrl+]:split-h  │  Opt/Shift+Drag to select"
+        " Ctrl+T:new  Ctrl+W:close  Ctrl+N:next  Ctrl+\\ :split-v  Ctrl+]:split-h  │  Opt/Shift+Drag to select"
     };
     spans.push(Span::styled(hint, Style::default().fg(theme.text_muted)));
 

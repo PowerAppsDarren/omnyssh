@@ -104,7 +104,7 @@ pub struct KeybindingsConfig {
     /// Default: `"Tab"`.
     pub next_screen: String,
     /// Key to cycle terminal tabs / split panes.
-    /// Default: `"Tab"`.
+    /// Default: `"Ctrl+N"`.
     pub next_tab: String,
 }
 
@@ -170,7 +170,7 @@ impl Default for KeybindingsConfig {
             file_manager: String::from("F2"),
             snippets: String::from("F3"),
             next_screen: String::from("Tab"),
-            next_tab: String::from("Tab"),
+            next_tab: String::from("Ctrl+N"),
         }
     }
 }
