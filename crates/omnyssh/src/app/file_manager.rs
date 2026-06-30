@@ -112,6 +112,28 @@ impl FilePanelView {
         self.cursor = prev_path
             .and_then(|p| self.entries.iter().position(|e| e.path == p))
             .unwrap_or(0);
+        // Drop marks on entries that are no longer visible so a hidden file
+        // can't be silently included in a later delete/copy.
+        let visible = &self.entries;
+        self.marked.retain(|p| visible.iter().any(|e| &e.path == p));
+    }
+
+    /// Applies a fresh directory listing: stores `raw`, derives the visible
+    /// `entries` via the hidden-files filter, then positions the cursor on
+    /// `pending_focus_path` (the entry just left) if it is still visible.
+    /// Scroll and marks are reset. The cursor is set *after* filtering so the
+    /// filter cannot reset it. Both the core-event handlers and the tests go
+    /// through this method, so they exercise the same code path.
+    pub fn apply_listing(&mut self, raw: Vec<FileEntry>) {
+        self.raw_entries = raw;
+        self.apply_hidden_filter();
+        self.cursor = self
+            .pending_focus_path
+            .take()
+            .and_then(|target| self.entries.iter().position(|e| e.path == target))
+            .unwrap_or(0);
+        self.scroll.set(0);
+        self.marked.clear();
     }
 }
 
@@ -708,19 +730,6 @@ mod tests {
 
     // --- pending_focus_path: cursor auto-positioning on parent navigation -
 
-    /// Replicates the logic the `CoreEvent::FileDirListed` /
-    /// `LocalDirListed` handlers apply when a new listing arrives: take the
-    /// pending focus path, find the entry whose `path` matches it, and set
-    /// the cursor to that entry's index (falling back to 0 if no match).
-    fn apply_listing(panel: &mut FilePanelView, entries: Vec<FileEntry>) {
-        panel.entries = entries;
-        panel.cursor = panel
-            .pending_focus_path
-            .take()
-            .and_then(|target| panel.entries.iter().position(|e| e.path == target))
-            .unwrap_or(0);
-    }
-
     #[test]
     fn pending_focus_positions_cursor_on_matching_entry() {
         let entries = vec![
@@ -732,7 +741,7 @@ mod tests {
         let mut p = panel(entries.clone());
         // Simulate "we were in /projects and just went up".
         p.pending_focus_path = Some("/projects".to_string());
-        apply_listing(&mut p, entries);
+        p.apply_listing(entries);
         assert_eq!(p.cursor, 2, "cursor should land on the 'projects' entry");
         assert!(p.pending_focus_path.is_none(), "field must be consumed");
     }
@@ -745,19 +754,31 @@ mod tests {
         let entries = vec![entry("..", "/"), entry("alpha", "/alpha")];
         let mut p = panel(entries.clone());
         p.pending_focus_path = Some("/vanished".to_string());
-        apply_listing(&mut p, entries);
+        p.apply_listing(entries);
         assert_eq!(p.cursor, 0);
         assert!(p.pending_focus_path.is_none());
+    }
+
+    #[test]
+    fn pending_focus_survives_hidden_filter() {
+        // Regression: the listing must place the cursor on the focus target
+        // *after* the hidden-files filter runs. With show_hidden = false the
+        // dotfile is filtered out, but the visible target must still be found.
+        let mut p = FilePanelView::default();
+        p.pending_focus_path = Some("/home/projects".to_string());
+        p.apply_listing(vec![
+            entry("..", "/home"),
+            entry(".cache", "/home/.cache"),
+            entry("projects", "/home/projects"),
+        ]);
+        assert_eq!(p.entries[p.cursor].name, "projects");
     }
 
     #[test]
     fn no_pending_focus_starts_cursor_at_zero() {
         // A first-time listing (app start, host connect) has no focus path.
         let mut p = panel(vec![]);
-        apply_listing(
-            &mut p,
-            vec![entry("..", "/"), entry("alpha", "/alpha")],
-        );
+        p.apply_listing(vec![entry("..", "/"), entry("alpha", "/alpha")]);
         assert_eq!(p.cursor, 0);
     }
 
@@ -898,5 +919,26 @@ mod tests {
         p.show_hidden = true;
         p.apply_hidden_filter();
         assert!(p.entries.iter().any(|e| e.name == ".."));
+    }
+
+    #[test]
+    fn hiding_drops_marks_on_now_hidden_entries() {
+        let mut p = FilePanelView {
+            show_hidden: true,
+            ..FilePanelView::default()
+        };
+        p.apply_listing(vec![
+            entry("..", "/"),
+            entry(".secret", "/.secret"),
+            entry("visible", "/visible"),
+        ]);
+        p.marked.insert("/.secret".to_string());
+        p.marked.insert("/visible".to_string());
+        // Hiding dotfiles must drop the mark on the now-invisible .secret so
+        // it can't be deleted/copied blind; the visible mark stays.
+        p.show_hidden = false;
+        p.apply_hidden_filter();
+        assert!(!p.marked.contains("/.secret"));
+        assert!(p.marked.contains("/visible"));
     }
 }
