@@ -215,6 +215,10 @@ pub fn render_help(frame: &mut Frame, theme: &Theme) {
         Span::styled("  H", key_style),
         Span::styled("        Connect", desc_style),
     ]));
+    col2_lines.push(Line::from(vec![
+        Span::styled("  .", key_style),
+        Span::styled("        Toggle hidden", desc_style),
+    ]));
     col2_lines.push(Line::from(""));
 
     col2_lines.push(Line::from(Span::styled(" SNIPPETS", section_style)));
@@ -257,8 +261,8 @@ pub fn render_help(frame: &mut Frame, theme: &Theme) {
         Span::styled("   Close tab", desc_style),
     ]));
     col3_lines.push(Line::from(vec![
-        Span::styled("  Tab", key_style),
-        Span::styled("      Next tab", desc_style),
+        Span::styled("  Ctrl+N", key_style),
+        Span::styled("   Next tab", desc_style),
     ]));
     col3_lines.push(Line::from(vec![
         Span::styled("  Ctrl+\\", key_style),
