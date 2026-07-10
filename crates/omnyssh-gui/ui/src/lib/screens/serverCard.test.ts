@@ -60,6 +60,14 @@ describe('deriveCard — health state', () => {
     expect(card.offline).toBe(false);
   });
 
+  it('a failed host with only os-info renders (not offline), mirroring the TUI', () => {
+    // Discovery emits an os-info-only sample; a down host still shows what it knows.
+    const card = deriveCard(host(), { kind: 'failed', message: 'refused' }, metrics({ osInfo: 'Ubuntu 22.04' }), undefined);
+    expect(card.offline).toBe(false);
+    expect(card.osInfo).toBe('Ubuntu 22.04');
+    expect(card.overall).toBe('off');
+  });
+
   it('a connecting host is neutral and not offline', () => {
     const card = deriveCard(host(), { kind: 'connecting' }, undefined, undefined);
     expect(card.overall).toBe('unknown');
@@ -96,20 +104,35 @@ describe('deriveCard — health state', () => {
 });
 
 describe('deriveCard — detected services', () => {
-  it('names each kind and summarises docker container counts', () => {
+  it('names each kind and summarises the docker quick-scan container counts', () => {
+    // The quick-scan emits containers_total + containers_running for docker, and no
+    // metrics for the other kinds (they render name-only).
     const svc: HostServices = {
       kind: 'detected',
       services: [
-        { kind: 'docker', metrics: [{ name: 'containers_running', value: 4 }, { name: 'containers_stopped', value: 1 }] },
-        { kind: 'postgresql', metrics: [{ name: 'replication_lag_seconds', value: 2 }] }
+        { kind: 'docker', metrics: [{ name: 'containers_total', value: 7 }, { name: 'containers_running', value: 6 }] },
+        { kind: 'postgresql', metrics: [] }
       ]
     };
     const card = deriveCard(host(), CONNECTED, undefined, svc);
     expect(card.detectedServices).toEqual([
-      { kind: 'docker', name: 'Docker', detail: '4 running, 1 stopped' },
-      { kind: 'postgresql', name: 'PostgreSQL', detail: 'lag 2s' }
+      { kind: 'docker', name: 'Docker', detail: '6/7 running' },
+      { kind: 'postgresql', name: 'PostgreSQL', detail: '' }
     ]);
     expect(card.servicesError).toBeUndefined();
+  });
+
+  it('reads a docker host with containers present but none running', () => {
+    const svc: HostServices = {
+      kind: 'detected',
+      services: [{ kind: 'docker', metrics: [{ name: 'containers_total', value: 3 }, { name: 'containers_running', value: 0 }] }]
+    };
+    expect(deriveCard(host(), CONNECTED, undefined, svc).detectedServices[0].detail).toBe('0/3 running');
+  });
+
+  it('shows no docker detail until its quick-scan metrics arrive', () => {
+    const svc: HostServices = { kind: 'detected', services: [{ kind: 'docker', metrics: [] }] };
+    expect(deriveCard(host(), CONNECTED, undefined, svc).detectedServices[0].detail).toBe('');
   });
 
   it('surfaces a discovery failure and shows no service chips', () => {

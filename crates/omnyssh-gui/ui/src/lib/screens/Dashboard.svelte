@@ -103,7 +103,7 @@
           <!-- Detected services -->
           {#if card.detectedServices.length}
             <div class="flex flex-wrap gap-1.5">
-              {#each card.detectedServices as service, s (s)}
+              {#each card.detectedServices as service (service.kind)}
                 <Chip>{service.detail ? `${service.name} · ${service.detail}` : service.name}</Chip>
               {/each}
             </div>

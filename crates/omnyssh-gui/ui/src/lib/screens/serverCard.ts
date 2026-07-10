@@ -73,38 +73,16 @@ function metricValue(service: ServiceDto, name: string): number | undefined {
   return service.metrics.find((m) => m.name === name)?.value;
 }
 
-// A compact, human summary of a service's quick-scan metrics, mirroring the TUI's
-// per-kind presentation. Empty when there is nothing meaningful to show yet.
+// The discovery quick-scan only carries Docker container counts (see the core's
+// `docker::quick_metrics`); the other kinds arrive with no quick metrics, so their
+// chip shows just the service name. Empty detail => name only (tech-gui.md §4.1).
 function serviceDetail(service: ServiceDto): string {
-  switch (service.kind) {
-    case 'docker': {
-      const parts: string[] = [];
-      const running = metricValue(service, 'containers_running') ?? 0;
-      const stopped = metricValue(service, 'containers_stopped') ?? 0;
-      const restarting = metricValue(service, 'containers_restarting') ?? 0;
-      if (running) parts.push(`${running} running`);
-      if (stopped) parts.push(`${stopped} stopped`);
-      if (restarting) parts.push(`${restarting} restarting`);
-      if (parts.length) return parts.join(', ');
-      return service.metrics.length ? 'no containers' : '';
-    }
-    case 'nginx': {
-      const errors = metricValue(service, 'recent_502_504_errors') ?? 0;
-      return errors ? `${errors} errors/5m` : 'ok';
-    }
-    case 'postgresql': {
-      const lag = metricValue(service, 'replication_lag_seconds') ?? 0;
-      return lag ? `lag ${lag}s` : 'ok';
-    }
-    case 'redis': {
-      const mem = metricValue(service, 'memory_used_mb') ?? 0;
-      return mem ? `${mem} MB` : 'ok';
-    }
-    case 'nodejs': {
-      const procs = metricValue(service, 'node_processes') ?? 0;
-      return procs ? `${procs} proc${procs === 1 ? '' : 's'}` : '';
-    }
-  }
+  if (service.kind !== 'docker') return '';
+  const total = metricValue(service, 'containers_total');
+  if (total == null) return '';
+  if (total === 0) return 'no containers';
+  const running = metricValue(service, 'containers_running') ?? 0;
+  return `${running}/${total} running`;
 }
 
 /** Build a card's view state from a host and its live status/metrics/services. */
@@ -119,12 +97,13 @@ export function deriveCard(
     metricRow('RAM', m?.ramPercent),
     metricRow('Disk', m?.diskPercent)
   ];
-  const hasLiveMetric = metricRows.some((row) => row.percent != null);
   const kind = status?.kind;
   const connected = kind === 'connected';
   const overall: Status = connected ? worstSeverity(metricRows) : kind === 'failed' ? 'off' : 'unknown';
-  // Failed / unprobed with nothing to show reads as offline; connecting stays live.
-  const offline = (kind === undefined || kind === 'unknown' || kind === 'failed') && !hasLiveMetric;
+  // Mirrors the TUI's `is_offline` (crates/omnyssh/src/ui/card.rs): down/unprobed with
+  // no metrics sample at all reads as offline; any sample — even os-info-only from
+  // discovery — still renders. Connecting stays live.
+  const offline = (kind === undefined || kind === 'unknown' || kind === 'failed') && m === undefined;
 
   const detectedServices: CardService[] =
     svc?.kind === 'detected'
