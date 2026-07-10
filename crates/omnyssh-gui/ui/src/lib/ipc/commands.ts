@@ -9,3 +9,9 @@ export async function listHosts(): Promise<HostDto[]> {
   if (res.status === 'error') throw new Error(res.error.message);
   return res.data;
 }
+
+/** Reload hosts from disk and (re)start the pollers; broadcasts `hosts-loaded`. */
+export async function reloadHosts(): Promise<void> {
+  const res = await commands.reloadHosts();
+  if (res.status === 'error') throw new Error(res.error.message);
+}

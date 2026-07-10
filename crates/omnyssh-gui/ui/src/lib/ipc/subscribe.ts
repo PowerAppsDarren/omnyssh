@@ -4,12 +4,19 @@
 
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { events } from '$lib/bindings';
-import { applyError, applyHostsLoaded } from './router';
+import {
+  applyError,
+  applyHostStatusChanged,
+  applyHostsLoaded,
+  applyMetricsUpdated
+} from './router';
 
 export async function startEventBridge(): Promise<() => void> {
   const offs: UnlistenFn[] = [];
   try {
     offs.push(await events.hostsLoaded.listen((e) => applyHostsLoaded(e.payload)));
+    offs.push(await events.hostStatusChanged.listen((e) => applyHostStatusChanged(e.payload)));
+    offs.push(await events.metricsUpdated.listen((e) => applyMetricsUpdated(e.payload)));
     offs.push(await events.error.listen((e) => applyError(e.payload.message)));
   } catch (err) {
     offs.forEach((off) => off());

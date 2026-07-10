@@ -9,7 +9,7 @@ mod error;
 mod events;
 mod state;
 
-use commands::hosts::list_hosts;
+use commands::hosts::{list_hosts, reload_hosts};
 use omnyssh_core::event::CoreEvent;
 use state::GuiState;
 use tauri::Manager;
@@ -22,16 +22,25 @@ const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/src/lib/bin
 /// wiring) and the drift test so they can never disagree.
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
-        .commands(collect_commands![list_hosts])
-        .events(collect_events![events::HostsLoaded, events::Error])
+        .commands(collect_commands![list_hosts, reload_hosts])
+        .events(collect_events![
+            events::HostsLoaded,
+            events::HostStatusChanged,
+            events::MetricsUpdated,
+            events::Error
+        ])
 }
 
 /// Writes `bindings.ts` for the current IPC surface. Dev/test only — release
 /// builds ship no exporter and never regenerate.
 #[cfg(debug_assertions)]
 fn export_bindings(path: impl AsRef<std::path::Path>) {
+    // Emit `number` for u64 fields (`ageSeconds`, later the session/transfer ids);
+    // their values stay well within JS's safe-integer range.
+    let ts = specta_typescript::Typescript::default()
+        .bigint(specta_typescript::BigIntExportBehavior::Number);
     specta_builder()
-        .export(specta_typescript::Typescript::default(), path)
+        .export(ts, path)
         .expect("failed to export TypeScript bindings");
 }
 
@@ -54,7 +63,20 @@ fn main() {
                 app.handle().clone(),
                 engine_rx,
             ));
-            app.manage(GuiState::new(engine_tx));
+
+            // Pre-load the shared host config so the first `list_hosts` paints
+            // immediately. A load failure here is non-fatal — the frontend's
+            // `reload_hosts` re-attempts and surfaces the error (tech-gui.md §3.4).
+            let gui_state = GuiState::new(engine_tx);
+            if let Ok(hosts) = omnyssh_core::config::load_all_hosts() {
+                gui_state.set_hosts(hosts);
+            }
+            app.manage(gui_state);
+
+            // The pollers are started by the frontend via `reload_hosts` once its
+            // event bridge is listening, so no HostStatusChanged is emitted before
+            // the webview can receive it (starting them here would race listener
+            // registration and strand a host as offline).
             Ok(())
         })
         .run(tauri::generate_context!())
