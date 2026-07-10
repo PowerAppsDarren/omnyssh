@@ -2,8 +2,55 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Stage 0 boot default: dark base so the window never flashes white before the
-   theme-token system (tech-gui.md §5.1) lands in Stage 0.3. */
+/* Semantic design tokens (tech-gui.md §5.1), extracted from voice-brandbook.html.
+   One name set, two value maps: a theme switch swaps `data-theme` and every
+   surface follows. Components reference these tokens via Tailwind utilities
+   (bg-surface, text-muted, …) — never a raw brand hex. Brand is monochrome, so
+   the accent is a contrast inversion (ink on light, paper on dark); the only
+   chromatic tokens are the server-state colours, each tuned to clear AA on both
+   --surface and --bg. */
+:root[data-theme='light'] {
+  --bg: #eaeff5;
+  --surface: #ffffff;
+  --surface-raised: #fcfdfe;
+  --surface-inset: #dde3ec;
+  --text: #212121;
+  --text-muted: #5b6066;
+  --text-faint: #aeb7c2;
+  --border: #dde3ec;
+  --border-strong: #aeb7c2;
+  --accent: #212121;
+  --accent-fg: #ffffff;
+  --focus-ring: rgba(33, 33, 33, 0.4);
+  --glass: rgba(255, 255, 255, 0.8);
+  --overlay: rgba(33, 33, 33, 0.4);
+  --status-ok: #1e824c;
+  --status-warn: #b7791f;
+  --status-crit: #c0392b;
+  --status-off: #6e7681;
+}
+
+:root[data-theme='dark'] {
+  --bg: #171717;
+  --surface: #212121;
+  --surface-raised: #2a2a2d;
+  --surface-inset: #1a1a1a;
+  --text: #ffffff;
+  --text-muted: #aeb7c2;
+  --text-faint: rgba(255, 255, 255, 0.45);
+  --border: rgba(255, 255, 255, 0.15);
+  --border-strong: rgba(255, 255, 255, 0.25);
+  --accent: #ffffff;
+  --accent-fg: #212121;
+  --focus-ring: rgba(255, 255, 255, 0.4);
+  --glass: rgba(33, 33, 33, 0.7);
+  --overlay: rgba(0, 0, 0, 0.55);
+  --status-ok: #5fd08a;
+  --status-warn: #e8c15a;
+  --status-crit: #f07777;
+  --status-off: #7c8595;
+}
+
 html,
 body {
   height: 100%;
@@ -11,7 +58,14 @@ body {
 
 body {
   margin: 0;
-  background: #171717;
-  color: #ffffff;
+  background: var(--bg);
+  color: var(--text);
   font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-fg);
 }
