@@ -10,6 +10,7 @@ mod events;
 mod state;
 
 use commands::hosts::{list_hosts, reload_hosts};
+use commands::snippets::{delete_snippet, execute_snippet, list_snippets, save_snippet};
 use omnyssh_core::event::CoreEvent;
 use state::GuiState;
 use tauri::Manager;
@@ -22,13 +23,21 @@ const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/src/lib/bin
 /// wiring) and the drift test so they can never disagree.
 fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
-        .commands(collect_commands![list_hosts, reload_hosts])
+        .commands(collect_commands![
+            list_hosts,
+            reload_hosts,
+            list_snippets,
+            save_snippet,
+            delete_snippet,
+            execute_snippet
+        ])
         .events(collect_events![
             events::HostsLoaded,
             events::HostStatusChanged,
             events::MetricsUpdated,
             events::ServicesDetected,
             events::ServicesFailed,
+            events::SnippetResult,
             events::Error
         ])
 }

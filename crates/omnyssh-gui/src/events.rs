@@ -44,6 +44,20 @@ pub struct ServicesFailed {
     pub message: String,
 }
 
+/// Result of running a snippet on one host (tech-gui.md §4.3). Emitted directly by
+/// `execute_snippet` per host (one-shot `SshSession::run_command`), not via the
+/// shared bridge — the same "the command owns the result" pattern the SFTP
+/// per-session forwarder uses (§3.4). The core's `Result<String, String>` is
+/// flattened to `ok` + `output` (stdout on success, the error message on failure).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct SnippetResult {
+    pub host_name: String,
+    pub snippet_name: String,
+    pub ok: bool,
+    pub output: String,
+}
+
 /// A background error surfaced to the user.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
 pub struct Error {
