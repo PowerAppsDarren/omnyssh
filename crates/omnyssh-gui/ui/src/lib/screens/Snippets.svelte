@@ -4,10 +4,11 @@
   // more hosts with per-host results. CRUD orchestration refreshes the store from
   // disk after every mutation so it never drifts. Colour is reserved for state.
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import type { SnippetDto } from '$lib/bindings';
   import { Surface, Chip, Icon, Button } from '$lib/theme';
   import { listSnippets, saveSnippet, deleteSnippet, executeSnippet } from '$lib/ipc/commands';
-  import { snippets, beginRun } from '$lib/stores/snippets';
+  import { snippets, beginRun, failPendingRun } from '$lib/stores/snippets';
   import { lastError } from '$lib/stores/notifications';
   import { filterSnippets, emptyForm, formFromSnippet } from './snippetForm';
   import SnippetEditor from './SnippetEditor.svelte';
@@ -37,12 +38,18 @@
 
   onMount(refresh);
 
-  // Persist add/edit, then re-read from disk. A rename (name changed on edit) drops
-  // the old entry first, since the contract keys snippets on `name`. Throws propagate
-  // to the editor so a failed save surfaces inline and keeps the form open.
+  // Persist add/edit, then re-read from disk. Throws propagate to the editor so a
+  // failed save surfaces inline and keeps the form open.
   async function submit(snippet: SnippetDto, previousName: string | undefined): Promise<void> {
-    if (previousName && previousName !== snippet.name) await deleteSnippet(previousName);
+    // `name` is the snippet's key on disk (§4.2). Refuse to clobber a *different*
+    // snippet that already owns this name; an in-place edit (name unchanged) is fine.
+    if (get(snippets).some((s) => s.name === snippet.name && s.name !== previousName)) {
+      throw new Error(`A snippet named "${snippet.name}" already exists`);
+    }
+    // Save the new entry before dropping the old name on a rename: a mid-way failure
+    // then leaves a recoverable duplicate, never a lost snippet.
     await saveSnippet(snippet);
+    if (previousName && previousName !== snippet.name) await deleteSnippet(previousName);
     snippets.set(await listSnippets());
     dialog = null;
   }
@@ -67,7 +74,12 @@
     try {
       await executeSnippet(snippet.name, hostNames, params);
     } catch (e) {
-      lastError.set(message(e));
+      // The command itself failed (snippet gone, no resolvable hosts): no per-host
+      // results will arrive, so fail the still-pending entries rather than leave the
+      // panel stuck on "Running…".
+      const msg = message(e);
+      lastError.set(msg);
+      failPendingRun(msg);
     }
   }
 
@@ -109,8 +121,10 @@
       {/if}
     </div>
   {:else}
+    <!-- Keyed by position: the core never dedups snippet names, so a name key could
+         throw each_key_duplicate and blank the whole screen. -->
     <ul class="min-h-0 flex-1 space-y-2 overflow-y-auto">
-      {#each filtered as snippet (snippet.name)}
+      {#each filtered as snippet, i (i)}
         <li>
           <Surface class="flex items-center gap-4 p-4">
             <div class="min-w-0 flex-1">

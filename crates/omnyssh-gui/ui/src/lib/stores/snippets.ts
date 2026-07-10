@@ -38,10 +38,27 @@ export function clearRun(): void {
   snippetRun.set(null);
 }
 
+/** Mark every still-pending entry of the active run as failed. Used when the execute
+ *  command itself rejects, so no per-host results will arrive and the panel would
+ *  otherwise stay stuck on "Running…". */
+export function failPendingRun(errorMessage: string): void {
+  snippetRun.update((run) =>
+    run
+      ? {
+          ...run,
+          entries: run.entries.map((e) =>
+            e.pending ? { hostName: e.hostName, pending: false, ok: false, output: errorMessage } : e
+          )
+        }
+      : run
+  );
+}
+
 /** Fold a `snippet-result` into the active run, filling the matching host's entry.
- *  A result for a different snippet (name mismatch) or an unknown host is ignored,
- *  so a late event from a prior execution can't corrupt the current panel. Pure, so
- *  the router and the tests share one definition. */
+ *  A result for a different snippet (name mismatch) or a host not in the run is
+ *  ignored. A late result from a prior run of the *same* snippet+host can still land
+ *  (the event carries no run id, §4.3) — harmless, as it re-reports the same command
+ *  on the same host. Pure, so the router and the tests share one definition. */
 export function reduceRunResult(run: SnippetRun | null, payload: SnippetResult): SnippetRun | null {
   if (!run || run.snippetName !== payload.snippetName) return run;
   return {

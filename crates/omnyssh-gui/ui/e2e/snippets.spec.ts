@@ -15,7 +15,7 @@ const SNIPPETS = [
   { name: 'restart-web', command: 'systemctl restart {{service}}', scope: 'global', params: ['service'] }
 ];
 
-async function boot(page: Page): Promise<void> {
+async function boot(page: Page, snippetsFixture = SNIPPETS): Promise<void> {
   await page.addInitScript(
     ({ hosts, snippets }) => {
       let cbid = 0;
@@ -74,7 +74,7 @@ async function boot(page: Page): Promise<void> {
         }
       };
     },
-    { hosts: HOSTS, snippets: SNIPPETS }
+    { hosts: HOSTS, snippets: snippetsFixture }
   );
   await page.goto('/');
   // The status-bar total confirms the app booted and `list_hosts` resolved.
@@ -150,4 +150,31 @@ test('deletes a snippet after confirmation', async ({ page }) => {
   await confirm.getByRole('button', { name: 'Delete', exact: true }).click();
 
   await expect(page.getByText('uptime', { exact: true })).toHaveCount(0);
+});
+
+test('rejects a new snippet whose name already exists', async ({ page }) => {
+  await boot(page);
+
+  await page.getByRole('button', { name: 'New snippet' }).click();
+  const editor = page.getByRole('dialog', { name: 'New snippet' });
+  await editor.getByLabel('Name', { exact: true }).fill('uptime');
+  await editor.getByLabel('Command', { exact: true }).fill('whoami');
+  await editor.getByRole('button', { name: 'Add snippet' }).click();
+
+  // The editor stays open with an inline error rather than clobbering the existing one.
+  await expect(editor).toBeVisible();
+  await expect(editor.getByText('A snippet named "uptime" already exists')).toBeVisible();
+});
+
+test('renders duplicate-named snippets without crashing (core never dedups names)', async ({
+  page
+}) => {
+  await boot(page, [
+    { name: 'deploy', command: 'git pull', scope: 'global' },
+    { name: 'deploy', command: 'systemctl restart app', scope: 'global' }
+  ]);
+
+  // A name-keyed each would throw and blank the screen; both rows must render.
+  await expect(page.getByText('git pull')).toBeVisible();
+  await expect(page.getByText('systemctl restart app')).toBeVisible();
 });

@@ -334,8 +334,9 @@ mod tests {
             prop_assume!(a != b);
             let values = map(&[(&a, &placeholder(&b)), (&b, &sentinel)]);
             let out = substitute_params(&placeholder(&a), Some(&names(&[&a, &b])), &values);
-            prop_assert_eq!(&out, &placeholder(&b));
-            prop_assert!(!out.contains(&sentinel));
+            // The exact output pins it: `a`'s value `{{b}}` lands verbatim and `b` is
+            // NOT expanded to `sentinel` — that equality IS the no-injection proof.
+            prop_assert_eq!(out, placeholder(&b));
         }
 
         // With no declared params, the command is returned untouched whatever values

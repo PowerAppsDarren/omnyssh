@@ -2,6 +2,7 @@
   // Run dialog (tech-gui.md §2.2): collect any declared param values, pick one or
   // more hosts to run on (broadcast), then execute. Host references show their live
   // status dot via the shared server-state palette. Semantic tokens only.
+  import { get } from 'svelte/store';
   import type { SnippetDto } from '$lib/bindings';
   import { Button, StatusDot, Icon } from '$lib/theme';
   import Modal from '$lib/components/Modal.svelte';
@@ -25,10 +26,16 @@
   // svelte-ignore state_referenced_locally
   const params = declaredParams(snippet);
   let values = $state<Record<string, string>>(Object.fromEntries(params.map((p) => [p, ''])));
-  // A host-scoped snippet pre-selects its own host; broadcast still lets the user add more.
+  // A host-scoped snippet pre-selects its own host — but only if it is actually a
+  // configured host, so we never seed a target the backend can't resolve (which would
+  // strand the results panel on "Running…"). Broadcast still lets the user add more.
   // svelte-ignore state_referenced_locally
   let selected = $state<Set<string>>(
-    new Set(snippet.scope === 'host' && snippet.host ? [snippet.host] : [])
+    new Set(
+      snippet.scope === 'host' && snippet.host && get(hosts).some((h) => h.name === snippet.host)
+        ? [snippet.host]
+        : []
+    )
   );
 
   /** Focus the first param input on open for a keyboard-first run. */
@@ -63,7 +70,9 @@
     {#if params.length}
       <div class="space-y-3">
         <h3 class="text-[11px] font-medium uppercase tracking-[0.18em] text-faint">Parameters</h3>
-        {#each params as name, i (name)}
+        <!-- Keyed by position: params come from snippets.toml unchanged and the core
+             never dedups them, so a name key could throw each_key_duplicate. -->
+        {#each params as name, i (i)}
           <label class="block space-y-1 text-xs font-medium text-muted">
             <span class="font-mono">{'{{'}{name}{'}}'}</span>
             <input use:autofocus={i === 0} bind:value={values[name]} class={field} placeholder={name} />

@@ -4,6 +4,7 @@ import type { SnippetResult } from '$lib/bindings';
 import {
   beginRun,
   clearRun,
+  failPendingRun,
   reduceRunResult,
   snippetRun,
   type SnippetRun
@@ -31,7 +32,28 @@ describe('snippet run lifecycle', () => {
     clearRun();
     expect(get(snippetRun)).toBeNull();
   });
+
+  it('failPendingRun fails only the still-pending entries', () => {
+    beginRun('deploy', ['web-1', 'web-2']);
+    reduceRunResultInto({ hostName: 'web-1', snippetName: 'deploy', ok: true, output: 'done' });
+    failPendingRun('command failed');
+
+    const run = get(snippetRun);
+    // web-1 already resolved — left intact; web-2 was pending — now failed.
+    expect(run?.entries[0]).toEqual({ hostName: 'web-1', pending: false, ok: true, output: 'done' });
+    expect(run?.entries[1]).toEqual({ hostName: 'web-2', pending: false, ok: false, output: 'command failed' });
+  });
+
+  it('failPendingRun is a no-op with no active run', () => {
+    clearRun();
+    failPendingRun('boom');
+    expect(get(snippetRun)).toBeNull();
+  });
 });
+
+function reduceRunResultInto(payload: SnippetResult): void {
+  snippetRun.update((run) => reduceRunResult(run, payload));
+}
 
 describe('reduceRunResult', () => {
   const base: SnippetRun = {
