@@ -27,6 +27,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             events::HostsLoaded,
             events::HostStatusChanged,
             events::MetricsUpdated,
+            events::ServicesDetected,
+            events::ServicesFailed,
             events::Error
         ])
 }

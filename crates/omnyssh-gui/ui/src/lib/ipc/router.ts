@@ -4,11 +4,13 @@
 import type {
   ConnectionStatusDto,
   HostDto,
-  MetricsDto
+  MetricsDto,
+  ServiceDto
 } from '$lib/bindings';
 import { hosts } from '$lib/stores/hosts';
 import { statuses } from '$lib/stores/statuses';
 import { metrics, mergeMetrics } from '$lib/stores/metrics';
+import { services } from '$lib/stores/services';
 import { lastError } from '$lib/stores/notifications';
 
 export function applyHostsLoaded(payload: HostDto[]): void {
@@ -19,6 +21,7 @@ export function applyHostsLoaded(payload: HostDto[]): void {
   const prune = <V>(m: Map<string, V>) => new Map([...m].filter(([name]) => names.has(name)));
   statuses.update(prune);
   metrics.update(prune);
+  services.update(prune);
 }
 
 export function applyHostStatusChanged(payload: {
@@ -30,6 +33,16 @@ export function applyHostStatusChanged(payload: {
 
 export function applyMetricsUpdated(payload: { hostName: string; metrics: MetricsDto }): void {
   metrics.update((m) => new Map(m).set(payload.hostName, mergeMetrics(m.get(payload.hostName), payload.metrics)));
+}
+
+export function applyServicesDetected(payload: { hostName: string; services: ServiceDto[] }): void {
+  services.update((m) =>
+    new Map(m).set(payload.hostName, { kind: 'detected', services: payload.services })
+  );
+}
+
+export function applyServicesFailed(payload: { hostName: string; message: string }): void {
+  services.update((m) => new Map(m).set(payload.hostName, { kind: 'failed', message: payload.message }));
 }
 
 export function applyError(message: string): void {

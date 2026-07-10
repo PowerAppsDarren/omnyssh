@@ -4,7 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use omnyssh_core::event::{Metrics, ProcessInfo};
+use omnyssh_core::event::{
+    DetectedService, MetricValue, Metrics, ProcessInfo, ServiceKind, ServiceMetric,
+};
 use omnyssh_core::ssh::client::{ConnectionStatus, Host, HostSource};
 
 /// Host origin, mirrors `omnyssh_core::ssh::client::HostSource`.
@@ -75,6 +77,37 @@ pub struct MetricsDto {
     pub age_seconds: u64,
 }
 
+/// A service kind detected on a host, mirrors `omnyssh_core::event::ServiceKind`.
+/// Wire names are lowercase (`docker`, `nginx`, `postgresql`, `redis`, `nodejs`);
+/// if the core adds a kind, extend this enum so it is never silently dropped
+/// (tech-gui.md §4.1).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceKindDto {
+    Docker,
+    Nginx,
+    PostgreSQL,
+    Redis,
+    NodeJS,
+}
+
+/// One quick-scan metric for a detected service (tech-gui.md §4.1). `MetricValue`
+/// is integer-only today; widen this if the core adds a non-integral variant.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceMetricDto {
+    pub name: String,
+    pub value: i64,
+}
+
+/// A service detected on a host with its quick-scan metrics (tech-gui.md §4.1).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceDto {
+    pub kind: ServiceKindDto,
+    pub metrics: Vec<ServiceMetricDto>,
+}
+
 impl From<&HostSource> for HostSourceDto {
     fn from(source: &HostSource) -> Self {
         match source {
@@ -140,6 +173,37 @@ impl From<&Metrics> for MetricsDto {
                 .map(ProcessDto::from)
                 .collect(),
             age_seconds: metrics.last_updated.elapsed().as_secs(),
+        }
+    }
+}
+
+impl From<&ServiceKind> for ServiceKindDto {
+    fn from(kind: &ServiceKind) -> Self {
+        match kind {
+            ServiceKind::Docker => Self::Docker,
+            ServiceKind::Nginx => Self::Nginx,
+            ServiceKind::PostgreSQL => Self::PostgreSQL,
+            ServiceKind::Redis => Self::Redis,
+            ServiceKind::NodeJS => Self::NodeJS,
+        }
+    }
+}
+
+impl From<&ServiceMetric> for ServiceMetricDto {
+    fn from(metric: &ServiceMetric) -> Self {
+        let MetricValue::Integer(value) = metric.value;
+        Self {
+            name: metric.name.clone(),
+            value,
+        }
+    }
+}
+
+impl From<&DetectedService> for ServiceDto {
+    fn from(service: &DetectedService) -> Self {
+        Self {
+            kind: (&service.kind).into(),
+            metrics: service.metrics.iter().map(ServiceMetricDto::from).collect(),
         }
     }
 }
@@ -275,5 +339,56 @@ mod tests {
         assert_eq!(dto.top_processes[0].name, "postgres");
         assert_eq!(dto.top_processes[0].cpu_percent, 30.0);
         assert_eq!(dto.top_processes[0].mem_percent, 15.0);
+    }
+
+    fn metric(name: &str, value: i64) -> ServiceMetric {
+        ServiceMetric {
+            name: name.to_string(),
+            value: MetricValue::Integer(value),
+        }
+    }
+
+    #[test]
+    fn service_kind_dto_uses_lowercase_wire_names() {
+        // The frontend switches on these exact strings (tech-gui.md §4.1).
+        let names = [
+            (ServiceKind::Docker, r#""docker""#),
+            (ServiceKind::Nginx, r#""nginx""#),
+            (ServiceKind::PostgreSQL, r#""postgresql""#),
+            (ServiceKind::Redis, r#""redis""#),
+            (ServiceKind::NodeJS, r#""nodejs""#),
+        ];
+        for (kind, wire) in names {
+            let json = serde_json::to_string(&ServiceKindDto::from(&kind)).expect("serialise kind");
+            assert_eq!(json, wire, "kind {kind:?} must map to {wire}");
+        }
+    }
+
+    #[test]
+    fn service_dto_maps_kind_and_integer_metrics() {
+        let service = DetectedService {
+            kind: ServiceKind::Docker,
+            metrics: vec![
+                metric("containers_running", 4),
+                metric("containers_stopped", 1),
+            ],
+        };
+        let dto = ServiceDto::from(&service);
+        assert!(matches!(dto.kind, ServiceKindDto::Docker));
+        assert_eq!(dto.metrics.len(), 2);
+        assert_eq!(dto.metrics[0].name, "containers_running");
+        assert_eq!(dto.metrics[0].value, 4);
+        assert_eq!(dto.metrics[1].name, "containers_stopped");
+        assert_eq!(dto.metrics[1].value, 1);
+    }
+
+    #[test]
+    fn service_dto_keeps_an_empty_metric_list() {
+        let dto = ServiceDto::from(&DetectedService {
+            kind: ServiceKind::Nginx,
+            metrics: vec![],
+        });
+        assert!(matches!(dto.kind, ServiceKindDto::Nginx));
+        assert!(dto.metrics.is_empty());
     }
 }
