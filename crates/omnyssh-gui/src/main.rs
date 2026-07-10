@@ -13,7 +13,7 @@ use commands::hosts::{list_hosts, reload_hosts};
 use omnyssh_core::event::CoreEvent;
 use state::GuiState;
 use tauri::Manager;
-use tauri_specta::{collect_commands, collect_events, Builder, Event};
+use tauri_specta::{collect_commands, collect_events, Builder};
 
 // Absolute at build time, so the export target is independent of the run CWD.
 const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui/src/lib/bindings.ts");
@@ -64,26 +64,19 @@ fn main() {
                 engine_rx,
             ));
 
-            // Load the shared host config into the cache before the webview pulls
-            // it via `list_hosts` (tech-gui.md §3.4).
+            // Pre-load the shared host config so the first `list_hosts` paints
+            // immediately. A load failure here is non-fatal — the frontend's
+            // `reload_hosts` re-attempts and surfaces the error (tech-gui.md §3.4).
             let gui_state = GuiState::new(engine_tx);
-            match omnyssh_core::config::load_all_hosts() {
-                Ok(hosts) => gui_state.set_hosts(hosts),
-                Err(e) => {
-                    let _ = events::Error {
-                        message: e.to_string(),
-                    }
-                    .emit(app.handle());
-                }
+            if let Ok(hosts) = omnyssh_core::config::load_all_hosts() {
+                gui_state.set_hosts(hosts);
             }
             app.manage(gui_state);
 
-            // Start the metrics/status pollers inside the async runtime —
-            // `PollManager::start` spawns tokio tasks (tech-gui.md §3.4).
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                handle.state::<GuiState>().restart_pollers();
-            });
+            // The pollers are started by the frontend via `reload_hosts` once its
+            // event bridge is listening, so no HostStatusChanged is emitted before
+            // the webview can receive it (starting them here would race listener
+            // registration and strand a host as offline).
             Ok(())
         })
         .run(tauri::generate_context!())

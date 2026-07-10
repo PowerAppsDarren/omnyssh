@@ -18,7 +18,8 @@ async listHosts() : Promise<Result<HostDto[], CommandError>> {
 },
 /**
  * Reload hosts from the shared config, refresh the cache, restart the pollers,
- * and broadcast the new list via `hosts-loaded` (tech-gui.md §4.2).
+ * and broadcast the new list via `hosts-loaded` (tech-gui.md §4.2). Also the
+ * startup entry point: the frontend calls it once its event bridge is up.
  */
 async reloadHosts() : Promise<Result<null, CommandError>> {
     try {
