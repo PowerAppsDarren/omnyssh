@@ -11,6 +11,14 @@
   import { sessions, sessionLabel, type SessionKind, type SessionStatus } from '$lib/stores/sessions';
   import { sidebarCollapsed } from '$lib/stores/ui';
   import { spawnSession, closeSession } from '$lib/stores/navigation';
+  import { palette } from '$lib/stores/palette';
+
+  // Action-first spawn (tech-gui.md §2): a spawner opens the host-picker, then creates
+  // a session of its kind for the chosen host. A dismissed picker spawns nothing.
+  async function pickAndSpawn(kind: SessionKind): Promise<void> {
+    const host = await palette.pickHost();
+    if (host) spawnSession(kind, host.name);
+  }
 
   type Selector = { kind: 'dashboard' | 'snippets'; label: string; icon: IconName };
   type Spawner = { kind: SessionKind; label: string; icon: IconName };
@@ -86,7 +94,7 @@
             type="button"
             class="{rowBase} {focusRing} {rowState(false)} {$sidebarCollapsed ? 'justify-center' : ''}"
             title={sp.label}
-            onclick={() => spawnSession(sp.kind, 'placeholder')}
+            onclick={() => pickAndSpawn(sp.kind)}
           >
             <Icon name={sp.icon} />
             {#if !$sidebarCollapsed}<span class="truncate">{sp.label}</span>{/if}
@@ -147,7 +155,7 @@
       ? 'flex flex-col items-center gap-1'
       : 'flex items-center gap-1'}"
   >
-    <Button variant="icon" title="Command palette (⌘K)">
+    <Button variant="icon" title="Command palette (⌘K)" onclick={() => palette.open()}>
       <Icon name="command" />
     </Button>
     <ThemeToggle />

@@ -4,6 +4,7 @@ export type IconName =
   | 'sun'
   | 'moon'
   | 'command'
+  | 'search'
   | 'dashboard'
   | 'snippets'
   | 'sftp'
