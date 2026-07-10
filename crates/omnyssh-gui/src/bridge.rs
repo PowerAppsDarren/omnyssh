@@ -1,7 +1,7 @@
 //! Core-event bridge (tech-gui.md §3.4): one long-lived task drains the shared
-//! engine channel and maps each `CoreEvent` to a typed IPC event. Stage 0.2
-//! wires the `Error` mapping; metrics, status, discovery, key-setup and
-//! PTY-exit mappings land with their producers.
+//! engine channel and maps each `CoreEvent` to a typed IPC event. Status and
+//! metrics land here; discovery, key-setup and PTY-exit mappings arrive with
+//! their producers.
 
 use omnyssh_core::event::CoreEvent;
 use tauri::AppHandle;
@@ -13,8 +13,21 @@ use crate::events;
 pub async fn forward_core_events(app: AppHandle, mut rx: mpsc::Receiver<CoreEvent>) {
     while let Some(event) = rx.recv().await {
         // A match with an explicit ignore arm (§3.4), grown one variant per slice.
-        #[allow(clippy::single_match)]
         match event {
+            CoreEvent::HostStatusChanged(host_name, status) => {
+                let _ = events::HostStatusChanged {
+                    host_name,
+                    status: (&status).into(),
+                }
+                .emit(&app);
+            }
+            CoreEvent::MetricsUpdate(host_name, metrics) => {
+                let _ = events::MetricsUpdated {
+                    host_name,
+                    metrics: (&metrics).into(),
+                }
+                .emit(&app);
+            }
             CoreEvent::Error(message) => {
                 let _ = events::Error { message }.emit(&app);
             }

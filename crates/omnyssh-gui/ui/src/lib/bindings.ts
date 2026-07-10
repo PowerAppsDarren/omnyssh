@@ -6,12 +6,23 @@
 
 export const commands = {
 /**
- * Stage 0.2 proves the command pipe end-to-end. Real loading + caching from the
- * shared config lands in Stage 1.2 (tech-gui.md §4.2, §7).
+ * Return the cached host list (populated at startup / on reload, tech-gui.md §4.2).
  */
 async listHosts() : Promise<Result<HostDto[], CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_hosts") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Reload hosts from the shared config, refresh the cache, restart the pollers,
+ * and broadcast the new list via `hosts-loaded` (tech-gui.md §4.2).
+ */
+async reloadHosts() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reload_hosts") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -24,10 +35,14 @@ async listHosts() : Promise<Result<HostDto[], CommandError>> {
 
 export const events = __makeEvents__<{
 error: Error,
-hostsLoaded: HostsLoaded
+hostStatusChanged: HostStatusChanged,
+hostsLoaded: HostsLoaded,
+metricsUpdated: MetricsUpdated
 }>({
 error: "error",
-hostsLoaded: "hosts-loaded"
+hostStatusChanged: "host-status-changed",
+hostsLoaded: "hosts-loaded",
+metricsUpdated: "metrics-updated"
 })
 
 /** user-defined constants **/
@@ -38,13 +53,18 @@ hostsLoaded: "hosts-loaded"
 
 export type CommandError = { message: string }
 /**
+ * Live connection state for a host (tech-gui.md §4.1). Internally tagged so the
+ * frontend consumes a discriminated union keyed on `kind`.
+ */
+export type ConnectionStatusDto = { kind: "unknown" } | { kind: "connecting" } | { kind: "connected" } | { kind: "failed"; message: string }
+/**
  * A background error surfaced to the user.
  */
 export type Error = { message: string }
 /**
  * A host as the frontend sees it — password and private-key material omitted
- * (tech-gui.md §3.4). Mapping from the core `Host` lands with host loading in
- * Stage 1.2.
+ * (tech-gui.md §3.4). `hasKey` reports whether an identity file is configured;
+ * the key path itself never crosses the boundary.
  */
 export type HostDto = { name: string; hostname: string; user: string; port: number; tags: string[]; notes?: string | null; source: HostSourceDto; hasKey: boolean; passwordAuthDisabled?: boolean | null }
 /**
@@ -52,10 +72,27 @@ export type HostDto = { name: string; hostname: string; user: string; port: numb
  */
 export type HostSourceDto = "sshConfig" | "manual"
 /**
- * Full host list broadcast. Emitted directly by whoever loaded it (startup
- * today, `reload_hosts` in Stage 1.2); the bridge does not map `HostsLoaded`.
+ * A host's connection status changed (tech-gui.md §4.3).
+ */
+export type HostStatusChanged = { hostName: string; status: ConnectionStatusDto }
+/**
+ * Full host list broadcast. Emitted by `reload_hosts` after refreshing the
+ * cache; the bridge does not map `HostsLoaded` (tech-gui.md §3.4).
  */
 export type HostsLoaded = HostDto[]
+/**
+ * A metrics snapshot for a host (tech-gui.md §4.1). The core's `Instant` is
+ * flattened to `ageSeconds` (seconds since the sample) so it can serialise.
+ */
+export type MetricsDto = { cpuPercent?: number | null; ramPercent?: number | null; diskPercent?: number | null; uptime?: string | null; loadAvg?: string | null; osInfo?: string | null; topProcesses: ProcessDto[]; ageSeconds: number }
+/**
+ * A fresh metrics sample for a host (tech-gui.md §4.3).
+ */
+export type MetricsUpdated = { hostName: string; metrics: MetricsDto }
+/**
+ * A single process in the "top processes" panel (tech-gui.md §4.1).
+ */
+export type ProcessDto = { name: string; cpuPercent: number; memPercent: number }
 
 /** tauri-specta globals **/
 
