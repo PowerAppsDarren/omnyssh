@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::dto::{ConnectionStatusDto, HostDto, MetricsDto};
+use crate::dto::{ConnectionStatusDto, HostDto, MetricsDto, ServiceDto};
 
 /// Full host list broadcast. Emitted by `reload_hosts` after refreshing the
 /// cache; the bridge does not map `HostsLoaded` (tech-gui.md §3.4).
@@ -26,6 +26,22 @@ pub struct HostStatusChanged {
 pub struct MetricsUpdated {
     pub host_name: String,
     pub metrics: MetricsDto,
+}
+
+/// Services detected on a host by the discovery quick-scan (tech-gui.md §4.3).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct ServicesDetected {
+    pub host_name: String,
+    pub services: Vec<ServiceDto>,
+}
+
+/// Discovery failed for a host (tech-gui.md §4.3).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct ServicesFailed {
+    pub host_name: String,
+    pub message: String,
 }
 
 /// A background error surfaced to the user.

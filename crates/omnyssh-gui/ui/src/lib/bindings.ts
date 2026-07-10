@@ -38,12 +38,16 @@ export const events = __makeEvents__<{
 error: Error,
 hostStatusChanged: HostStatusChanged,
 hostsLoaded: HostsLoaded,
-metricsUpdated: MetricsUpdated
+metricsUpdated: MetricsUpdated,
+servicesDetected: ServicesDetected,
+servicesFailed: ServicesFailed
 }>({
 error: "error",
 hostStatusChanged: "host-status-changed",
 hostsLoaded: "hosts-loaded",
-metricsUpdated: "metrics-updated"
+metricsUpdated: "metrics-updated",
+servicesDetected: "services-detected",
+servicesFailed: "services-failed"
 })
 
 /** user-defined constants **/
@@ -94,6 +98,30 @@ export type MetricsUpdated = { hostName: string; metrics: MetricsDto }
  * A single process in the "top processes" panel (tech-gui.md §4.1).
  */
 export type ProcessDto = { name: string; cpuPercent: number; memPercent: number }
+/**
+ * A service detected on a host with its quick-scan metrics (tech-gui.md §4.1).
+ */
+export type ServiceDto = { kind: ServiceKindDto; metrics: ServiceMetricDto[] }
+/**
+ * A service kind detected on a host, mirrors `omnyssh_core::event::ServiceKind`.
+ * Wire names are lowercase (`docker`, `nginx`, `postgresql`, `redis`, `nodejs`);
+ * if the core adds a kind, extend this enum so it is never silently dropped
+ * (tech-gui.md §4.1).
+ */
+export type ServiceKindDto = "docker" | "nginx" | "postgresql" | "redis" | "nodejs"
+/**
+ * One quick-scan metric for a detected service (tech-gui.md §4.1). `MetricValue`
+ * is integer-only today; widen this if the core adds a non-integral variant.
+ */
+export type ServiceMetricDto = { name: string; value: number }
+/**
+ * Services detected on a host by the discovery quick-scan (tech-gui.md §4.3).
+ */
+export type ServicesDetected = { hostName: string; services: ServiceDto[] }
+/**
+ * Discovery failed for a host (tech-gui.md §4.3).
+ */
+export type ServicesFailed = { hostName: string; message: string }
 
 /** tauri-specta globals **/
 

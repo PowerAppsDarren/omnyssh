@@ -1,6 +1,6 @@
 //! Core-event bridge (tech-gui.md §3.4): one long-lived task drains the shared
-//! engine channel and maps each `CoreEvent` to a typed IPC event. Status and
-//! metrics land here; discovery, key-setup and PTY-exit mappings arrive with
+//! engine channel and maps each `CoreEvent` to a typed IPC event. Status, metrics
+//! and discovered services land here; key-setup and PTY-exit mappings arrive with
 //! their producers.
 
 use omnyssh_core::event::CoreEvent;
@@ -27,6 +27,16 @@ pub async fn forward_core_events(app: AppHandle, mut rx: mpsc::Receiver<CoreEven
                     metrics: (&metrics).into(),
                 }
                 .emit(&app);
+            }
+            CoreEvent::DiscoveryQuickScanDone(host_name, services) => {
+                let _ = events::ServicesDetected {
+                    host_name,
+                    services: services.iter().map(crate::dto::ServiceDto::from).collect(),
+                }
+                .emit(&app);
+            }
+            CoreEvent::DiscoveryFailed(host_name, message) => {
+                let _ = events::ServicesFailed { host_name, message }.emit(&app);
             }
             CoreEvent::Error(message) => {
                 let _ = events::Error { message }.emit(&app);
