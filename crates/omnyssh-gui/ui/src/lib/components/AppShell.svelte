@@ -6,12 +6,12 @@
   import type { Snippet } from 'svelte';
   import Sidebar from './Sidebar.svelte';
   import StatusBar from './StatusBar.svelte';
-  import { sidebarCollapsed } from '$lib/stores/ui';
+  import { sidebarCollapsed, isCollapseChord } from '$lib/stores/ui';
 
   let { children }: { children: Snippet } = $props();
 
   function onKeydown(e: KeyboardEvent): void {
-    if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'b' || e.key === 'B')) {
+    if (isCollapseChord(e)) {
       e.preventDefault();
       sidebarCollapsed.toggle();
     }

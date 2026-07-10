@@ -74,3 +74,10 @@ function createSidebarCollapsed() {
 }
 
 export const sidebarCollapsed = createSidebarCollapsed();
+
+/** The manual sidebar-collapse chord (tech-gui.md §2): ⌘B / Ctrl+B. Auto-repeat is
+ *  ignored so a held chord is a single toggle (not an oscillation + write storm),
+ *  and Alt-composed variants are left for other bindings. */
+export function isCollapseChord(e: KeyboardEvent): boolean {
+  return !e.repeat && !e.altKey && (e.metaKey || e.ctrlKey) && (e.key === 'b' || e.key === 'B');
+}

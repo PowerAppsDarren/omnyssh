@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
+import { isCollapseChord } from './ui';
 
 // Collapse persistence (tech-gui.md §2, §3.5). The canonical layer needs a fake
 // Tauri store — Vitest has no runtime — and a fresh module per test isolates the
@@ -58,5 +59,25 @@ describe('sidebar collapse persistence', () => {
     sidebarCollapsed.set(true); // user acts before the async hydrate resolves
     await sidebarCollapsed.hydrate();
     expect(get(sidebarCollapsed)).toBe(true);
+  });
+});
+
+describe('collapse chord (⌘B / Ctrl+B)', () => {
+  const chord = (init: KeyboardEventInit) => isCollapseChord(new KeyboardEvent('keydown', init));
+
+  it('matches ⌘B and Ctrl+B (either modifier, either case)', () => {
+    expect(chord({ key: 'b', metaKey: true })).toBe(true);
+    expect(chord({ key: 'b', ctrlKey: true })).toBe(true);
+    expect(chord({ key: 'B', metaKey: true })).toBe(true);
+  });
+
+  it('ignores auto-repeat so a held chord is a single toggle', () => {
+    expect(chord({ key: 'b', metaKey: true, repeat: true })).toBe(false);
+  });
+
+  it('rejects Alt-composed, unmodified, and other keys', () => {
+    expect(chord({ key: 'b', metaKey: true, altKey: true })).toBe(false);
+    expect(chord({ key: 'b' })).toBe(false);
+    expect(chord({ key: 'k', metaKey: true })).toBe(false);
   });
 });

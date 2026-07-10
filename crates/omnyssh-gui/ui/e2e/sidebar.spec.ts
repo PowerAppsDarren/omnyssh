@@ -20,3 +20,16 @@ test('sidebar collapse persists across reload', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toHaveCount(0);
 });
+
+// The chord is a first-class collapse path (tech-gui.md §2), so prove it is wired,
+// not just the header button.
+test('the ⌘B / Ctrl+B chord toggles collapse', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible();
+
+  await page.keyboard.press('Control+b');
+  await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible();
+
+  await page.keyboard.press('Control+b');
+  await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible();
+});
