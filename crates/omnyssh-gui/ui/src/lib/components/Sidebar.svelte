@@ -8,7 +8,7 @@
   import ThemeToggle from './ThemeToggle.svelte';
   import { Button, Icon, StatusDot, type IconName, type Status } from '$lib/theme';
   import { activeEntity } from '$lib/stores/activeEntity';
-  import { sessions, type Session, type SessionKind, type SessionStatus } from '$lib/stores/sessions';
+  import { sessions, sessionLabel, type SessionKind, type SessionStatus } from '$lib/stores/sessions';
   import { sidebarCollapsed } from '$lib/stores/ui';
   import { spawnSession, closeSession } from '$lib/stores/navigation';
 
@@ -39,10 +39,6 @@
   const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
   const rowState = (active: boolean): string =>
     active ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-surface-inset hover:text-fg';
-
-  function selectorLabel(s: Session): string {
-    return `${s.hostName} · ${s.kind}`;
-  }
 </script>
 
 <aside
@@ -110,8 +106,8 @@
               <button
                 type="button"
                 class="flex min-w-0 flex-1 items-center gap-2.5 rounded text-left {focusRing}"
-                title={selectorLabel(s)}
-                aria-label={selectorLabel(s)}
+                title={sessionLabel(s)}
+                aria-label={sessionLabel(s)}
                 aria-current={active ? 'true' : undefined}
                 onclick={() => activeEntity.activateSession(s.id)}
               >
@@ -125,15 +121,15 @@
                 {:else}
                   <StatusDot status={SESSION_DOT[s.status]} />
                   <Icon name={s.kind} size={16} />
-                  <span class="min-w-0 flex-1 truncate">{selectorLabel(s)}</span>
+                  <span class="min-w-0 flex-1 truncate">{sessionLabel(s)}</span>
                 {/if}
               </button>
               {#if !$sidebarCollapsed}
                 <button
                   type="button"
                   class="shrink-0 rounded p-1 opacity-60 transition hover:opacity-100 {focusRing}"
-                  title="Close {selectorLabel(s)}"
-                  aria-label="Close {selectorLabel(s)}"
+                  title="Close {sessionLabel(s)}"
+                  aria-label="Close {sessionLabel(s)}"
                   onclick={() => closeSession(s.id)}
                 >
                   <Icon name="close" size={14} />

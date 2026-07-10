@@ -8,7 +8,7 @@
   import { hosts } from '$lib/stores/hosts';
   import { lastError } from '$lib/stores/notifications';
   import { activeEntity } from '$lib/stores/activeEntity';
-  import { sessions } from '$lib/stores/sessions';
+  import { sessions, sessionLabel } from '$lib/stores/sessions';
   import AppShell from '$lib/components/AppShell.svelte';
   import Logo from '$lib/components/Logo.svelte';
   import { StatusDot } from '$lib/theme';
@@ -46,7 +46,7 @@
       <div class="flex flex-col items-center gap-3">
         <StatusDot status="unknown" size={12} label="session status" />
         <h1 class="font-mono text-2xl font-medium tracking-tight">
-          {session.hostName} · {session.kind}
+          {sessionLabel(session)}
         </h1>
         <p class="text-muted">Live sessions land in Stage 3.</p>
       </div>

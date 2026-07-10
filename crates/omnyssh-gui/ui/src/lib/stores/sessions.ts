@@ -14,6 +14,12 @@ export interface Session {
   status: SessionStatus;
 }
 
+/** How a session is labelled wherever it is shown (sidebar row + Content heading),
+ *  kept next to the type so both surfaces stay in step. */
+export function sessionLabel(s: Session): string {
+  return `${s.hostName} · ${s.kind}`;
+}
+
 function createSessions() {
   const { subscribe, update } = writable<Session[]>([]);
   let nextId = 1;
