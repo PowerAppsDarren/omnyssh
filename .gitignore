@@ -5,3 +5,16 @@ demo.tape
 
 # Local symlink created by `nix build`.
 /result
+
+# Instruction
+/CLAUDE.md
+/tech-gui.md
+/voice-brandbook.html
+/instruction.md
+/DISTRIBUTION.md
+
+# GUI: node + Tauri build outputs, updater signing key.
+node_modules/
+crates/omnyssh-gui/ui/build/
+crates/omnyssh-gui/ui/.svelte-kit/
+*.tauri.key
