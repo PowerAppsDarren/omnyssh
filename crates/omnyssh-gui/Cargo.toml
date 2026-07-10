@@ -29,3 +29,5 @@ tauri-plugin-store = "2.4.3"
 [dev-dependencies]
 # Asserts the wire form of DTOs (e.g. HostDto never carries a password).
 serde_json = "1"
+# Property-based coverage of snippet param substitution (tech-gui.md §6.4, §7 Stage 2.2).
+proptest = "1"

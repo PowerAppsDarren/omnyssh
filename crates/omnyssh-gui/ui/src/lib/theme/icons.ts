@@ -4,10 +4,16 @@ export type IconName =
   | 'sun'
   | 'moon'
   | 'command'
+  | 'search'
   | 'dashboard'
   | 'snippets'
   | 'sftp'
   | 'terminal'
   | 'close'
   | 'collapse'
-  | 'expand';
+  | 'expand'
+  | 'check'
+  | 'play'
+  | 'edit'
+  | 'trash'
+  | 'plus';

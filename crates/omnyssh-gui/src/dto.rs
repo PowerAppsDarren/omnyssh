@@ -4,7 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use omnyssh_core::event::{Metrics, ProcessInfo};
+use omnyssh_core::config::snippets::{Snippet, SnippetScope};
+use omnyssh_core::event::{
+    DetectedService, MetricValue, Metrics, ProcessInfo, ServiceKind, ServiceMetric,
+};
 use omnyssh_core::ssh::client::{ConnectionStatus, Host, HostSource};
 
 /// Host origin, mirrors `omnyssh_core::ssh::client::HostSource`.
@@ -75,6 +78,64 @@ pub struct MetricsDto {
     pub age_seconds: u64,
 }
 
+/// A service kind detected on a host, mirrors `omnyssh_core::event::ServiceKind`.
+/// Wire names are lowercase (`docker`, `nginx`, `postgresql`, `redis`, `nodejs`);
+/// if the core adds a kind, extend this enum so it is never silently dropped
+/// (tech-gui.md §4.1).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceKindDto {
+    Docker,
+    Nginx,
+    PostgreSQL,
+    Redis,
+    NodeJS,
+}
+
+/// One quick-scan metric for a detected service (tech-gui.md §4.1). `MetricValue`
+/// is integer-only today; widen this if the core adds a non-integral variant.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceMetricDto {
+    pub name: String,
+    pub value: i64,
+}
+
+/// A service detected on a host with its quick-scan metrics (tech-gui.md §4.1).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceDto {
+    pub kind: ServiceKindDto,
+    pub metrics: Vec<ServiceMetricDto>,
+}
+
+/// Snippet scope, mirrors `omnyssh_core::config::snippets::SnippetScope`. Wire
+/// names are lowercase (`global`, `host`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "lowercase")]
+pub enum SnippetScopeDto {
+    Global,
+    Host,
+}
+
+/// A saved command snippet as the frontend sees it (tech-gui.md §4.1). Crosses the
+/// boundary both ways — outbound for `list_snippets`, inbound for `save_snippet` —
+/// so it derives `Deserialize` too. Optional fields are omitted when absent, matching
+/// the sparse `snippets.toml` the TUI writes.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SnippetDto {
+    pub name: String,
+    pub command: String,
+    pub scope: SnippetScopeDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<Vec<String>>,
+}
+
 impl From<&HostSource> for HostSourceDto {
     fn from(source: &HostSource) -> Self {
         match source {
@@ -140,6 +201,81 @@ impl From<&Metrics> for MetricsDto {
                 .map(ProcessDto::from)
                 .collect(),
             age_seconds: metrics.last_updated.elapsed().as_secs(),
+        }
+    }
+}
+
+impl From<&ServiceKind> for ServiceKindDto {
+    fn from(kind: &ServiceKind) -> Self {
+        match kind {
+            ServiceKind::Docker => Self::Docker,
+            ServiceKind::Nginx => Self::Nginx,
+            ServiceKind::PostgreSQL => Self::PostgreSQL,
+            ServiceKind::Redis => Self::Redis,
+            ServiceKind::NodeJS => Self::NodeJS,
+        }
+    }
+}
+
+impl From<&ServiceMetric> for ServiceMetricDto {
+    fn from(metric: &ServiceMetric) -> Self {
+        let MetricValue::Integer(value) = metric.value;
+        Self {
+            name: metric.name.clone(),
+            value,
+        }
+    }
+}
+
+impl From<&DetectedService> for ServiceDto {
+    fn from(service: &DetectedService) -> Self {
+        Self {
+            kind: (&service.kind).into(),
+            metrics: service.metrics.iter().map(ServiceMetricDto::from).collect(),
+        }
+    }
+}
+
+impl From<&SnippetScope> for SnippetScopeDto {
+    fn from(scope: &SnippetScope) -> Self {
+        match scope {
+            SnippetScope::Global => Self::Global,
+            SnippetScope::Host => Self::Host,
+        }
+    }
+}
+
+impl From<&SnippetScopeDto> for SnippetScope {
+    fn from(scope: &SnippetScopeDto) -> Self {
+        match scope {
+            SnippetScopeDto::Global => Self::Global,
+            SnippetScopeDto::Host => Self::Host,
+        }
+    }
+}
+
+impl From<&Snippet> for SnippetDto {
+    fn from(snippet: &Snippet) -> Self {
+        Self {
+            name: snippet.name.clone(),
+            command: snippet.command.clone(),
+            scope: (&snippet.scope).into(),
+            host: snippet.host.clone(),
+            tags: snippet.tags.clone(),
+            params: snippet.params.clone(),
+        }
+    }
+}
+
+impl From<SnippetDto> for Snippet {
+    fn from(dto: SnippetDto) -> Self {
+        Self {
+            name: dto.name,
+            command: dto.command,
+            scope: (&dto.scope).into(),
+            host: dto.host,
+            tags: dto.tags,
+            params: dto.params,
         }
     }
 }
@@ -275,5 +411,124 @@ mod tests {
         assert_eq!(dto.top_processes[0].name, "postgres");
         assert_eq!(dto.top_processes[0].cpu_percent, 30.0);
         assert_eq!(dto.top_processes[0].mem_percent, 15.0);
+    }
+
+    fn metric(name: &str, value: i64) -> ServiceMetric {
+        ServiceMetric {
+            name: name.to_string(),
+            value: MetricValue::Integer(value),
+        }
+    }
+
+    #[test]
+    fn service_kind_dto_uses_lowercase_wire_names() {
+        // The frontend switches on these exact strings (tech-gui.md §4.1).
+        let names = [
+            (ServiceKind::Docker, r#""docker""#),
+            (ServiceKind::Nginx, r#""nginx""#),
+            (ServiceKind::PostgreSQL, r#""postgresql""#),
+            (ServiceKind::Redis, r#""redis""#),
+            (ServiceKind::NodeJS, r#""nodejs""#),
+        ];
+        for (kind, wire) in names {
+            let json = serde_json::to_string(&ServiceKindDto::from(&kind)).expect("serialise kind");
+            assert_eq!(json, wire, "kind {kind:?} must map to {wire}");
+        }
+    }
+
+    #[test]
+    fn service_dto_maps_kind_and_integer_metrics() {
+        let service = DetectedService {
+            kind: ServiceKind::Docker,
+            metrics: vec![
+                metric("containers_running", 4),
+                metric("containers_stopped", 1),
+            ],
+        };
+        let dto = ServiceDto::from(&service);
+        assert!(matches!(dto.kind, ServiceKindDto::Docker));
+        assert_eq!(dto.metrics.len(), 2);
+        assert_eq!(dto.metrics[0].name, "containers_running");
+        assert_eq!(dto.metrics[0].value, 4);
+        assert_eq!(dto.metrics[1].name, "containers_stopped");
+        assert_eq!(dto.metrics[1].value, 1);
+    }
+
+    #[test]
+    fn service_dto_keeps_an_empty_metric_list() {
+        let dto = ServiceDto::from(&DetectedService {
+            kind: ServiceKind::Nginx,
+            metrics: vec![],
+        });
+        assert!(matches!(dto.kind, ServiceKindDto::Nginx));
+        assert!(dto.metrics.is_empty());
+    }
+
+    fn full_snippet() -> Snippet {
+        Snippet {
+            name: "restart-svc".to_string(),
+            command: "systemctl restart {{service}}".to_string(),
+            scope: SnippetScope::Host,
+            host: Some("web-1".to_string()),
+            tags: Some(vec!["ops".to_string()]),
+            params: Some(vec!["service".to_string()]),
+        }
+    }
+
+    #[test]
+    fn snippet_dto_maps_every_field() {
+        let dto = SnippetDto::from(&full_snippet());
+        assert_eq!(dto.name, "restart-svc");
+        assert_eq!(dto.command, "systemctl restart {{service}}");
+        assert_eq!(dto.scope, SnippetScopeDto::Host);
+        assert_eq!(dto.host.as_deref(), Some("web-1"));
+        assert_eq!(dto.tags, Some(vec!["ops".to_string()]));
+        assert_eq!(dto.params, Some(vec!["service".to_string()]));
+    }
+
+    #[test]
+    fn snippet_scope_dto_uses_lowercase_wire_names() {
+        // The frontend switches on these exact strings (tech-gui.md §4.1).
+        let global = serde_json::to_string(&SnippetScopeDto::Global).unwrap();
+        assert_eq!(global, r#""global""#);
+        let host = serde_json::to_string(&SnippetScopeDto::Host).unwrap();
+        assert_eq!(host, r#""host""#);
+    }
+
+    #[test]
+    fn snippet_dto_omits_absent_optionals_on_the_wire() {
+        let dto = SnippetDto::from(&Snippet {
+            name: "ls".to_string(),
+            command: "ls -la".to_string(),
+            scope: SnippetScope::Global,
+            host: None,
+            tags: None,
+            params: None,
+        });
+        let json = serde_json::to_string(&dto).unwrap();
+        assert_eq!(json, r#"{"name":"ls","command":"ls -la","scope":"global"}"#);
+    }
+
+    #[test]
+    fn snippet_dto_round_trips_through_snippet() {
+        let original = full_snippet();
+        let back: Snippet = SnippetDto::from(&original).into();
+        assert_eq!(back.name, original.name);
+        assert_eq!(back.command, original.command);
+        assert_eq!(back.scope, original.scope);
+        assert_eq!(back.host, original.host);
+        assert_eq!(back.tags, original.tags);
+        assert_eq!(back.params, original.params);
+    }
+
+    #[test]
+    fn snippet_dto_deserialises_a_sparse_inbound_payload() {
+        // A minimal save_snippet payload: optionals absent -> None (tech-gui.md §4.1).
+        let dto: SnippetDto =
+            serde_json::from_str(r#"{"name":"pwd","command":"pwd","scope":"global"}"#).unwrap();
+        assert_eq!(dto.scope, SnippetScopeDto::Global);
+        assert!(dto.host.is_none());
+        assert!(dto.tags.is_none());
+        assert!(dto.params.is_none());
     }
 }

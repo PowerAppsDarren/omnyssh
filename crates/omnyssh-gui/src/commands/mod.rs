@@ -2,3 +2,4 @@
 //! thin: validate input, call the core, return a DTO or an error.
 
 pub mod hosts;
+pub mod snippets;

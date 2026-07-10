@@ -4,12 +4,17 @@ import type { HostDto } from '$lib/bindings';
 import { hosts } from '$lib/stores/hosts';
 import { statuses } from '$lib/stores/statuses';
 import { metrics } from '$lib/stores/metrics';
+import { services } from '$lib/stores/services';
+import { snippetRun, beginRun, clearRun } from '$lib/stores/snippets';
 import { lastError } from '$lib/stores/notifications';
 import {
   applyError,
   applyHostStatusChanged,
   applyHostsLoaded,
-  applyMetricsUpdated
+  applyMetricsUpdated,
+  applyServicesDetected,
+  applyServicesFailed,
+  applySnippetResult
 } from './router';
 
 describe('ipc event router', () => {
@@ -17,6 +22,7 @@ describe('ipc event router', () => {
     hosts.set([]);
     statuses.set(new Map());
     metrics.set(new Map());
+    services.set(new Map());
     lastError.set(null);
   });
 
@@ -89,10 +95,11 @@ describe('ipc event router', () => {
     expect(m?.topProcesses).toHaveLength(1);
   });
 
-  it('prunes status/metrics for hosts dropped on reload', () => {
+  it('prunes status/metrics/services for hosts dropped on reload', () => {
     applyHostStatusChanged({ hostName: 'web-1', status: { kind: 'connected' } });
     applyHostStatusChanged({ hostName: 'web-2', status: { kind: 'connected' } });
     applyMetricsUpdated({ hostName: 'web-2', metrics: { cpuPercent: 90, topProcesses: [], ageSeconds: 0 } });
+    applyServicesDetected({ hostName: 'web-2', services: [{ kind: 'docker', metrics: [] }] });
 
     applyHostsLoaded([
       { name: 'web-1', hostname: '10.0.0.1', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false }
@@ -100,12 +107,43 @@ describe('ipc event router', () => {
 
     expect(get(statuses).has('web-2')).toBe(false);
     expect(get(metrics).has('web-2')).toBe(false);
+    expect(get(services).has('web-2')).toBe(false);
     expect(get(statuses).get('web-1')).toEqual({ kind: 'connected' });
+  });
+
+  it('routes a services-detected payload into the services store', () => {
+    applyServicesDetected({
+      hostName: 'web-1',
+      services: [{ kind: 'docker', metrics: [{ name: 'containers_running', value: 4 }] }]
+    });
+
+    expect(get(services).get('web-1')).toEqual({
+      kind: 'detected',
+      services: [{ kind: 'docker', metrics: [{ name: 'containers_running', value: 4 }] }]
+    });
+  });
+
+  it('routes a services-failed payload, replacing a prior detection', () => {
+    applyServicesDetected({ hostName: 'web-1', services: [{ kind: 'nginx', metrics: [] }] });
+    applyServicesFailed({ hostName: 'web-1', message: 'scan timed out' });
+
+    expect(get(services).get('web-1')).toEqual({ kind: 'failed', message: 'scan timed out' });
+    expect(get(services).size).toBe(1);
   });
 
   it('routes an error payload into the notifications store', () => {
     applyError('boom');
 
     expect(get(lastError)).toBe('boom');
+  });
+
+  it('routes a snippet-result into the active run, keyed by host', () => {
+    beginRun('deploy', ['web-1', 'web-2']);
+    applySnippetResult({ hostName: 'web-2', snippetName: 'deploy', ok: true, output: 'done' });
+
+    const run = get(snippetRun);
+    expect(run?.entries[0].pending).toBe(true); // web-1 untouched
+    expect(run?.entries[1]).toEqual({ hostName: 'web-2', pending: false, ok: true, output: 'done' });
+    clearRun();
   });
 });

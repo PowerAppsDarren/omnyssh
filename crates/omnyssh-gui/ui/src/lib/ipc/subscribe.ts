@@ -8,7 +8,10 @@ import {
   applyError,
   applyHostStatusChanged,
   applyHostsLoaded,
-  applyMetricsUpdated
+  applyMetricsUpdated,
+  applyServicesDetected,
+  applyServicesFailed,
+  applySnippetResult
 } from './router';
 
 export async function startEventBridge(): Promise<() => void> {
@@ -17,6 +20,9 @@ export async function startEventBridge(): Promise<() => void> {
     offs.push(await events.hostsLoaded.listen((e) => applyHostsLoaded(e.payload)));
     offs.push(await events.hostStatusChanged.listen((e) => applyHostStatusChanged(e.payload)));
     offs.push(await events.metricsUpdated.listen((e) => applyMetricsUpdated(e.payload)));
+    offs.push(await events.servicesDetected.listen((e) => applyServicesDetected(e.payload)));
+    offs.push(await events.servicesFailed.listen((e) => applyServicesFailed(e.payload)));
+    offs.push(await events.snippetResult.listen((e) => applySnippetResult(e.payload)));
     offs.push(await events.error.listen((e) => applyError(e.payload.message)));
   } catch (err) {
     offs.forEach((off) => off());
