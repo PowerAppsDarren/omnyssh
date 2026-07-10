@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { isCollapseChord } from './ui';
+import { isCollapseChord, isPaletteChord } from './ui';
 
 // Collapse persistence (tech-gui.md §2, §3.5). The canonical layer needs a fake
 // Tauri store — Vitest has no runtime — and a fresh module per test isolates the
@@ -90,5 +90,33 @@ describe('collapse chord (⌘B / Ctrl+B)', () => {
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', metaKey: true, bubbles: true }));
     input.remove();
     expect(matched).toBe(false);
+  });
+});
+
+describe('palette chord (⌘K / Ctrl+K)', () => {
+  const chord = (init: KeyboardEventInit) => isPaletteChord(new KeyboardEvent('keydown', init));
+
+  it('matches ⌘K and Ctrl+K (either modifier, either case)', () => {
+    expect(chord({ key: 'k', metaKey: true })).toBe(true);
+    expect(chord({ key: 'k', ctrlKey: true })).toBe(true);
+    expect(chord({ key: 'K', metaKey: true })).toBe(true);
+  });
+
+  it('rejects auto-repeat, Alt-composed, IME-composing, unmodified, and other keys', () => {
+    expect(chord({ key: 'k', metaKey: true, repeat: true })).toBe(false);
+    expect(chord({ key: 'k', metaKey: true, altKey: true })).toBe(false);
+    expect(chord({ key: 'k', metaKey: true, isComposing: true })).toBe(false);
+    expect(chord({ key: 'k' })).toBe(false);
+    expect(chord({ key: 'b', metaKey: true })).toBe(false);
+  });
+
+  it('fires even while typing in an input, unlike the collapse chord', () => {
+    const input = document.createElement('input');
+    document.body.append(input);
+    let matched = false;
+    input.addEventListener('keydown', (e) => (matched = isPaletteChord(e)));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }));
+    input.remove();
+    expect(matched).toBe(true);
   });
 });
