@@ -1,9 +1,10 @@
 <script lang="ts">
   // Bottom region (tech-gui.md §2): context + host summary, and where background
-  // errors surface (§3.5). Stage 1.2 lands the live total/online/alert/offline
-  // derivation; here it reflects the count and any load error.
-  import { hosts } from '$lib/stores/hosts';
+  // errors surface (§3.5). The summary counts total / online / alert / offline
+  // (§4.1); colour lives only in the status dots, per the brandbook.
   import { lastError } from '$lib/stores/notifications';
+  import { hostSummary } from '$lib/stores/hostSummary';
+  import { StatusDot } from '$lib/theme';
 </script>
 
 <footer
@@ -14,5 +15,16 @@
   {:else}
     <span class="min-w-0 truncate">Ready</span>
   {/if}
-  <span class="shrink-0">{$hosts.length} hosts</span>
+  <div class="flex shrink-0 items-center gap-3">
+    <span>{$hostSummary.total} {$hostSummary.total === 1 ? 'host' : 'hosts'}</span>
+    <span class="flex items-center gap-1.5">
+      <StatusDot status="ok" label="online" />{$hostSummary.online} online
+    </span>
+    <span class="flex items-center gap-1.5">
+      <StatusDot status="warn" label="alert" />{$hostSummary.alert} alert
+    </span>
+    <span class="flex items-center gap-1.5">
+      <StatusDot status="off" label="offline" />{$hostSummary.offline} offline
+    </span>
+  </div>
 </footer>
