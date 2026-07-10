@@ -75,9 +75,20 @@ describe('collapse chord (⌘B / Ctrl+B)', () => {
     expect(chord({ key: 'b', metaKey: true, repeat: true })).toBe(false);
   });
 
-  it('rejects Alt-composed, unmodified, and other keys', () => {
+  it('rejects Alt-composed, IME-composing, unmodified, and other keys', () => {
     expect(chord({ key: 'b', metaKey: true, altKey: true })).toBe(false);
+    expect(chord({ key: 'b', metaKey: true, isComposing: true })).toBe(false);
     expect(chord({ key: 'b' })).toBe(false);
     expect(chord({ key: 'k', metaKey: true })).toBe(false);
+  });
+
+  it('does not fire while typing in an editable field', () => {
+    const input = document.createElement('input');
+    document.body.append(input);
+    let matched = true;
+    input.addEventListener('keydown', (e) => (matched = isCollapseChord(e)));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', metaKey: true, bubbles: true }));
+    input.remove();
+    expect(matched).toBe(false);
   });
 });

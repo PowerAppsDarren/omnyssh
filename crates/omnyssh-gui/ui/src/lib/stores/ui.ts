@@ -37,8 +37,9 @@ async function persistStore(collapsed: boolean): Promise<void> {
 }
 
 function createSidebarCollapsed() {
-  const { subscribe, set: setStore } = writable<boolean>(mirroredCollapsed());
-  let current = mirroredCollapsed();
+  const initial = mirroredCollapsed();
+  const { subscribe, set: setStore } = writable<boolean>(initial);
+  let current = initial;
   let interacted = false;
 
   // `user` marks a deliberate flip: it writes the canonical store and blocks a late
@@ -77,7 +78,12 @@ export const sidebarCollapsed = createSidebarCollapsed();
 
 /** The manual sidebar-collapse chord (tech-gui.md §2): ⌘B / Ctrl+B. Auto-repeat is
  *  ignored so a held chord is a single toggle (not an oscillation + write storm),
- *  and Alt-composed variants are left for other bindings. */
+ *  Alt-composed variants are left for other bindings, and the global chord never
+ *  fires while typing in an editable surface (command palette / host forms arrive
+ *  in later stages). */
 export function isCollapseChord(e: KeyboardEvent): boolean {
-  return !e.repeat && !e.altKey && (e.metaKey || e.ctrlKey) && (e.key === 'b' || e.key === 'B');
+  if (e.repeat || e.altKey || e.isComposing) return false;
+  if (!(e.metaKey || e.ctrlKey) || (e.key !== 'b' && e.key !== 'B')) return false;
+  const t = e.target as HTMLElement | null;
+  return !t?.isContentEditable && !/^(input|textarea|select)$/i.test(t?.tagName ?? '');
 }
