@@ -11,6 +11,19 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  hygiene:
+    name: Repo hygiene guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Guard the tracked tree (no docs, keys, or .env)
+        run: bash scripts/hygiene-guard.sh
+
+      - name: Exercise the guard on fixtures
+        run: bash scripts/hygiene-guard.test.sh
+
   build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
