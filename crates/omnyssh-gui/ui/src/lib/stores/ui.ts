@@ -87,3 +87,11 @@ export function isCollapseChord(e: KeyboardEvent): boolean {
   const t = e.target as HTMLElement | null;
   return !t?.isContentEditable && !/^(input|textarea|select)$/i.test(t?.tagName ?? '');
 }
+
+/** The command-palette chord (tech-gui.md §2): ⌘K / Ctrl+K. Unlike collapse it fires
+ *  regardless of focus so the palette is reachable from anywhere (including its own
+ *  input); auto-repeat and Alt-composed variants are still ignored. */
+export function isPaletteChord(e: KeyboardEvent): boolean {
+  if (e.repeat || e.altKey || e.isComposing) return false;
+  return (e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K');
+}
