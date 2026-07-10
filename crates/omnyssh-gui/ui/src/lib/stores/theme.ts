@@ -55,15 +55,22 @@ async function syncNativeWindow(theme: Theme): Promise<void> {
 }
 
 function createTheme() {
-  const { subscribe, set: setStore } = writable<Theme>(paintedTheme());
-  let current = paintedTheme();
+  const painted = paintedTheme();
+  const { subscribe, set: setStore } = writable<Theme>(painted);
+  let current = painted;
+  let interacted = false;
 
-  function apply(theme: Theme, persist = true): void {
+  // `user` marks a deliberate flip: it writes the canonical store and blocks a
+  // late hydrate from reverting it. localStorage is mirrored either way, so the
+  // no-FOUC boot always reads the true theme next launch — even after hydrate
+  // corrected a stale/evicted mirror.
+  function apply(theme: Theme, user: boolean): void {
     current = theme;
     reflectAttribute(theme);
     setStore(theme);
-    if (persist) {
-      mirrorLocal(theme);
+    mirrorLocal(theme);
+    if (user) {
+      interacted = true;
       void persistStore(theme);
     }
     void syncNativeWindow(theme);
@@ -71,8 +78,8 @@ function createTheme() {
 
   return {
     subscribe,
-    set: (theme: Theme) => apply(theme),
-    toggle: () => apply(current === 'dark' ? 'light' : 'dark'),
+    set: (theme: Theme) => apply(theme, true),
+    toggle: () => apply(current === 'dark' ? 'light' : 'dark', true),
     /** Reconcile with the canonical tauri-plugin-store value once the Tauri API is
      *  reachable (called from the layout's onMount). */
     async hydrate(): Promise<void> {
@@ -80,7 +87,8 @@ function createTheme() {
         const { load } = await import('@tauri-apps/plugin-store');
         const store = await load(STORE_FILE);
         const saved = await store.get<Theme>(STORE_KEY);
-        if (saved === 'light' || saved === 'dark') apply(saved, false);
+        // Skip if the user already chose during the async load (no clobber).
+        if (!interacted && (saved === 'light' || saved === 'dark')) apply(saved, false);
       } catch {
         // Store unreachable: keep the painted/localStorage theme.
       }
