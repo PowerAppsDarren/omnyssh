@@ -6,3 +6,4 @@ export { default as Icon } from './Icon.svelte';
 export { default as StatusDot } from './StatusDot.svelte';
 export { default as Surface } from './Surface.svelte';
 export { statusToken, type Status } from './status';
+export type { IconName } from './icons';

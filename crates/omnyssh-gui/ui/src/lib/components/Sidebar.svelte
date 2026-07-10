@@ -1,29 +1,153 @@
 <script lang="ts">
-  // Left region (tech-gui.md §2). Stage 0.3 stands up the frame and the working
-  // footer toggle; Stage 1.1 turns the entries into real selectors/spawners and
-  // the sessions list.
+  // Left region (tech-gui.md §2): header (logo + collapse), the four entry points
+  // (two selectors that hold a highlight, two spawners that open sessions), the
+  // sessions list, and the footer (palette + theme toggle, §5.1). The active
+  // highlight is the brand's accent inversion, so exactly one filled row — a
+  // selector or a session — is visible at any moment (the §2 invariant, made legible).
   import Logo from './Logo.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
-  import { Button, Icon } from '$lib/theme';
+  import { Button, Icon, StatusDot, type IconName, type Status } from '$lib/theme';
+  import { activeEntity } from '$lib/stores/activeEntity';
+  import { sessions, type Session, type SessionKind, type SessionStatus } from '$lib/stores/sessions';
+  import { sidebarCollapsed } from '$lib/stores/ui';
+  import { spawnSession, closeSession } from '$lib/stores/navigation';
 
-  const entries = ['Dashboard', 'Snippets', 'SFTP', 'Terminal'];
+  type Selector = { kind: 'dashboard' | 'snippets'; label: string; icon: IconName };
+  type Spawner = { kind: SessionKind; label: string; icon: IconName };
+
+  const selectors: Selector[] = [
+    { kind: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
+    { kind: 'snippets', label: 'Snippets', icon: 'snippets' }
+  ];
+  const spawners: Spawner[] = [
+    { kind: 'sftp', label: 'SFTP', icon: 'sftp' },
+    { kind: 'terminal', label: 'Terminal', icon: 'terminal' }
+  ];
+
+  // Session state maps onto the shared server-state palette; a stub session (Stage 1)
+  // is still connecting, so its dot stays neutral until Stage 3 wires real status.
+  const SESSION_DOT: Record<SessionStatus, Status> = {
+    connecting: 'unknown',
+    connected: 'ok',
+    failed: 'crit',
+    unknown: 'unknown'
+  };
+
+  const rowBase =
+    'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
+  const rowState = (active: boolean): string =>
+    active ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-surface-inset hover:text-fg';
+
+  function selectorLabel(s: Session): string {
+    return `${s.hostName} · ${s.kind}`;
+  }
 </script>
 
-<aside class="col-start-1 row-start-1 flex h-full flex-col border-r border-default bg-surface">
-  <header class="flex items-center gap-2.5 px-5 py-4">
-    <Logo size={22} />
-    <span class="text-sm font-bold tracking-wide">OmnySSH</span>
+<aside
+  class="col-start-1 row-start-1 flex h-full flex-col overflow-hidden border-r border-default bg-surface"
+>
+  <header
+    class="flex items-center gap-2.5 px-3 py-4 {$sidebarCollapsed ? 'justify-center' : ''}"
+  >
+    {#if !$sidebarCollapsed}
+      <Logo size={22} />
+      <span class="flex-1 truncate text-sm font-bold tracking-wide">OmnySSH</span>
+    {/if}
+    <Button
+      variant="icon"
+      title={$sidebarCollapsed ? 'Expand sidebar (⌘B)' : 'Collapse sidebar (⌘B)'}
+      onclick={() => sidebarCollapsed.toggle()}
+    >
+      <Icon name={$sidebarCollapsed ? 'expand' : 'collapse'} />
+    </Button>
   </header>
 
-  <nav class="flex-1 px-3 py-2">
+  <nav class="flex-1 overflow-y-auto px-2 py-2">
     <ul class="space-y-1">
-      {#each entries as entry (entry)}
-        <li class="rounded-lg px-3 py-2 text-sm text-muted">{entry}</li>
+      {#each selectors as sel (sel.kind)}
+        <li>
+          <button
+            type="button"
+            class="{rowBase} {rowState($activeEntity.kind === sel.kind)} {$sidebarCollapsed
+              ? 'justify-center'
+              : ''}"
+            title={sel.label}
+            aria-current={$activeEntity.kind === sel.kind ? 'page' : undefined}
+            onclick={() =>
+              sel.kind === 'dashboard' ? activeEntity.selectDashboard() : activeEntity.selectSnippets()}
+          >
+            <Icon name={sel.icon} />
+            {#if !$sidebarCollapsed}<span class="truncate">{sel.label}</span>{/if}
+          </button>
+        </li>
+      {/each}
+      {#each spawners as sp (sp.kind)}
+        <li>
+          <button
+            type="button"
+            class="{rowBase} {rowState(false)} {$sidebarCollapsed ? 'justify-center' : ''}"
+            title={sp.label}
+            onclick={() => spawnSession(sp.kind, 'placeholder')}
+          >
+            <Icon name={sp.icon} />
+            {#if !$sidebarCollapsed}<span class="truncate">{sp.label}</span>{/if}
+          </button>
+        </li>
       {/each}
     </ul>
+
+    {#if $sessions.length > 0}
+      <ul class="mt-2 space-y-1 border-t border-default pt-2">
+        {#each $sessions as s (s.id)}
+          {@const active = $activeEntity.kind === 'session' && $activeEntity.id === s.id}
+          <li>
+            <div
+              class="{rowBase} {rowState(active)} {$sidebarCollapsed ? 'justify-center' : 'pr-1'}"
+            >
+              <button
+                type="button"
+                class="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                title={selectorLabel(s)}
+                aria-current={active ? 'true' : undefined}
+                onclick={() => activeEntity.activateSession(s.id)}
+              >
+                {#if $sidebarCollapsed}
+                  <span class="relative inline-flex shrink-0">
+                    <Icon name={s.kind} />
+                    <span class="absolute -right-1 -top-1">
+                      <StatusDot status={SESSION_DOT[s.status]} size={7} />
+                    </span>
+                  </span>
+                {:else}
+                  <StatusDot status={SESSION_DOT[s.status]} />
+                  <Icon name={s.kind} size={16} />
+                  <span class="min-w-0 flex-1 truncate">{selectorLabel(s)}</span>
+                {/if}
+              </button>
+              {#if !$sidebarCollapsed}
+                <button
+                  type="button"
+                  class="shrink-0 rounded p-1 opacity-60 transition hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                  title="Close session"
+                  aria-label="Close session"
+                  onclick={() => closeSession(s.id)}
+                >
+                  <Icon name="close" size={14} />
+                </button>
+              {/if}
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   </nav>
 
-  <footer class="flex items-center gap-1 border-t border-default px-3 py-3">
+  <footer
+    class="border-t border-default px-2 py-3 {$sidebarCollapsed
+      ? 'flex flex-col items-center gap-1'
+      : 'flex items-center gap-1'}"
+  >
     <Button variant="icon" title="Command palette (⌘K)">
       <Icon name="command" />
     </Button>
