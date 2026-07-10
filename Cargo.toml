@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/omnyssh-core", "crates/omnyssh"]
+members = ["crates/omnyssh-core", "crates/omnyssh", "crates/omnyssh-gui"]
+# GUI excluded from bare cargo builds: `cargo build`/`test`/`install` at the root
+# build core + TUI only, with no Tauri/npm toolchain (tech-gui.md §3.1).
+default-members = ["crates/omnyssh-core", "crates/omnyssh"]
 
 [workspace.package]
 version = "1.1.0"

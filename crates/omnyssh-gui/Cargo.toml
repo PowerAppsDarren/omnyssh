@@ -1,0 +1,18 @@
+[package]
+name = "omnyssh-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OmnySSH Desktop — native GUI for the OmnySSH engine"
+publish = false
+
+[[bin]]
+name = "omnyssh-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
