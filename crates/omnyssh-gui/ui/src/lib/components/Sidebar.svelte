@@ -33,9 +33,10 @@
     unknown: 'unknown'
   };
 
-  const rowBase =
-    'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition ' +
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
+  const rowBase = 'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition';
+  // The ring belongs on the focusable element, so it is applied to buttons only —
+  // never the session-row wrapper div, where :focus-visible can never match.
+  const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
   const rowState = (active: boolean): string =>
     active ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-surface-inset hover:text-fg';
 
@@ -63,13 +64,14 @@
     </Button>
   </header>
 
-  <nav class="flex-1 overflow-y-auto px-2 py-2">
-    <ul class="space-y-1">
+  <!-- Entry points stay pinned; only the sessions list scrolls (tech-gui.md §2). -->
+  <nav class="flex min-h-0 flex-1 flex-col px-2 py-2">
+    <ul class="shrink-0 space-y-1">
       {#each selectors as sel (sel.kind)}
         <li>
           <button
             type="button"
-            class="{rowBase} {rowState($activeEntity.kind === sel.kind)} {$sidebarCollapsed
+            class="{rowBase} {focusRing} {rowState($activeEntity.kind === sel.kind)} {$sidebarCollapsed
               ? 'justify-center'
               : ''}"
             title={sel.label}
@@ -86,7 +88,7 @@
         <li>
           <button
             type="button"
-            class="{rowBase} {rowState(false)} {$sidebarCollapsed ? 'justify-center' : ''}"
+            class="{rowBase} {focusRing} {rowState(false)} {$sidebarCollapsed ? 'justify-center' : ''}"
             title={sp.label}
             onclick={() => spawnSession(sp.kind, 'placeholder')}
           >
@@ -98,7 +100,7 @@
     </ul>
 
     {#if $sessions.length > 0}
-      <ul class="mt-2 space-y-1 border-t border-default pt-2">
+      <ul class="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto border-t border-default pt-2">
         {#each $sessions as s (s.id)}
           {@const active = $activeEntity.kind === 'session' && $activeEntity.id === s.id}
           <li>
@@ -107,8 +109,9 @@
             >
               <button
                 type="button"
-                class="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                class="flex min-w-0 flex-1 items-center gap-2.5 rounded text-left {focusRing}"
                 title={selectorLabel(s)}
+                aria-label={selectorLabel(s)}
                 aria-current={active ? 'true' : undefined}
                 onclick={() => activeEntity.activateSession(s.id)}
               >
@@ -128,9 +131,9 @@
               {#if !$sidebarCollapsed}
                 <button
                   type="button"
-                  class="shrink-0 rounded p-1 opacity-60 transition hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
-                  title="Close session"
-                  aria-label="Close session"
+                  class="shrink-0 rounded p-1 opacity-60 transition hover:opacity-100 {focusRing}"
+                  title="Close {selectorLabel(s)}"
+                  aria-label="Close {selectorLabel(s)}"
                   onclick={() => closeSession(s.id)}
                 >
                   <Icon name="close" size={14} />
