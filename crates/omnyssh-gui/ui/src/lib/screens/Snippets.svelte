@@ -126,7 +126,13 @@
               </div>
             </div>
             <div class="flex shrink-0 items-center gap-1.5">
-              <button type="button" class={pill} title="Run {snippet.name}" onclick={() => (dialog = { kind: 'run', snippet })}>
+              <button
+                type="button"
+                class={pill}
+                title="Run {snippet.name}"
+                aria-label="Run {snippet.name}"
+                onclick={() => (dialog = { kind: 'run', snippet })}
+              >
                 <Icon name="play" size={12} />
                 Run
               </button>

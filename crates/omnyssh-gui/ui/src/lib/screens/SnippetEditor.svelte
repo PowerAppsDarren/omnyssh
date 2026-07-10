@@ -102,13 +102,15 @@
         <input bind:value={fields.tags} class={field} placeholder="ops, deploy" />
       </label>
 
-      <label class={label}>
-        <span>Params</span>
-        <input bind:value={fields.params} class={field} placeholder="service, timeout" />
-        <span class="block text-[11px] font-normal text-faint">
+      <div class="space-y-1">
+        <label class={label}>
+          <span>Params</span>
+          <input bind:value={fields.params} class={field} placeholder="service, timeout" />
+        </label>
+        <p class="text-[11px] text-faint">
           Comma-separated names, referenced as {'{{name}}'} in the command.
-        </span>
-      </label>
+        </p>
+      </div>
 
       {#if error}
         <p class="text-xs text-status-crit">{error}</p>

@@ -87,6 +87,7 @@
                 type="button"
                 role="checkbox"
                 aria-checked={checked}
+                aria-label={host.name}
                 class="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition
                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus
                   {checked ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-surface-inset hover:text-fg'}"
