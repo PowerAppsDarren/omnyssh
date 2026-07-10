@@ -5,6 +5,7 @@ import { hosts } from '$lib/stores/hosts';
 import { statuses } from '$lib/stores/statuses';
 import { metrics } from '$lib/stores/metrics';
 import { services } from '$lib/stores/services';
+import { snippetRun, beginRun, clearRun } from '$lib/stores/snippets';
 import { lastError } from '$lib/stores/notifications';
 import {
   applyError,
@@ -12,7 +13,8 @@ import {
   applyHostsLoaded,
   applyMetricsUpdated,
   applyServicesDetected,
-  applyServicesFailed
+  applyServicesFailed,
+  applySnippetResult
 } from './router';
 
 describe('ipc event router', () => {
@@ -133,5 +135,15 @@ describe('ipc event router', () => {
     applyError('boom');
 
     expect(get(lastError)).toBe('boom');
+  });
+
+  it('routes a snippet-result into the active run, keyed by host', () => {
+    beginRun('deploy', ['web-1', 'web-2']);
+    applySnippetResult({ hostName: 'web-2', snippetName: 'deploy', ok: true, output: 'done' });
+
+    const run = get(snippetRun);
+    expect(run?.entries[0].pending).toBe(true); // web-1 untouched
+    expect(run?.entries[1]).toEqual({ hostName: 'web-2', pending: false, ok: true, output: 'done' });
+    clearRun();
   });
 });

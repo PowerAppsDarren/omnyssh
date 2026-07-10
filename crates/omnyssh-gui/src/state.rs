@@ -49,6 +49,17 @@ impl GuiState {
             .collect()
     }
 
+    /// Resolve `names` to their full `Host` records for a backend-only op (snippet
+    /// execute, key setup). Secret material rides along here and never crosses the
+    /// IPC boundary. Unknown names are skipped; order follows `names`.
+    pub fn hosts_by_name(&self, names: &[String]) -> Vec<Host> {
+        let hosts = self.hosts.read().expect("hosts lock poisoned");
+        names
+            .iter()
+            .filter_map(|name| hosts.iter().find(|h| &h.name == name).cloned())
+            .collect()
+    }
+
     /// Start (or restart) the pollers for the cached hosts. Must run inside the
     /// Tauri async runtime — `PollManager::start` spawns tokio tasks (§3.4).
     pub fn restart_pollers(&self) {

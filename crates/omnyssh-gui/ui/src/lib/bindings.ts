@@ -28,6 +28,56 @@ async reloadHosts() : Promise<Result<null, CommandError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * List saved snippets from the shared `snippets.toml` (tech-gui.md §4.2).
+ */
+async listSnippets() : Promise<Result<SnippetDto[], CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_snippets") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Upsert a snippet by name and persist the whole list (tech-gui.md §4.2). A new
+ * name appends; an existing name is replaced in place (an in-place edit). A rename
+ * is a frontend delete-old + save-new, since the contract keys snippets on `name`.
+ */
+async saveSnippet(snippet: SnippetDto) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_snippet", { snippet }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete the snippet named `name` and persist (tech-gui.md §4.2). A missing name is
+ * a no-op success — the desired end state (absent) already holds.
+ */
+async deleteSnippet(name: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_snippet", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Execute a snippet on one or more hosts (tech-gui.md §4.2). Substitutes the
+ * provided values into declared placeholders, then fires one task per host that
+ * runs the command over a fresh SSH session and emits a `snippet-result` (§4.3).
+ * Fire-and-forget: results arrive as events, mirroring the core's own model.
+ */
+async executeSnippet(snippetName: string, hostNames: string[], params: Partial<{ [key in string]: string }>) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("execute_snippet", { snippetName, hostNames, params }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -40,14 +90,16 @@ hostStatusChanged: HostStatusChanged,
 hostsLoaded: HostsLoaded,
 metricsUpdated: MetricsUpdated,
 servicesDetected: ServicesDetected,
-servicesFailed: ServicesFailed
+servicesFailed: ServicesFailed,
+snippetResult: SnippetResult
 }>({
 error: "error",
 hostStatusChanged: "host-status-changed",
 hostsLoaded: "hosts-loaded",
 metricsUpdated: "metrics-updated",
 servicesDetected: "services-detected",
-servicesFailed: "services-failed"
+servicesFailed: "services-failed",
+snippetResult: "snippet-result"
 })
 
 /** user-defined constants **/
@@ -122,6 +174,26 @@ export type ServicesDetected = { hostName: string; services: ServiceDto[] }
  * Discovery failed for a host (tech-gui.md §4.3).
  */
 export type ServicesFailed = { hostName: string; message: string }
+/**
+ * A saved command snippet as the frontend sees it (tech-gui.md §4.1). Crosses the
+ * boundary both ways — outbound for `list_snippets`, inbound for `save_snippet` —
+ * so it derives `Deserialize` too. Optional fields are omitted when absent, matching
+ * the sparse `snippets.toml` the TUI writes.
+ */
+export type SnippetDto = { name: string; command: string; scope: SnippetScopeDto; host?: string | null; tags?: string[] | null; params?: string[] | null }
+/**
+ * Result of running a snippet on one host (tech-gui.md §4.3). Emitted directly by
+ * `execute_snippet` per host (one-shot `SshSession::run_command`), not via the
+ * shared bridge — the same "the command owns the result" pattern the SFTP
+ * per-session forwarder uses (§3.4). The core's `Result<String, String>` is
+ * flattened to `ok` + `output` (stdout on success, the error message on failure).
+ */
+export type SnippetResult = { hostName: string; snippetName: string; ok: boolean; output: string }
+/**
+ * Snippet scope, mirrors `omnyssh_core::config::snippets::SnippetScope`. Wire
+ * names are lowercase (`global`, `host`).
+ */
+export type SnippetScopeDto = "global" | "host"
 
 /** tauri-specta globals **/
 
