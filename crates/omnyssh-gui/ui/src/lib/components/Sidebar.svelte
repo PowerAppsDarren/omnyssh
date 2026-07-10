@@ -6,11 +6,19 @@
   // selector or a session — is visible at any moment (the §2 invariant, made legible).
   import Logo from './Logo.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
-  import { Button, Icon, StatusDot, type IconName, type Status } from '$lib/theme';
+  import { Button, Icon, StatusDot, type IconName } from '$lib/theme';
   import { activeEntity } from '$lib/stores/activeEntity';
-  import { sessions, sessionLabel, type SessionKind, type SessionStatus } from '$lib/stores/sessions';
+  import { sessions, sessionLabel, sessionStatusDot, type SessionKind } from '$lib/stores/sessions';
   import { sidebarCollapsed } from '$lib/stores/ui';
   import { spawnSession, closeSession } from '$lib/stores/navigation';
+  import { palette } from '$lib/stores/palette';
+
+  // Action-first spawn (tech-gui.md §2): a spawner opens the host-picker, then creates
+  // a session of its kind for the chosen host. A dismissed picker spawns nothing.
+  async function pickAndSpawn(kind: SessionKind): Promise<void> {
+    const host = await palette.pickHost();
+    if (host) spawnSession(kind, host.name);
+  }
 
   type Selector = { kind: 'dashboard' | 'snippets'; label: string; icon: IconName };
   type Spawner = { kind: SessionKind; label: string; icon: IconName };
@@ -23,15 +31,6 @@
     { kind: 'sftp', label: 'SFTP', icon: 'sftp' },
     { kind: 'terminal', label: 'Terminal', icon: 'terminal' }
   ];
-
-  // Session state maps onto the shared server-state palette; a stub session (Stage 1)
-  // is still connecting, so its dot stays neutral until Stage 3 wires real status.
-  const SESSION_DOT: Record<SessionStatus, Status> = {
-    connecting: 'unknown',
-    connected: 'ok',
-    failed: 'crit',
-    unknown: 'unknown'
-  };
 
   const rowBase = 'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition';
   // The ring belongs on the focusable element, so it is applied to buttons only —
@@ -86,7 +85,7 @@
             type="button"
             class="{rowBase} {focusRing} {rowState(false)} {$sidebarCollapsed ? 'justify-center' : ''}"
             title={sp.label}
-            onclick={() => spawnSession(sp.kind, 'placeholder')}
+            onclick={() => pickAndSpawn(sp.kind)}
           >
             <Icon name={sp.icon} />
             {#if !$sidebarCollapsed}<span class="truncate">{sp.label}</span>{/if}
@@ -115,11 +114,11 @@
                   <span class="relative inline-flex shrink-0">
                     <Icon name={s.kind} />
                     <span class="absolute -right-1 -top-1">
-                      <StatusDot status={SESSION_DOT[s.status]} size={7} />
+                      <StatusDot status={sessionStatusDot[s.status]} size={7} />
                     </span>
                   </span>
                 {:else}
-                  <StatusDot status={SESSION_DOT[s.status]} />
+                  <StatusDot status={sessionStatusDot[s.status]} />
                   <Icon name={s.kind} size={16} />
                   <span class="min-w-0 flex-1 truncate">{sessionLabel(s)}</span>
                 {/if}
@@ -147,7 +146,7 @@
       ? 'flex flex-col items-center gap-1'
       : 'flex items-center gap-1'}"
   >
-    <Button variant="icon" title="Command palette (⌘K)">
+    <Button variant="icon" title="Command palette (⌘K)" onclick={() => palette.open()}>
       <Icon name="command" />
     </Button>
     <ThemeToggle />

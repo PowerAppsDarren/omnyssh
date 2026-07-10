@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import type { Status } from '$lib/theme';
 
 // The open terminal/SFTP tabs (tech-gui.md §2, §3.5). Spawners append a row here;
 // Stage 3 makes the sessions real (live PTY / SFTP). Ids come from one monotonic
@@ -6,6 +7,15 @@ import { writable } from 'svelte/store';
 // the frontend.
 export type SessionKind = 'terminal' | 'sftp';
 export type SessionStatus = 'connecting' | 'connected' | 'failed' | 'unknown';
+
+/** Session state on the shared server-state palette — one source for every session dot
+ *  (sidebar row + command palette) so the two never drift. */
+export const sessionStatusDot: Record<SessionStatus, Status> = {
+  connecting: 'unknown',
+  connected: 'ok',
+  failed: 'crit',
+  unknown: 'unknown'
+};
 
 export interface Session {
   id: number;
