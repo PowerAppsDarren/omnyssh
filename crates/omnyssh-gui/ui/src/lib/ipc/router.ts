@@ -5,12 +5,14 @@ import type {
   ConnectionStatusDto,
   HostDto,
   MetricsDto,
-  ServiceDto
+  ServiceDto,
+  SnippetResult
 } from '$lib/bindings';
 import { hosts } from '$lib/stores/hosts';
 import { statuses } from '$lib/stores/statuses';
 import { metrics, mergeMetrics } from '$lib/stores/metrics';
 import { services } from '$lib/stores/services';
+import { snippetRun, reduceRunResult } from '$lib/stores/snippets';
 import { lastError } from '$lib/stores/notifications';
 
 export function applyHostsLoaded(payload: HostDto[]): void {
@@ -43,6 +45,10 @@ export function applyServicesDetected(payload: { hostName: string; services: Ser
 
 export function applyServicesFailed(payload: { hostName: string; message: string }): void {
   services.update((m) => new Map(m).set(payload.hostName, { kind: 'failed', message: payload.message }));
+}
+
+export function applySnippetResult(payload: SnippetResult): void {
+  snippetRun.update((run) => reduceRunResult(run, payload));
 }
 
 export function applyError(message: string): void {

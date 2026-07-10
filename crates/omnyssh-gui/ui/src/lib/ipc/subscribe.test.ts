@@ -21,6 +21,7 @@ vi.mock('$lib/bindings', () => {
       metricsUpdated: channel('metricsUpdated'),
       servicesDetected: channel('servicesDetected'),
       servicesFailed: channel('servicesFailed'),
+      snippetResult: channel('snippetResult'),
       error: channel('error')
     }
   };
@@ -30,6 +31,7 @@ import { hosts } from '$lib/stores/hosts';
 import { statuses } from '$lib/stores/statuses';
 import { metrics } from '$lib/stores/metrics';
 import { services } from '$lib/stores/services';
+import { snippetRun, beginRun, clearRun } from '$lib/stores/snippets';
 import { lastError } from '$lib/stores/notifications';
 import { startEventBridge } from './subscribe';
 
@@ -40,6 +42,7 @@ describe('startEventBridge', () => {
     metrics.set(new Map());
     services.set(new Map());
     lastError.set(null);
+    clearRun();
   });
 
   it('routes each event to its matching store', async () => {
@@ -57,12 +60,17 @@ describe('startEventBridge', () => {
     listeners.servicesDetected({
       payload: { hostName: 'web-1', services: [{ kind: 'redis', metrics: [] }] }
     });
+    beginRun('deploy', ['web-1']);
+    listeners.snippetResult({
+      payload: { hostName: 'web-1', snippetName: 'deploy', ok: true, output: 'done' }
+    });
     listeners.error({ payload: { message: 'nope' } });
 
     expect(get(hosts)).toHaveLength(1);
     expect(get(statuses).get('web-1')).toEqual({ kind: 'connected' });
     expect(get(metrics).get('web-1')?.cpuPercent).toBe(5);
     expect(get(services).get('web-1')).toEqual({ kind: 'detected', services: [{ kind: 'redis', metrics: [] }] });
+    expect(get(snippetRun)?.entries[0]).toEqual({ hostName: 'web-1', pending: false, ok: true, output: 'done' });
     expect(get(lastError)).toBe('nope');
   });
 });

@@ -11,4 +11,9 @@ export type IconName =
   | 'terminal'
   | 'close'
   | 'collapse'
-  | 'expand';
+  | 'expand'
+  | 'check'
+  | 'play'
+  | 'edit'
+  | 'trash'
+  | 'plus';
