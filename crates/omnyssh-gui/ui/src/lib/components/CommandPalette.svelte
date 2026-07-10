@@ -4,22 +4,14 @@
   // hand a chosen host back to its caller (the spawner buttons). Keyboard-first — type
   // to filter, ↑/↓ to move, ↵ to select, esc to dismiss. Glass/blur per the brandbook.
   import { tick } from 'svelte';
-  import { Icon, StatusDot, type Status } from '$lib/theme';
+  import { Icon, StatusDot } from '$lib/theme';
   import { palette, paletteItems, nextIndex, hostStatusDot } from '$lib/stores/palette';
   import { hosts } from '$lib/stores/hosts';
   import { statuses } from '$lib/stores/statuses';
-  import { sessions, sessionLabel, type SessionStatus } from '$lib/stores/sessions';
+  import { sessions, sessionLabel, sessionStatusDot } from '$lib/stores/sessions';
   import { activeEntity } from '$lib/stores/activeEntity';
   import { spawnSession } from '$lib/stores/navigation';
   import { isPaletteChord } from '$lib/stores/ui';
-
-  // Session state maps onto the shared server-state palette (mirrors the sidebar row).
-  const SESSION_DOT: Record<SessionStatus, Status> = {
-    connecting: 'unknown',
-    connected: 'ok',
-    failed: 'crit',
-    unknown: 'unknown'
-  };
 
   let inputEl = $state<HTMLInputElement>();
   let listEl = $state<HTMLUListElement>();
@@ -43,14 +35,31 @@
         : 'No hosts or sessions yet.'
   );
 
-  // Fresh query + top selection, and focus the input, each time the overlay opens or
-  // switches mode.
+  // Focus returns here when the overlay closes, so a keyboard user is not dropped to
+  // <body> after picking a host.
+  let restoreFocus: HTMLElement | null = null;
+
+  // On open: remember the trigger, clear the query, focus the input. On close: hand
+  // focus back. Re-runs on a mode switch too, since the store emits a fresh object.
   $effect(() => {
     if ($palette.open) {
+      // Capture once per open session, so a mode switch does not overwrite the trigger
+      // with the palette's own input.
+      restoreFocus ??= document.activeElement as HTMLElement | null;
       query = '';
-      selected = 0;
       void tick().then(() => inputEl?.focus());
+    } else if (restoreFocus) {
+      if (restoreFocus.isConnected) restoreFocus.focus();
+      restoreFocus = null;
     }
+  });
+
+  // Reset the highlight to the top match whenever the result set changes — typing, a
+  // mode switch, or a live hosts/sessions update — so arrow-nav and Enter never target a
+  // stale or reordered row.
+  $effect(() => {
+    void items;
+    selected = 0;
   });
 
   // Keep the highlighted row visible as arrow-nav moves it.
@@ -75,20 +84,29 @@
     }
   }
 
+  // Chromium re-fires mousemove when the list scrolls under a stationary pointer, which
+  // would snap the highlight back during arrow-nav. Only a real move (changed
+  // coordinates) is allowed to drive the selection.
+  let pointer = { x: -1, y: -1 };
+  function hover(e: MouseEvent, i: number): void {
+    if (e.clientX === pointer.x && e.clientY === pointer.y) return;
+    pointer = { x: e.clientX, y: e.clientY };
+    selected = i;
+  }
+
   function onKeydown(e: KeyboardEvent): void {
-    if (!$palette.open) {
-      if (isPaletteChord(e)) {
-        e.preventDefault();
-        palette.open();
-      }
-      return;
-    }
     if (isPaletteChord(e)) {
-      // ⌘K inside a picker returns to the navigator.
+      // ⌘K toggles: open the navigator when closed, dismiss when already open.
       e.preventDefault();
-      palette.open();
+      if ($palette.open) palette.close();
+      else palette.open();
       return;
     }
+    if (!$palette.open) return;
+    // Enter/Escape that commit or cancel an IME composition must reach the input, and
+    // Home/End/←/→ belong to the search field's caret — only ↑/↓, Enter, Escape drive
+    // the list.
+    if (e.isComposing) return;
     switch (e.key) {
       case 'Escape':
         e.preventDefault();
@@ -101,14 +119,6 @@
       case 'ArrowUp':
         e.preventDefault();
         selected = nextIndex(selected, -1, items.length);
-        break;
-      case 'Home':
-        e.preventDefault();
-        selected = 0;
-        break;
-      case 'End':
-        e.preventDefault();
-        selected = items.length - 1;
         break;
       case 'Enter':
         e.preventDefault();
@@ -148,7 +158,6 @@
         <input
           bind:this={inputEl}
           bind:value={query}
-          oninput={() => (selected = 0)}
           type="text"
           {placeholder}
           aria-label={placeholder}
@@ -162,7 +171,9 @@
         {#if items.length === 0}
           <li class="px-3 py-6 text-center text-sm text-muted">{emptyMessage}</li>
         {:else}
-          {#each items as item, i (item.kind === 'session' ? `s${item.session.id}` : `h${item.host.name}`)}
+          <!-- Keyed by position: rows are stateless, and host names are not guaranteed
+               unique, so a name key could throw each_key_duplicate. -->
+          {#each items as item, i (i)}
             {#if $palette.mode === 'navigate' && i === firstSession}
               <li class={sectionHead}>Sessions</li>
             {/if}
@@ -176,10 +187,10 @@
                 aria-current={selected === i ? 'true' : undefined}
                 class="{rowBase} {rowState(selected === i)}"
                 onclick={() => selectAt(i)}
-                onmousemove={() => (selected = i)}
+                onmousemove={(e) => hover(e, i)}
               >
                 {#if item.kind === 'session'}
-                  <StatusDot status={SESSION_DOT[item.session.status]} />
+                  <StatusDot status={sessionStatusDot[item.session.status]} />
                   <Icon name={item.session.kind} size={16} />
                   <span class="min-w-0 flex-1 truncate">{sessionLabel(item.session)}</span>
                 {:else}

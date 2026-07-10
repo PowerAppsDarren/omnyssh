@@ -6,9 +6,9 @@
   // selector or a session — is visible at any moment (the §2 invariant, made legible).
   import Logo from './Logo.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
-  import { Button, Icon, StatusDot, type IconName, type Status } from '$lib/theme';
+  import { Button, Icon, StatusDot, type IconName } from '$lib/theme';
   import { activeEntity } from '$lib/stores/activeEntity';
-  import { sessions, sessionLabel, type SessionKind, type SessionStatus } from '$lib/stores/sessions';
+  import { sessions, sessionLabel, sessionStatusDot, type SessionKind } from '$lib/stores/sessions';
   import { sidebarCollapsed } from '$lib/stores/ui';
   import { spawnSession, closeSession } from '$lib/stores/navigation';
   import { palette } from '$lib/stores/palette';
@@ -31,15 +31,6 @@
     { kind: 'sftp', label: 'SFTP', icon: 'sftp' },
     { kind: 'terminal', label: 'Terminal', icon: 'terminal' }
   ];
-
-  // Session state maps onto the shared server-state palette; a stub session (Stage 1)
-  // is still connecting, so its dot stays neutral until Stage 3 wires real status.
-  const SESSION_DOT: Record<SessionStatus, Status> = {
-    connecting: 'unknown',
-    connected: 'ok',
-    failed: 'crit',
-    unknown: 'unknown'
-  };
 
   const rowBase = 'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition';
   // The ring belongs on the focusable element, so it is applied to buttons only —
@@ -123,11 +114,11 @@
                   <span class="relative inline-flex shrink-0">
                     <Icon name={s.kind} />
                     <span class="absolute -right-1 -top-1">
-                      <StatusDot status={SESSION_DOT[s.status]} size={7} />
+                      <StatusDot status={sessionStatusDot[s.status]} size={7} />
                     </span>
                   </span>
                 {:else}
-                  <StatusDot status={SESSION_DOT[s.status]} />
+                  <StatusDot status={sessionStatusDot[s.status]} />
                   <Icon name={s.kind} size={16} />
                   <span class="min-w-0 flex-1 truncate">{sessionLabel(s)}</span>
                 {/if}

@@ -59,6 +59,16 @@ test('⌘K navigator jumps to a host by opening a session', async ({ page }) => 
   await expect(row).toHaveAttribute('aria-current', 'true');
 });
 
+test('⌘K toggles the navigator open and closed', async ({ page }) => {
+  await bootWithHosts(page);
+
+  await page.keyboard.press('Control+k');
+  await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+
+  await page.keyboard.press('Control+k');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
 test('a spawner opens the host-picker and spawns a session for the chosen host', async ({
   page
 }) => {
