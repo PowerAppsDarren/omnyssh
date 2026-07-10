@@ -67,3 +67,42 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --check
+
+  tui-build-independence:
+    name: TUI builds without the GUI toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-independence-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Remove Node/npm from PATH
+        run: |
+          for b in node npm npx corepack pnpm yarn; do
+            while p="$(command -v "$b" 2>/dev/null)"; do sudo rm -f "$p"; hash -r; done
+          done
+          echo "node: $(command -v node || echo absent)"
+
+      - name: Bare build is core + TUI only (no Node, no Tauri)
+        run: |
+          test -z "$(command -v node)" || { echo "node still present"; exit 1; }
+          cargo build --locked
+          cargo test --locked
+          test -f target/debug/omny || { echo "omny missing"; exit 1; }
+          if [ -f target/debug/omnyssh-desktop ]; then
+            echo "GUI leaked into the bare build"; exit 1
+          fi
+          echo "OK: bare build produced omny, excluded omnyssh-desktop, needed no Node."
