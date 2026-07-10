@@ -42,6 +42,9 @@ fn main() {
     export_bindings(BINDINGS_PATH);
 
     tauri::Builder::default()
+        // Persists UI prefs (theme, later sidebar collapse) from the frontend JS
+        // API — no bespoke command (tech-gui.md §4.2, §5.1).
+        .plugin(tauri_plugin_store::Builder::new().build())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
