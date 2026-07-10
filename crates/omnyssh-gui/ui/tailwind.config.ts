@@ -19,8 +19,6 @@ export default {
       fg: 'var(--text)',
       muted: 'var(--text-muted)',
       faint: 'var(--text-faint)',
-      default: 'var(--border)',
-      strong: 'var(--border-strong)',
       accent: 'var(--accent)',
       'accent-fg': 'var(--accent-fg)',
       focus: 'var(--focus-ring)',
@@ -36,11 +34,17 @@ export default {
         sans: ['Helvetica Neue', 'Helvetica', 'Arial', 'sans-serif'],
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace']
       },
-      // Bare `border` resolves to the token; preflight's universal border-color
-      // follows too (tech-gui.md §5.1).
-      borderColor: { DEFAULT: 'var(--border)' },
-      // The one soft elevation for floating elements (brandbook §05 Elevation).
-      boxShadow: { soft: '0 10px 30px -12px rgba(33, 33, 33, 0.18)' }
+      // Border tokens live under borderColor only, so `border-default`/
+      // `border-strong` work without polluting text-/bg-/ring- with a hairline
+      // grey. Bare `border` (and preflight's universal border-color) uses DEFAULT.
+      borderColor: {
+        DEFAULT: 'var(--border)',
+        default: 'var(--border)',
+        strong: 'var(--border-strong)'
+      },
+      // The one soft elevation for floating elements (brandbook §05); value is a
+      // per-theme token so it stays visible on dark.
+      boxShadow: { soft: 'var(--shadow-soft)' }
     }
   },
   plugins: []

@@ -28,6 +28,7 @@
   --status-warn: #b7791f;
   --status-crit: #c0392b;
   --status-off: #6e7681;
+  --shadow-soft: 0 10px 30px -12px rgba(33, 33, 33, 0.18);
 }
 
 :root[data-theme='dark'] {
@@ -49,6 +50,7 @@
   --status-warn: #e8c15a;
   --status-crit: #f07777;
   --status-off: #7c8595;
+  --shadow-soft: 0 10px 30px -12px rgba(0, 0, 0, 0.5);
 }
 
 html,
