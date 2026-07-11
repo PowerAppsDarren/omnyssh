@@ -102,7 +102,7 @@ jobs:
           cargo build --locked
           cargo test --locked
           test -f target/debug/omny || { echo "omny missing"; exit 1; }
-          if [ -f target/debug/omnyssh-desktop ]; then
+          if [ -f target/debug/OmnySSH ]; then
             echo "GUI leaked into the bare build"; exit 1
           fi
-          echo "OK: bare build produced omny, excluded omnyssh-desktop, needed no Node."
+          echo "OK: bare build produced omny, excluded OmnySSH, needed no Node."
