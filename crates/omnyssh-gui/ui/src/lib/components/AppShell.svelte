@@ -32,7 +32,7 @@
        (--titlebar-h, app.css). Sits below the z-40/z-50 overlays so they stay usable. -->
   <div data-tauri-drag-region class="absolute inset-x-0 top-0 z-20 h-[var(--titlebar-h)]"></div>
   <Sidebar />
-  <main class="col-start-2 row-start-1 overflow-auto pt-[var(--titlebar-h)]">
+  <main class="col-start-2 row-start-1 min-h-0 overflow-hidden">
     {@render children()}
   </main>
   <StatusBar />

@@ -45,14 +45,18 @@
     {/each}
 
     {#if selectorActive}
-      <div class="absolute inset-0 overflow-auto">
-        {#if $activeEntity.kind === 'dashboard'}
-          <Dashboard />
-        {:else if $activeEntity.kind === 'snippets'}
-          <Snippets />
-        {:else if $activeEntity.kind === 'settings'}
-          <Settings />
-        {/if}
+      <!-- Inset the scroll container (not the content) below the macOS title-bar strip,
+           so selector content scrolls within its pane and never under the traffic lights. -->
+      <div class="absolute inset-0 pt-[var(--titlebar-h)]">
+        <div class="h-full overflow-auto overscroll-contain">
+          {#if $activeEntity.kind === 'dashboard'}
+            <Dashboard />
+          {:else if $activeEntity.kind === 'snippets'}
+            <Snippets />
+          {:else if $activeEntity.kind === 'settings'}
+            <Settings />
+          {/if}
+        </div>
       </div>
     {/if}
   </div>
