@@ -8,7 +8,7 @@
   import { get } from 'svelte/store';
   import type { HostDto, HostInputDto } from '$lib/bindings';
   import { Surface, Chip, StatusDot, Icon, Button, statusToken } from '$lib/theme';
-  import { serverCards, QUICK_ACTIONS } from './serverCard';
+  import { serverCards, filterHosts, QUICK_ACTIONS } from './serverCard';
   import { spawnSession } from '$lib/stores/navigation';
   import { hosts } from '$lib/stores/hosts';
   import { lastError } from '$lib/stores/notifications';
@@ -21,6 +21,19 @@
   type Dialog = { kind: 'add' } | { kind: 'edit'; host: HostDto } | { kind: 'delete'; host: HostDto };
 
   let dialog = $state<Dialog | null>(null);
+
+  // Host search (task 6): a round toggle slides a filter field out to its left and the
+  // grid filters live. Frontend-only, like the snippet search — the core stays untouched.
+  let query = $state('');
+  let searchOpen = $state(false);
+  let searchInput = $state<HTMLInputElement>();
+  const visibleCards = $derived(filterHosts($serverCards, query));
+
+  function toggleSearch(): void {
+    searchOpen = !searchOpen;
+    if (searchOpen) requestAnimationFrame(() => searchInput?.focus());
+    else query = '';
+  }
 
   const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -69,15 +82,51 @@
   const iconBtn =
     'grid h-7 w-7 place-items-center rounded-lg text-muted transition hover:bg-surface-inset ' +
     'hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
+  const roundBtn =
+    'grid h-8 w-8 shrink-0 place-items-center rounded-full border border-default text-muted transition ' +
+    'hover:border-strong hover:bg-accent hover:text-accent-fg ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
+  const search =
+    'min-w-0 rounded-full bg-surface-inset py-1.5 text-sm text-fg outline-none transition-all duration-200 ' +
+    'placeholder:text-faint focus-visible:ring-2 focus-visible:ring-focus';
 </script>
 
 <section class="min-h-full px-6 pb-8 pt-3">
   <div class="mb-5 flex items-center gap-3">
     <h1 class="text-lg font-semibold tracking-tight">Dashboard</h1>
-    <button type="button" class="{pill} ml-auto" onclick={() => (dialog = { kind: 'add' })}>
-      <Icon name="plus" size={13} />
-      Add host
-    </button>
+    <div class="ml-auto flex items-center gap-2">
+      <!-- Host search: a round toggle that slides a live filter field out to its left. -->
+      <div class="flex items-center">
+        <input
+          bind:this={searchInput}
+          bind:value={query}
+          type="text"
+          placeholder="Search hosts…"
+          aria-label="Search hosts"
+          disabled={!searchOpen}
+          class="{search} {searchOpen
+            ? 'mr-2 w-52 px-3 opacity-100'
+            : 'pointer-events-none w-0 px-0 opacity-0'}"
+          onkeydown={(e) => {
+            if (e.key === 'Escape') toggleSearch();
+          }}
+        />
+        <button
+          type="button"
+          class={roundBtn}
+          title={searchOpen ? 'Close search' : 'Search hosts'}
+          aria-label={searchOpen ? 'Close search' : 'Search hosts'}
+          aria-expanded={searchOpen}
+          onclick={toggleSearch}
+        >
+          <Icon name={searchOpen ? 'close' : 'search'} size={15} />
+        </button>
+      </div>
+      <button type="button" class={pill} onclick={() => (dialog = { kind: 'add' })}>
+        <Icon name="plus" size={13} />
+        Add host
+      </button>
+    </div>
   </div>
 
   {#if $serverCards.length === 0}
@@ -89,9 +138,13 @@
         Add host
       </button>
     </div>
+  {:else if visibleCards.length === 0}
+    <div class="flex flex-col items-center justify-center gap-2 py-20 text-center">
+      <p class="text-sm text-muted">No hosts match “{query}”.</p>
+    </div>
   {:else}
     <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
-      {#each $serverCards as card, i (i)}
+      {#each visibleCards as card, i (i)}
         <Surface class="flex flex-col gap-4 p-5">
           <!-- Identity, then the actions on their own row so the name and address
                stay readable at any card width (a full row instead of sharing it). -->

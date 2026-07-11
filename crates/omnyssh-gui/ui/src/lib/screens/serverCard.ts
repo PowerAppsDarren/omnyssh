@@ -132,6 +132,21 @@ export const serverCards = derived(
     )
 );
 
+// Case-insensitive substring filter over a card's name / hostname / tags / notes,
+// mirroring the TUI host search (crates/omnyssh/src/app/host.rs `filter_hosts`). An
+// empty query keeps every card.
+export function filterHosts(cards: ServerCard[], query: string): ServerCard[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return cards;
+  return cards.filter(
+    ({ host }) =>
+      host.name.toLowerCase().includes(q) ||
+      host.hostname.toLowerCase().includes(q) ||
+      host.tags.some((t) => t.toLowerCase().includes(q)) ||
+      (host.notes?.toLowerCase().includes(q) ?? false)
+  );
+}
+
 // Host-first quick actions (tech-gui.md §2): `sh` opens a terminal, `files` opens
 // SFTP — both through the shared spawn path. The kind is a valid icon name too.
 export type QuickAction = { id: 'sh' | 'files'; label: string; kind: SessionKind };
