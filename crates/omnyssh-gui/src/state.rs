@@ -1,35 +1,89 @@
-//! Backend-managed state (tech-gui.md §3.4). Holds the host cache and the
-//! metrics/status poller; the shared engine channel feeds the bridge. PTY/SFTP
-//! managers and the session registry arrive with their slices.
+//! Backend-managed state (tech-gui.md §3.4). Holds the host cache, the
+//! metrics/status poller, the PTY manager (with the raw-byte tap, §3.6), the
+//! per-session terminal channels, and the session registry that maps public ids to
+//! the core's inner handles. The shared engine channel feeds the bridge.
 
+use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
-use omnyssh_core::event::CoreEvent;
+use omnyssh_core::event::{CoreEvent, SessionId};
 use omnyssh_core::ssh::client::Host;
 use omnyssh_core::ssh::pool::PollManager;
+use omnyssh_core::ssh::pty::PtyManager;
+use tauri::ipc::Channel;
 use tokio::sync::mpsc;
 
-use crate::dto::HostDto;
+use crate::dto::{HostDto, TerminalBytes};
 
 /// Metric poll cadence. Mirrors the TUI's fixed interval; a configurable refresh
 /// interval lands with settings in Stage 4.3 (tech-gui.md §4.3).
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Maps frontend-facing **public** session ids to the core's **inner** handles, and
+/// back for terminals (the bridge labels `terminal-exited` by inner PTY id, §3.4).
+/// A single monotonic id space keeps terminal — and, from Stage 3.2, SFTP — ids from
+/// ever colliding in the frontend.
+#[derive(Default)]
+pub struct SessionRegistry {
+    next: SessionId,
+    pty_by_public: HashMap<SessionId, SessionId>,
+    public_by_pty: HashMap<SessionId, SessionId>,
+}
+
+impl SessionRegistry {
+    /// Allocate a fresh public id for a terminal backed by PTY inner id `inner`.
+    pub fn register_terminal(&mut self, inner: SessionId) -> SessionId {
+        self.next += 1;
+        let public = self.next;
+        self.pty_by_public.insert(public, inner);
+        self.public_by_pty.insert(inner, public);
+        public
+    }
+
+    /// The PTY inner id for a public id (command → core), if the session is live.
+    pub fn pty_inner(&self, public: SessionId) -> Option<SessionId> {
+        self.pty_by_public.get(&public).copied()
+    }
+
+    /// Drop a terminal by public id (user-initiated close), returning its inner id.
+    pub fn remove_by_public(&mut self, public: SessionId) -> Option<SessionId> {
+        let inner = self.pty_by_public.remove(&public)?;
+        self.public_by_pty.remove(&inner);
+        Some(inner)
+    }
+
+    /// Drop a terminal by inner id (remote exit), returning its public id.
+    pub fn remove_by_pty(&mut self, inner: SessionId) -> Option<SessionId> {
+        let public = self.public_by_pty.remove(&inner)?;
+        self.pty_by_public.remove(&public);
+        Some(public)
+    }
+}
 
 pub struct GuiState {
     /// Cached host list, mapped to `HostDto` on demand for `list_hosts`.
     hosts: RwLock<Vec<Host>>,
     /// Metrics/status/discovery poller; replaced on reload, dropped on exit.
     poll: Mutex<Option<PollManager>>,
-    /// Shared engine channel the bridge drains; cloned to each `PollManager`.
+    /// All terminal sessions; constructed with the raw-byte tap (§3.6).
+    pty: Mutex<PtyManager>,
+    /// Terminal output routing: PTY inner id -> that tab's frontend channel.
+    term_channels: Mutex<HashMap<SessionId, Channel<TerminalBytes>>>,
+    /// Public id <-> inner handle mapping for all sessions.
+    sessions: Mutex<SessionRegistry>,
+    /// Shared engine channel the bridge drains; cloned to `PollManager`/`PtyManager`.
     engine_tx: mpsc::Sender<CoreEvent>,
 }
 
 impl GuiState {
-    pub fn new(engine_tx: mpsc::Sender<CoreEvent>) -> Self {
+    pub fn new(engine_tx: mpsc::Sender<CoreEvent>, pty: PtyManager) -> Self {
         Self {
             hosts: RwLock::new(Vec::new()),
             poll: Mutex::new(None),
+            pty: Mutex::new(pty),
+            term_channels: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(SessionRegistry::default()),
             engine_tx,
         }
     }
@@ -73,5 +127,185 @@ impl GuiState {
             self.engine_tx.clone(),
             POLL_INTERVAL,
         ));
+    }
+
+    /// Open a terminal for `host_name`, wiring its raw-output `channel`, and return
+    /// the public session id. The session task starts here but cannot emit output
+    /// until it connects, so registering the channel right after `open` beats the
+    /// first byte (§3.4). Locks are taken un-nested to stay deadlock-free.
+    pub fn open_terminal(
+        &self,
+        host_name: &str,
+        cols: u16,
+        rows: u16,
+        channel: Channel<TerminalBytes>,
+    ) -> Result<SessionId, String> {
+        let host = self
+            .hosts
+            .read()
+            .expect("hosts lock poisoned")
+            .iter()
+            .find(|h| h.name == host_name)
+            .cloned()
+            .ok_or_else(|| format!("unknown host '{host_name}'"))?;
+        let inner = self
+            .pty
+            .lock()
+            .expect("pty lock poisoned")
+            .open(&host, cols, rows, self.engine_tx.clone())
+            .map_err(|e| e.to_string())?;
+        self.term_channels
+            .lock()
+            .expect("term_channels lock poisoned")
+            .insert(inner, channel);
+        Ok(self
+            .sessions
+            .lock()
+            .expect("sessions lock poisoned")
+            .register_terminal(inner))
+    }
+
+    /// Forward keystrokes to a terminal. Unknown/closed ids are a no-op.
+    pub fn write_terminal(&self, public: SessionId, data: &[u8]) {
+        let inner = self
+            .sessions
+            .lock()
+            .expect("sessions lock poisoned")
+            .pty_inner(public);
+        if let Some(inner) = inner {
+            let _ = self
+                .pty
+                .lock()
+                .expect("pty lock poisoned")
+                .write(inner, data);
+        }
+    }
+
+    /// Relay a resize (window_change) to a terminal. Unknown/closed ids are a no-op.
+    pub fn resize_terminal(&self, public: SessionId, cols: u16, rows: u16) {
+        let inner = self
+            .sessions
+            .lock()
+            .expect("sessions lock poisoned")
+            .pty_inner(public);
+        if let Some(inner) = inner {
+            let _ = self
+                .pty
+                .lock()
+                .expect("pty lock poisoned")
+                .resize(inner, cols, rows);
+        }
+    }
+
+    /// User-initiated close: tear down the core session and drop its routing state,
+    /// so the task's later `PtyExited` finds no mapping and emits no `terminal-exited`
+    /// (the frontend already tore the tab down, §3.4).
+    pub fn close_terminal(&self, public: SessionId) {
+        let inner = self
+            .sessions
+            .lock()
+            .expect("sessions lock poisoned")
+            .remove_by_public(public);
+        if let Some(inner) = inner {
+            self.pty.lock().expect("pty lock poisoned").close(inner);
+            self.term_channels
+                .lock()
+                .expect("term_channels lock poisoned")
+                .remove(&inner);
+        }
+    }
+
+    /// Route a raw PTY chunk (keyed by inner id) into its tab's channel. Called by
+    /// the raw-output forwarder; unknown/closed ids are dropped (§3.6).
+    pub fn send_terminal_output(&self, inner: SessionId, bytes: Vec<u8>) {
+        let channel = self
+            .term_channels
+            .lock()
+            .expect("term_channels lock poisoned")
+            .get(&inner)
+            .cloned();
+        if let Some(channel) = channel {
+            let _ = channel.send(TerminalBytes(bytes));
+        }
+    }
+
+    /// Remote-side exit: map the inner id to its public id and drop routing state.
+    /// Returns the public id to emit `terminal-exited` for, or `None` if the user
+    /// already closed it (§3.4).
+    pub fn terminal_exited(&self, inner: SessionId) -> Option<SessionId> {
+        let public = self
+            .sessions
+            .lock()
+            .expect("sessions lock poisoned")
+            .remove_by_pty(inner);
+        self.term_channels
+            .lock()
+            .expect("term_channels lock poisoned")
+            .remove(&inner);
+        public
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SessionRegistry;
+
+    #[test]
+    fn public_ids_are_unique_and_monotonic() {
+        let mut reg = SessionRegistry::default();
+        let a = reg.register_terminal(1);
+        let b = reg.register_terminal(2);
+        let c = reg.register_terminal(3);
+        assert_eq!((a, b, c), (1, 2, 3));
+    }
+
+    #[test]
+    fn distinct_inner_ids_get_distinct_public_ids() {
+        // Two PTY sessions that (hypothetically) reused an inner id space still map
+        // to unique public ids — the frontend never sees a collision (§3.4).
+        let mut reg = SessionRegistry::default();
+        let first = reg.register_terminal(1);
+        let second = reg.register_terminal(1);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn maps_public_to_inner_both_ways() {
+        let mut reg = SessionRegistry::default();
+        let public = reg.register_terminal(7);
+        assert_eq!(reg.pty_inner(public), Some(7));
+    }
+
+    #[test]
+    fn remove_by_public_clears_both_directions() {
+        let mut reg = SessionRegistry::default();
+        let public = reg.register_terminal(7);
+        assert_eq!(reg.remove_by_public(public), Some(7));
+        assert_eq!(reg.pty_inner(public), None);
+        // The reverse mapping is gone too: a late exit finds nothing to emit.
+        assert_eq!(reg.remove_by_pty(7), None);
+    }
+
+    #[test]
+    fn remove_by_pty_returns_public_for_the_exit_event() {
+        let mut reg = SessionRegistry::default();
+        let public = reg.register_terminal(9);
+        assert_eq!(reg.remove_by_pty(9), Some(public));
+        assert_eq!(reg.pty_inner(public), None);
+    }
+
+    #[test]
+    fn removing_one_session_leaves_others_intact() {
+        let mut reg = SessionRegistry::default();
+        let a = reg.register_terminal(10);
+        let b = reg.register_terminal(20);
+        reg.remove_by_public(a);
+        assert_eq!(reg.pty_inner(b), Some(20));
+    }
+
+    #[test]
+    fn unknown_ids_resolve_to_none() {
+        let reg = SessionRegistry::default();
+        assert_eq!(reg.pty_inner(999), None);
     }
 }

@@ -58,6 +58,15 @@ pub struct SnippetResult {
     pub output: String,
 }
 
+/// A terminal session's remote shell exited or its connection dropped (tech-gui.md
+/// §4.3). Carries the **public** registry id (the bridge maps the core's inner PTY
+/// id, §3.4); the frontend tears the tab down. User-initiated closes never emit this.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalExited {
+    pub session_id: u64,
+}
+
 /// A background error surfaced to the user.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
 pub struct Error {
