@@ -85,6 +85,14 @@ async fn run_key_setup(host: Host, engine_tx: mpsc::Sender<CoreEvent>) {
                 ))
                 .await;
         }
+        // The two arms below are the correct mapping for a rolled-back / non-terminal
+        // `Ok`, kept symmetric with the `KeySetupRollback` event the bridge must map
+        // (§3.4) and mirroring the TUI reference. They are currently unreachable: the
+        // stable core's `setup_key_for_host` returns `Err` on every rollback/failure path
+        // and discards the `RolledBack` state (§12), so a rolled-back setup surfaces via
+        // the `Err` arm as `KeySetupFailed` with the core's message. Distinguishing
+        // rollback from failure would need the core to surface that outcome — out of scope
+        // for this slice, not an edit we are authorised to make (§3.6).
         Ok(result) if result.state == KeySetupState::RolledBack => {
             let reason = result
                 .error_message
