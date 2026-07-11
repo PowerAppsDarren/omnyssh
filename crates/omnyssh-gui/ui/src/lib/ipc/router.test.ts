@@ -8,10 +8,15 @@ import { services } from '$lib/stores/services';
 import { snippetRun, beginRun, clearRun } from '$lib/stores/snippets';
 import { sessions } from '$lib/stores/sessions';
 import { lastError } from '$lib/stores/notifications';
+import { keySetup, dismissKeySetup, beginKeySetup } from '$lib/stores/keySetup';
 import {
   applyError,
   applyHostStatusChanged,
   applyHostsLoaded,
+  applyKeySetupComplete,
+  applyKeySetupFailed,
+  applyKeySetupProgress,
+  applyKeySetupRollback,
   applyMetricsUpdated,
   applyServicesDetected,
   applyServicesFailed,
@@ -165,5 +170,34 @@ describe('ipc event router', () => {
     // ...then the tab records its id and learns it already exited (consumed once).
     expect(terminalDidExit(777)).toBe(true);
     expect(terminalDidExit(777)).toBe(false);
+  });
+
+  it('routes key-setup progress into the active run, then a terminal outcome', () => {
+    beginKeySetup('web-1');
+    applyKeySetupProgress({
+      hostName: 'web-1',
+      step: { index: 3, total: 6, description: 'Verifying key authentication' }
+    });
+    expect(get(keySetup)).toEqual({
+      hostName: 'web-1',
+      phase: { kind: 'running', step: { index: 3, total: 6, description: 'Verifying key authentication' } }
+    });
+
+    applyKeySetupComplete({ hostName: 'web-1', keyPath: '/k/id_ed25519' });
+    expect(get(keySetup)).toEqual({
+      hostName: 'web-1',
+      phase: { kind: 'complete', keyPath: '/k/id_ed25519' }
+    });
+    dismissKeySetup();
+  });
+
+  it('a key-setup failure/rollback shows for its host even with no open run', () => {
+    dismissKeySetup(); // nothing open
+    applyKeySetupFailed({ hostName: 'db-1', error: 'Connection failed' });
+    expect(get(keySetup)).toEqual({ hostName: 'db-1', phase: { kind: 'failed', error: 'Connection failed' } });
+
+    applyKeySetupRollback({ hostName: 'db-1', result: 'Restored.' });
+    expect(get(keySetup)).toEqual({ hostName: 'db-1', phase: { kind: 'rolledBack', result: 'Restored.' } });
+    dismissKeySetup();
   });
 });
