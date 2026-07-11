@@ -104,11 +104,7 @@ export function applySftpDisconnected(payload: SftpDisconnected): void {
 }
 
 export function applyFilePreview(payload: FilePreview): void {
-  sftp.setPreview(payload.sessionId, {
-    side: 'remote',
-    path: payload.path,
-    content: payload.content
-  });
+  sftp.setPreview(payload.sessionId, { path: payload.path, content: payload.content });
 }
 
 export function applyTransferProgress(payload: TransferProgressDto): void {

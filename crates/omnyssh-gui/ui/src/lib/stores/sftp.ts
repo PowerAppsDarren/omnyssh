@@ -22,7 +22,6 @@ export interface Pane {
 
 /** The transfer currently reporting progress (one at a time — the core is sequential). */
 interface Transfer {
-  transferId: number;
   kind: 'upload' | 'download';
   name: string;
   done: number;
@@ -31,7 +30,6 @@ interface Transfer {
 
 /** A file preview (a remote `file-preview` event, or a local read) shown in a modal. */
 interface Preview {
-  side: PaneSide;
   path: string;
   content: string;
 }
@@ -124,13 +122,7 @@ export function applyProgress(session: SftpSession, p: TransferProgressDto): Sft
   if (!front || (front.kind !== 'upload' && front.kind !== 'download')) return session;
   return {
     ...session,
-    transfer: {
-      transferId: p.transferId,
-      kind: front.kind,
-      name: front.name ?? '',
-      done: p.done,
-      total: p.total
-    }
+    transfer: { kind: front.kind, name: front.name ?? '', done: p.done, total: p.total }
   };
 }
 
@@ -144,7 +136,8 @@ export function applyOpDone(session: SftpSession, ok: boolean, error?: string): 
     ...session,
     pending: rest,
     refresh: mergeRefresh(session.refresh, front.refresh),
-    error: ok ? session.error : (error ?? 'Operation failed'),
+    // A successful op clears any stale error so it does not linger in the UI forever.
+    error: ok ? undefined : (error ?? 'Operation failed'),
     transfer: wasTransfer ? undefined : session.transfer
   };
 }

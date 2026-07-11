@@ -35,6 +35,12 @@
   let destroyed = false;
   let mirrored: string | undefined;
 
+  // Queued mutations, dispatched one at a time (see the pump effect). The core's SFTP
+  // command channel is bounded and drops on overflow, so a large batch fired at once
+  // would silently lose commands and wedge the op-done FIFO; gating on the previous
+  // op's completion keeps at most one command outstanding.
+  let outbox = $state<Array<() => void>>([]);
+
   // A pending mkdir/rename input. Rename carries the entry being renamed.
   let prompt = $state<{ kind: 'mkdir' | 'rename'; value: string; target?: FileEntryDto } | null>(
     null
@@ -125,10 +131,20 @@
     }
   });
 
-  // Re-list the affected pane once a batch of mutations drains — the FS changed (§3.2).
+  // Dispatch the next queued mutation once the previous one is acked (pending empty),
+  // so at most one command is outstanding and the bounded core channel never overflows.
+  $effect(() => {
+    if (!view || view.pending.length > 0 || outbox.length === 0) return;
+    const [next, ...rest] = outbox;
+    outbox = rest;
+    next();
+  });
+
+  // Re-list the affected pane once every queued mutation has drained — the FS changed
+  // (§3.2). Gated on an empty outbox so a batch re-lists once at the end, not per op.
   $effect(() => {
     const id = backendId;
-    if (id == null || !view || view.pending.length > 0 || !view.refresh) return;
+    if (id == null || !view || view.pending.length > 0 || outbox.length > 0 || !view.refresh) return;
     const target = view.refresh;
     sftp.clearRefresh(id);
     if (target === 'local' || target === 'both') void refreshLocal(view.local.path);
@@ -150,7 +166,7 @@
     if (side === 'local') {
       try {
         const content = await previewLocalFile(entry.path);
-        sftp.setPreview(id, { side: 'local', path: entry.path, content });
+        sftp.setPreview(id, { path: entry.path, content });
       } catch (err) {
         lastError.set(errMsg(err));
       }
@@ -159,35 +175,52 @@
     }
   }
 
+  // If a mutating invoke itself rejects (it never does for a normal enqueue, but an IPC
+  // failure could), pop its pending op so the dispatch pump does not wedge.
+  function onDispatchError(id: number): (err: unknown) => void {
+    return (err) => {
+      lastError.set(errMsg(err));
+      sftp.opDone(id, false, errMsg(err));
+    };
+  }
+
+  function enqueue(...actions: Array<() => void>): void {
+    if (actions.length) outbox = [...outbox, ...actions];
+  }
+
   function upload(): void {
     const id = backendId;
     if (id == null || !view) return;
-    for (const file of localMarkedFiles) {
-      sftp.pushOp(id, { kind: 'upload', name: file.name, refresh: 'remote' });
-      void sftpUpload(id, file.path, joinRemote(view.remote.path, file.name)).catch((err) =>
-        lastError.set(errMsg(err))
-      );
-    }
+    const dir = view.remote.path;
+    enqueue(
+      ...localMarkedFiles.map((file) => () => {
+        sftp.pushOp(id, { kind: 'upload', name: file.name, refresh: 'remote' });
+        void sftpUpload(id, file.path, joinRemote(dir, file.name)).catch(onDispatchError(id));
+      })
+    );
   }
 
   function download(): void {
     const id = backendId;
     if (id == null || !view) return;
-    for (const file of remoteMarkedFiles) {
-      sftp.pushOp(id, { kind: 'download', name: file.name, refresh: 'local' });
-      void sftpDownload(id, joinLocal(view.local.path, file.name), file.path).catch((err) =>
-        lastError.set(errMsg(err))
-      );
-    }
+    const dir = view.local.path;
+    enqueue(
+      ...remoteMarkedFiles.map((file) => () => {
+        sftp.pushOp(id, { kind: 'download', name: file.name, refresh: 'local' });
+        void sftpDownload(id, joinLocal(dir, file.name), file.path).catch(onDispatchError(id));
+      })
+    );
   }
 
   function remove(): void {
     const id = backendId;
     if (id == null) return;
-    for (const entry of remoteMarked) {
-      sftp.pushOp(id, { kind: 'delete', name: entry.name, refresh: 'remote' });
-      void sftpDelete(id, entry.path).catch((err) => lastError.set(errMsg(err)));
-    }
+    enqueue(
+      ...remoteMarked.map((entry) => () => {
+        sftp.pushOp(id, { kind: 'delete', name: entry.name, refresh: 'remote' });
+        void sftpDelete(id, entry.path).catch(onDispatchError(id));
+      })
+    );
   }
 
   function openPrompt(kind: 'mkdir' | 'rename'): void {
@@ -203,16 +236,18 @@
     if (id == null || !view || !prompt) return;
     const value = prompt.value.trim();
     if (!value) return;
+    const dir = view.remote.path;
     if (prompt.kind === 'mkdir') {
-      sftp.pushOp(id, { kind: 'mkdir', refresh: 'remote' });
-      void sftpMkdir(id, joinRemote(view.remote.path, value)).catch((err) =>
-        lastError.set(errMsg(err))
-      );
+      enqueue(() => {
+        sftp.pushOp(id, { kind: 'mkdir', refresh: 'remote' });
+        void sftpMkdir(id, joinRemote(dir, value)).catch(onDispatchError(id));
+      });
     } else if (prompt.target) {
-      sftp.pushOp(id, { kind: 'rename', refresh: 'remote' });
-      void sftpRename(id, prompt.target.path, joinRemote(view.remote.path, value)).catch((err) =>
-        lastError.set(errMsg(err))
-      );
+      const from = prompt.target.path;
+      enqueue(() => {
+        sftp.pushOp(id, { kind: 'rename', refresh: 'remote' });
+        void sftpRename(id, from, joinRemote(dir, value)).catch(onDispatchError(id));
+      });
     }
     prompt = null;
   }
@@ -360,7 +395,7 @@
   {/if}
 </div>
 
-{#if prompt}
+{#if active && prompt}
   <Modal label={prompt.kind === 'mkdir' ? 'New folder' : 'Rename'} onClose={() => (prompt = null)}>
     <form
       onsubmit={(e) => {
@@ -403,7 +438,7 @@
   </Modal>
 {/if}
 
-{#if view?.preview}
+{#if active && view?.preview}
   <Modal label="File preview" onClose={closePreview}>
     <header class="border-b border-default px-5 py-3.5">
       <h2 class="truncate font-mono text-xs text-muted" title={view.preview.path}>

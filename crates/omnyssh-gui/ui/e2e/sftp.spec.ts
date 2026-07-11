@@ -183,6 +183,31 @@ test('round-trip: upload a local file to the remote, then download a remote file
   await expect(localPane.getByText('config.yml')).toBeVisible();
 });
 
+test('an inactive tab’s modal never overlays another entity (§2 exactly-one-active)', async ({
+  page
+}) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  await expect(page.getByRole('region', { name: 'web-1' })).toBeVisible();
+  // Return to the Dashboard (a session hides it) to open a second SFTP session.
+  await page.getByRole('button', { name: 'Dashboard', exact: true }).click();
+  await page.getByTitle('files on db-1').click();
+  await expect(page.getByRole('region', { name: 'db-1' })).toBeVisible();
+
+  // Open db-1's New-folder modal. The modal scrim traps the sidebar, so the ⌘K
+  // navigator is the reachable way to switch entity while a modal is open.
+  await page.getByRole('button', { name: 'Folder' }).click();
+  await expect(page.getByRole('dialog', { name: 'New folder' })).toBeVisible();
+  await page.keyboard.press('Control+k');
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  await palette.getByRole('textbox').fill('web-1');
+  await page.keyboard.press('Enter');
+
+  // Activating the web-1 session must fully hide db-1's modal — never two at once.
+  await expect(page.getByRole('region', { name: 'web-1' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'New folder' })).toHaveCount(0);
+});
+
 test('action-first: the SFTP spawner opens the host picker, then a live session', async ({
   page
 }) => {

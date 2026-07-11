@@ -69,13 +69,7 @@ describe('sftp reducers', () => {
       pending: [{ kind: 'upload', name: 'a.txt', refresh: 'remote' }]
     };
     const next = applyProgress(s, { sessionId: 1, transferId: 9, done: 50, total: 100 });
-    expect(next.transfer).toEqual({
-      transferId: 9,
-      kind: 'upload',
-      name: 'a.txt',
-      done: 50,
-      total: 100
-    });
+    expect(next.transfer).toEqual({ kind: 'upload', name: 'a.txt', done: 50, total: 100 });
   });
 
   it('applyProgress ignores a tick when the front op is not a transfer', () => {
@@ -93,7 +87,7 @@ describe('sftp reducers', () => {
         { kind: 'upload', name: 'a', refresh: 'remote' },
         { kind: 'mkdir', refresh: 'remote' }
       ],
-      transfer: { transferId: 1, kind: 'upload', name: 'a', done: 100, total: 100 }
+      transfer: { kind: 'upload', name: 'a', done: 100, total: 100 }
     };
     const next = applyOpDone(s, true);
     expect(next.pending.map((p) => p.kind)).toEqual(['mkdir']);
@@ -111,6 +105,15 @@ describe('sftp reducers', () => {
     const next = applyOpDone(s, false, 'permission denied');
     expect(next.error).toBe('permission denied');
     expect(next.pending).toEqual([]);
+  });
+
+  it('applyOpDone clears a stale error on the next successful op', () => {
+    const s: SftpSession = {
+      ...newSession('web-1'),
+      error: 'permission denied',
+      pending: [{ kind: 'mkdir', refresh: 'remote' }]
+    };
+    expect(applyOpDone(s, true).error).toBeUndefined();
   });
 
   it('correlates a two-file batch by FIFO order across progress + op-done', () => {
