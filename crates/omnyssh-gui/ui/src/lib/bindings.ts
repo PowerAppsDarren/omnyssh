@@ -125,6 +125,133 @@ async terminalClose(sessionId: number) : Promise<Result<null, CommandError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Open an SFTP session for `host_name` (tech-gui.md §4.2). Awaits the core connect,
+ * registers the manager under a fresh public id, and spawns the per-session
+ * forwarder; the `sftp-connected` ack then arrives stamped with that id (§3.4).
+ */
+async sftpOpen(hostName: string) : Promise<Result<number, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sftp_open", { hostName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List a remote directory (tech-gui.md §4.2); the result arrives as `sftp-dir-listed`.
+ */
+async sftpList(sessionId: number, path: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sftp_list", { sessionId, path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Upload a local file to a remote path (tech-gui.md §4.2). Allocates a transfer id
+ * owned by this session so `transfer-progress` routes back to the tab (§3.4).
+ */
+async sftpUpload(sessionId: number, local: string, remote: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sftp_upload", { sessionId, local, remote }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Download a remote file to a local path (tech-gui.md §4.2). See `sftp_upload` for
+ * the transfer-id routing; the core guards the local destination against `..` (§3.2).
+ */
+async sftpDownload(sessionId: number, local: string, remote: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sftp_download", { sessionId, local, remote }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Create a remote directory (tech-gui.md §4.2); completion arrives as `sftp-op-done`.
+ */
+async sftpMkdir(sessionId: number, path: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sftp_mkdir", { sessionId, path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Rename / move a remote path (tech-gui.md §4.2).
+ */
+async sftpRename(sessionId: number, from: string, to: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sftp_rename", { sessionId, from, to }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete a remote file (falls back to an empty directory in the core) (tech-gui.md §4.2).
+ */
+async sftpDelete(sessionId: number, path: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sftp_delete", { sessionId, path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Read a remote file's preview bytes (tech-gui.md §4.2); arrives as `file-preview`.
+ */
+async sftpPreview(sessionId: number, path: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sftp_preview", { sessionId, path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Close an SFTP session and its connection (tech-gui.md §4.2).
+ */
+async sftpClose(sessionId: number) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sftp_close", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List a local directory (tech-gui.md §4.2). Returns directly off the async worker;
+ * the GUI never emits `LocalDirListed` (§4.3). The core prepends a `..` entry and
+ * sorts dirs-first.
+ */
+async listLocalDir(path: string) : Promise<Result<FileEntryDto[], CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_local_dir", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Read up to 4 KiB of a local file as UTF-8 for preview (tech-gui.md §4.2).
+ */
+async previewLocalFile(path: string) : Promise<Result<string, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("preview_local_file", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -133,22 +260,34 @@ async terminalClose(sessionId: number) : Promise<Result<null, CommandError>> {
 
 export const events = __makeEvents__<{
 error: Error,
+filePreview: FilePreview,
 hostStatusChanged: HostStatusChanged,
 hostsLoaded: HostsLoaded,
 metricsUpdated: MetricsUpdated,
 servicesDetected: ServicesDetected,
 servicesFailed: ServicesFailed,
+sftpConnected: SftpConnected,
+sftpDirListed: SftpDirListed,
+sftpDisconnected: SftpDisconnected,
+sftpOpDone: SftpOpDone,
 snippetResult: SnippetResult,
-terminalExited: TerminalExited
+terminalExited: TerminalExited,
+transferProgress: TransferProgress
 }>({
 error: "error",
+filePreview: "file-preview",
 hostStatusChanged: "host-status-changed",
 hostsLoaded: "hosts-loaded",
 metricsUpdated: "metrics-updated",
 servicesDetected: "services-detected",
 servicesFailed: "services-failed",
+sftpConnected: "sftp-connected",
+sftpDirListed: "sftp-dir-listed",
+sftpDisconnected: "sftp-disconnected",
+sftpOpDone: "sftp-op-done",
 snippetResult: "snippet-result",
-terminalExited: "terminal-exited"
+terminalExited: "terminal-exited",
+transferProgress: "transfer-progress"
 })
 
 /** user-defined constants **/
@@ -167,6 +306,16 @@ export type ConnectionStatusDto = { kind: "unknown" } | { kind: "connecting" } |
  * A background error surfaced to the user.
  */
 export type Error = { message: string }
+/**
+ * A file or directory in an SFTP panel listing (tech-gui.md §4.1). Maps from the
+ * core `FileEntry`; `path` is the absolute path the frontend marks entries by.
+ */
+export type FileEntryDto = { name: string; path: string; size: number; isDir: boolean }
+/**
+ * Preview bytes for a remote file (tech-gui.md §4.3). Stamped with `sessionId`; the
+ * core `FilePreviewReady` carries only the path + content (§3.4).
+ */
+export type FilePreview = { sessionId: number; path: string; content: string }
 /**
  * A host as the frontend sees it — password and private-key material omitted
  * (tech-gui.md §3.4). `hasKey` reports whether an identity file is configured;
@@ -224,6 +373,27 @@ export type ServicesDetected = { hostName: string; services: ServiceDto[] }
  */
 export type ServicesFailed = { hostName: string; message: string }
 /**
+ * An SFTP session connected (tech-gui.md §4.3). The per-session forwarder stamps
+ * `sessionId` from the channel's owner — the core `SftpConnected` carries only the
+ * host name (§3.4).
+ */
+export type SftpConnected = { sessionId: number; hostName: string }
+/**
+ * A remote directory listing completed for one SFTP tab (tech-gui.md §4.3). Stamped
+ * with `sessionId`; the core `FileDirListed` carries only the path (§3.4).
+ */
+export type SftpDirListed = { sessionId: number; path: string; entries: FileEntryDto[] }
+/**
+ * An SFTP operation reported a failure (tech-gui.md §4.3). The core emits this on a
+ * listing error with a human reason; it does not by itself tear the session down.
+ */
+export type SftpDisconnected = { sessionId: number; reason: string }
+/**
+ * A mutating SFTP op (upload/download/mkdir/rename/delete) finished (tech-gui.md
+ * §4.3). The core's `Result<(), String>` is flattened to `ok` + an optional `error`.
+ */
+export type SftpOpDone = { sessionId: number; ok: boolean; error?: string | null }
+/**
  * A saved command snippet as the frontend sees it (tech-gui.md §4.1). Crosses the
  * boundary both ways — outbound for `list_snippets`, inbound for `save_snippet` —
  * so it derives `Deserialize` too. Optional fields are omitted when absent, matching
@@ -257,6 +427,18 @@ export type TerminalBytes = number[]
  * id, §3.4); the frontend tears the tab down. User-initiated closes never emit this.
  */
 export type TerminalExited = { sessionId: number }
+/**
+ * Live transfer progress (tech-gui.md §4.3). The payload is `TransferProgressDto`,
+ * routed to its owning session via `transfer_owner` (§3.4/§4.1).
+ */
+export type TransferProgress = TransferProgressDto
+/**
+ * Live progress for one SFTP upload/download (tech-gui.md §4.1). The GUI allocates
+ * `transferId` when it issues the transfer and resolves its owning `sessionId` via
+ * `transfer_owner` (§3.4); `done`/`total` are byte counts (`total` is `0` when the
+ * remote size could not be determined).
+ */
+export type TransferProgressDto = { sessionId: number; transferId: number; done: number; total: number }
 
 /** tauri-specta globals **/
 

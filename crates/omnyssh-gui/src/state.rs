@@ -4,13 +4,15 @@
 //! the core's inner handles. The shared engine channel feeds the bridge.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
-use omnyssh_core::event::{CoreEvent, SessionId};
+use omnyssh_core::event::{CoreEvent, SessionId, TransferId};
 use omnyssh_core::ssh::client::Host;
 use omnyssh_core::ssh::pool::PollManager;
 use omnyssh_core::ssh::pty::PtyManager;
+use omnyssh_core::ssh::sftp::{SftpCommand, SftpManager};
 use tauri::ipc::Channel;
 use tokio::sync::mpsc;
 
@@ -32,10 +34,17 @@ pub struct SessionRegistry {
 }
 
 impl SessionRegistry {
+    /// Allocate a fresh public id from the shared monotonic space (§3.4). SFTP
+    /// sessions use this directly — they are keyed by their public id, with no inner
+    /// mapping — so terminal and SFTP ids can never collide in the frontend.
+    pub fn allocate(&mut self) -> SessionId {
+        self.next += 1;
+        self.next
+    }
+
     /// Allocate a fresh public id for a terminal backed by PTY inner id `inner`.
     pub fn register_terminal(&mut self, inner: SessionId) -> SessionId {
-        self.next += 1;
-        let public = self.next;
+        let public = self.allocate();
         self.pty_by_public.insert(public, inner);
         self.public_by_pty.insert(inner, public);
         public
@@ -70,6 +79,12 @@ pub struct GuiState {
     pty: Mutex<PtyManager>,
     /// Terminal output routing: PTY inner id -> that tab's frontend channel.
     term_channels: Mutex<HashMap<SessionId, Channel<TerminalBytes>>>,
+    /// One SFTP manager per tab, keyed by its public session id (§3.4).
+    sftp: Mutex<HashMap<SessionId, SftpManager>>,
+    /// SFTP progress routing: GUI-allocated transfer id -> owning session (§3.4).
+    transfer_owner: Mutex<HashMap<TransferId, SessionId>>,
+    /// Monotonic source for GUI-allocated transfer ids (§3.4).
+    next_transfer_id: AtomicU64,
     /// Public id <-> inner handle mapping for all sessions.
     sessions: Mutex<SessionRegistry>,
     /// Shared engine channel the bridge drains; cloned to `PollManager`/`PtyManager`.
@@ -83,6 +98,9 @@ impl GuiState {
             poll: Mutex::new(None),
             pty: Mutex::new(pty),
             term_channels: Mutex::new(HashMap::new()),
+            sftp: Mutex::new(HashMap::new()),
+            transfer_owner: Mutex::new(HashMap::new()),
+            next_transfer_id: AtomicU64::new(0),
             sessions: Mutex::new(SessionRegistry::default()),
             engine_tx,
         }
@@ -112,6 +130,17 @@ impl GuiState {
             .iter()
             .filter_map(|name| hosts.iter().find(|h| &h.name == name).cloned())
             .collect()
+    }
+
+    /// Clone one host record for a backend-only connect (SFTP `connect` needs the full
+    /// `Host`, secrets included; they stay backend-side, §3.4).
+    pub fn host_by_name(&self, name: &str) -> Option<Host> {
+        self.hosts
+            .read()
+            .expect("hosts lock poisoned")
+            .iter()
+            .find(|h| h.name == name)
+            .cloned()
     }
 
     /// Start (or restart) the pollers for the cached hosts. Must run inside the
@@ -245,6 +274,71 @@ impl GuiState {
             .remove(&inner);
         public
     }
+
+    /// Store a freshly connected SFTP manager under a new public session id (§3.4).
+    /// The id comes from the shared registry so it never collides with a terminal id.
+    pub fn register_sftp(&self, manager: SftpManager) -> SessionId {
+        let id = self
+            .sessions
+            .lock()
+            .expect("sessions lock poisoned")
+            .allocate();
+        self.sftp
+            .lock()
+            .expect("sftp lock poisoned")
+            .insert(id, manager);
+        id
+    }
+
+    /// Enqueue a command to a live SFTP session. Unknown/closed ids are a no-op
+    /// (fire-and-forget, mirroring the core's own model, §3.4).
+    pub fn send_sftp(&self, session_id: SessionId, cmd: SftpCommand) {
+        if let Some(manager) = self
+            .sftp
+            .lock()
+            .expect("sftp lock poisoned")
+            .get(&session_id)
+        {
+            manager.send(cmd);
+        }
+    }
+
+    /// Allocate a transfer id owned by `session_id`, so its `FileTransferProgress`
+    /// events route back to the right tab via `transfer_owner` (§3.4).
+    pub fn next_transfer(&self, session_id: SessionId) -> TransferId {
+        let id = self.next_transfer_id.fetch_add(1, Ordering::Relaxed) + 1;
+        self.transfer_owner
+            .lock()
+            .expect("transfer_owner lock poisoned")
+            .insert(id, session_id);
+        id
+    }
+
+    /// The session that owns a transfer id, for progress routing (§3.4/§4.1).
+    pub fn transfer_session(&self, transfer_id: TransferId) -> Option<SessionId> {
+        self.transfer_owner
+            .lock()
+            .expect("transfer_owner lock poisoned")
+            .get(&transfer_id)
+            .copied()
+    }
+
+    /// User-initiated SFTP close: drop the manager (a graceful `Disconnect` to its
+    /// task) and prune this session's transfer-owner entries (§3.4).
+    pub fn close_sftp(&self, session_id: SessionId) {
+        if let Some(manager) = self
+            .sftp
+            .lock()
+            .expect("sftp lock poisoned")
+            .remove(&session_id)
+        {
+            manager.disconnect();
+        }
+        self.transfer_owner
+            .lock()
+            .expect("transfer_owner lock poisoned")
+            .retain(|_, owner| *owner != session_id);
+    }
 }
 
 #[cfg(test)]
@@ -308,6 +402,45 @@ mod tests {
     fn unknown_ids_resolve_to_none() {
         let reg = SessionRegistry::default();
         assert_eq!(reg.pty_inner(999), None);
+    }
+
+    #[test]
+    fn sftp_and_terminal_ids_share_one_monotonic_space() {
+        // An SFTP `allocate` and a terminal `register` draw from the same counter, so
+        // the frontend never sees a terminal id collide with an SFTP id (§3.4).
+        let mut reg = SessionRegistry::default();
+        let term = reg.register_terminal(1);
+        let sftp = reg.allocate();
+        let term2 = reg.register_terminal(1);
+        assert_eq!((term, sftp, term2), (1, 2, 3));
+        // The SFTP id has no inner PTY mapping — it is keyed by its public id directly.
+        assert_eq!(reg.pty_inner(sftp), None);
+    }
+
+    #[test]
+    fn transfer_ids_are_unique_and_route_to_their_owning_session() {
+        let (engine_tx, _engine_rx) = mpsc::channel::<CoreEvent>(8);
+        let state = GuiState::new(engine_tx, PtyManager::new());
+
+        // Two concurrent SFTP tabs (public ids 1 and 2) each issue transfers.
+        let (a, b) = (1, 2);
+        let t1 = state.next_transfer(a);
+        let t2 = state.next_transfer(b);
+        let t3 = state.next_transfer(a);
+        assert!(
+            t1 != t2 && t2 != t3 && t1 != t3,
+            "transfer ids must be unique"
+        );
+        assert_eq!(state.transfer_session(t1), Some(a));
+        assert_eq!(state.transfer_session(t2), Some(b));
+        assert_eq!(state.transfer_session(t3), Some(a));
+        assert_eq!(state.transfer_session(999), None);
+
+        // Closing one session prunes only its transfers; the other tab is untouched.
+        state.close_sftp(a);
+        assert_eq!(state.transfer_session(t1), None);
+        assert_eq!(state.transfer_session(t3), None);
+        assert_eq!(state.transfer_session(t2), Some(b));
     }
 
     // A remote exit must prune the core PtyManager slot (the ended task never removes

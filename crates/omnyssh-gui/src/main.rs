@@ -10,6 +10,10 @@ mod events;
 mod state;
 
 use commands::hosts::{list_hosts, reload_hosts};
+use commands::sftp::{
+    list_local_dir, preview_local_file, sftp_close, sftp_delete, sftp_download, sftp_list,
+    sftp_mkdir, sftp_open, sftp_preview, sftp_rename, sftp_upload,
+};
 use commands::snippets::{delete_snippet, execute_snippet, list_snippets, save_snippet};
 use commands::terminal::{terminal_close, terminal_open, terminal_resize, terminal_write};
 use omnyssh_core::event::{CoreEvent, SessionId};
@@ -35,7 +39,18 @@ fn specta_builder() -> Builder<tauri::Wry> {
             terminal_open,
             terminal_write,
             terminal_resize,
-            terminal_close
+            terminal_close,
+            sftp_open,
+            sftp_list,
+            sftp_upload,
+            sftp_download,
+            sftp_mkdir,
+            sftp_rename,
+            sftp_delete,
+            sftp_preview,
+            sftp_close,
+            list_local_dir,
+            preview_local_file
         ])
         .events(collect_events![
             events::HostsLoaded,
@@ -45,6 +60,12 @@ fn specta_builder() -> Builder<tauri::Wry> {
             events::ServicesFailed,
             events::SnippetResult,
             events::TerminalExited,
+            events::SftpConnected,
+            events::SftpDirListed,
+            events::SftpOpDone,
+            events::SftpDisconnected,
+            events::FilePreview,
+            events::TransferProgress,
             events::Error
         ])
 }
