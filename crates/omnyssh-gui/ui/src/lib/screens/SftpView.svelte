@@ -1,0 +1,431 @@
+<script lang="ts">
+  // A live SFTP tab (tech-gui.md §3.2). One instance per SFTP session, kept mounted for
+  // the session's life — hidden, not destroyed, when another entity is active — so pane
+  // state survives tab switches. Opens the session on mount, drives both panes via the
+  // sftp_* commands, and reads its per-session state from the sftp store (fed by the
+  // `sftp-*` events, §3.4). Local browsing uses list_local_dir (returns directly);
+  // remote uses sftp_list (arrives as an event). Semantic tokens only (§5.1).
+  import { onMount, onDestroy } from 'svelte';
+  import { homeDir } from '@tauri-apps/api/path';
+  import { Icon } from '$lib/theme';
+  import Modal from '$lib/components/Modal.svelte';
+  import SftpPane from './SftpPane.svelte';
+  import type { FileEntryDto } from '$lib/bindings';
+  import { sessions, type Session } from '$lib/stores/sessions';
+  import { sftp, markedEntries, formatBytes, type PaneSide } from '$lib/stores/sftp';
+  import { lastError } from '$lib/stores/notifications';
+  import {
+    sftpOpen,
+    sftpList,
+    sftpClose,
+    sftpUpload,
+    sftpDownload,
+    sftpMkdir,
+    sftpRename,
+    sftpDelete,
+    sftpPreview,
+    listLocalDir,
+    previewLocalFile
+  } from '$lib/ipc/commands';
+
+  let { session, active }: { session: Session; active: boolean } = $props();
+
+  let backendId = $state<number | undefined>(undefined);
+  let openError = $state<string | undefined>(undefined);
+  let destroyed = false;
+  let mirrored: string | undefined;
+
+  // A pending mkdir/rename input. Rename carries the entry being renamed.
+  let prompt = $state<{ kind: 'mkdir' | 'rename'; value: string; target?: FileEntryDto } | null>(
+    null
+  );
+
+  const view = $derived(backendId != null ? $sftp.get(backendId) : undefined);
+  const transfer = $derived(view?.transfer);
+
+  const localMarkedFiles = $derived(view ? markedEntries(view.local).filter((e) => !e.isDir) : []);
+  const remoteMarked = $derived(view ? markedEntries(view.remote) : []);
+  const remoteMarkedFiles = $derived(remoteMarked.filter((e) => !e.isDir));
+  const singleRemoteMark = $derived(remoteMarked.length === 1 ? remoteMarked[0] : undefined);
+
+  function errMsg(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+  }
+
+  function joinRemote(dir: string, name: string): string {
+    return dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`;
+  }
+
+  function joinLocal(dir: string, name: string): string {
+    const sep = dir.includes('\\') && !dir.includes('/') ? '\\' : '/';
+    return dir.endsWith(sep) ? `${dir}${name}` : `${dir}${sep}${name}`;
+  }
+
+  async function refreshLocal(path: string): Promise<void> {
+    const id = backendId;
+    if (id == null) return;
+    sftp.beginLoading(id, 'local');
+    try {
+      const entries = await listLocalDir(path);
+      sftp.listing(id, 'local', path, entries);
+    } catch (err) {
+      sftp.paneError(id, 'local', errMsg(err));
+    }
+  }
+
+  function refreshRemote(path: string): void {
+    const id = backendId;
+    if (id == null) return;
+    sftp.beginLoading(id, 'remote');
+    void sftpList(id, path).catch((err) => sftp.paneError(id, 'remote', errMsg(err)));
+  }
+
+  onMount(() => {
+    void (async () => {
+      let home = '/';
+      try {
+        home = await homeDir();
+      } catch {
+        home = '/';
+      }
+      let id: number;
+      try {
+        id = await sftpOpen(session.hostName);
+      } catch (err) {
+        sessions.setStatus(session.id, 'failed');
+        openError = errMsg(err);
+        lastError.set(errMsg(err));
+        return;
+      }
+      if (destroyed) {
+        void sftpClose(id).catch(() => {});
+        return;
+      }
+      backendId = id;
+      sftp.open(id, session.hostName);
+      void refreshLocal(home);
+      refreshRemote('/');
+    })();
+  });
+
+  onDestroy(() => {
+    destroyed = true;
+    if (backendId != null) {
+      void sftpClose(backendId).catch(() => {});
+      sftp.remove(backendId);
+    }
+  });
+
+  // Mirror the store connection status to the sidebar dot (the sessions store is the
+  // sidebar's source of truth); only on change, to avoid churning the sessions list.
+  $effect(() => {
+    if (view && view.status !== mirrored) {
+      mirrored = view.status;
+      sessions.setStatus(session.id, view.status);
+    }
+  });
+
+  // Re-list the affected pane once a batch of mutations drains — the FS changed (§3.2).
+  $effect(() => {
+    const id = backendId;
+    if (id == null || !view || view.pending.length > 0 || !view.refresh) return;
+    const target = view.refresh;
+    sftp.clearRefresh(id);
+    if (target === 'local' || target === 'both') void refreshLocal(view.local.path);
+    if (target === 'remote' || target === 'both') refreshRemote(view.remote.path);
+  });
+
+  function navigate(side: PaneSide, entry: FileEntryDto): void {
+    if (side === 'local') void refreshLocal(entry.path);
+    else refreshRemote(entry.path);
+  }
+
+  function toggleMark(side: PaneSide, path: string): void {
+    if (backendId != null) sftp.toggleMark(backendId, side, path);
+  }
+
+  async function preview(side: PaneSide, entry: FileEntryDto): Promise<void> {
+    const id = backendId;
+    if (id == null) return;
+    if (side === 'local') {
+      try {
+        const content = await previewLocalFile(entry.path);
+        sftp.setPreview(id, { side: 'local', path: entry.path, content });
+      } catch (err) {
+        lastError.set(errMsg(err));
+      }
+    } else {
+      void sftpPreview(id, entry.path).catch((err) => lastError.set(errMsg(err)));
+    }
+  }
+
+  function upload(): void {
+    const id = backendId;
+    if (id == null || !view) return;
+    for (const file of localMarkedFiles) {
+      sftp.pushOp(id, { kind: 'upload', name: file.name, refresh: 'remote' });
+      void sftpUpload(id, file.path, joinRemote(view.remote.path, file.name)).catch((err) =>
+        lastError.set(errMsg(err))
+      );
+    }
+  }
+
+  function download(): void {
+    const id = backendId;
+    if (id == null || !view) return;
+    for (const file of remoteMarkedFiles) {
+      sftp.pushOp(id, { kind: 'download', name: file.name, refresh: 'local' });
+      void sftpDownload(id, joinLocal(view.local.path, file.name), file.path).catch((err) =>
+        lastError.set(errMsg(err))
+      );
+    }
+  }
+
+  function remove(): void {
+    const id = backendId;
+    if (id == null) return;
+    for (const entry of remoteMarked) {
+      sftp.pushOp(id, { kind: 'delete', name: entry.name, refresh: 'remote' });
+      void sftpDelete(id, entry.path).catch((err) => lastError.set(errMsg(err)));
+    }
+  }
+
+  function openPrompt(kind: 'mkdir' | 'rename'): void {
+    if (kind === 'rename' && singleRemoteMark) {
+      prompt = { kind, value: singleRemoteMark.name, target: singleRemoteMark };
+    } else if (kind === 'mkdir') {
+      prompt = { kind, value: '' };
+    }
+  }
+
+  function submitPrompt(): void {
+    const id = backendId;
+    if (id == null || !view || !prompt) return;
+    const value = prompt.value.trim();
+    if (!value) return;
+    if (prompt.kind === 'mkdir') {
+      sftp.pushOp(id, { kind: 'mkdir', refresh: 'remote' });
+      void sftpMkdir(id, joinRemote(view.remote.path, value)).catch((err) =>
+        lastError.set(errMsg(err))
+      );
+    } else if (prompt.target) {
+      sftp.pushOp(id, { kind: 'rename', refresh: 'remote' });
+      void sftpRename(id, prompt.target.path, joinRemote(view.remote.path, value)).catch((err) =>
+        lastError.set(errMsg(err))
+      );
+    }
+    prompt = null;
+  }
+
+  function closePreview(): void {
+    if (backendId != null) sftp.clearPreview(backendId);
+  }
+
+  function transferPercent(done: number, total: number): number {
+    return total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  }
+
+  const toolBtn =
+    'inline-flex items-center gap-1 rounded-full border border-default px-2 py-1 text-xs ' +
+    'font-medium text-muted transition hover:border-strong hover:bg-accent hover:text-accent-fg ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus ' +
+    'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ' +
+    'disabled:hover:text-muted disabled:hover:border-default';
+  const field =
+    'w-full rounded-lg bg-surface-inset px-3 py-2 text-sm text-fg outline-none ' +
+    'focus-visible:ring-2 focus-visible:ring-focus placeholder:text-faint';
+</script>
+
+<div class="absolute inset-0 flex flex-col bg-surface {active ? '' : 'hidden'}">
+  {#if openError}
+    <div class="flex flex-1 flex-col items-center justify-center gap-2 p-10 text-center">
+      <p class="font-medium">Could not open SFTP on {session.hostName}</p>
+      <p class="max-w-md text-sm text-muted">{openError}</p>
+    </div>
+  {:else if !view}
+    <div class="flex flex-1 items-center justify-center p-10 text-center">
+      <p class="text-sm text-muted">Connecting to {session.hostName}…</p>
+    </div>
+  {:else}
+    <div class="grid min-h-0 flex-1 grid-cols-2 divide-x divide-default">
+      <SftpPane
+        title="Local"
+        pane={view.local}
+        onNavigate={(e) => navigate('local', e)}
+        onToggleMark={(p) => toggleMark('local', p)}
+        onPreview={(e) => preview('local', e)}
+      >
+        {#snippet toolbar()}
+          <button
+            type="button"
+            class={toolBtn}
+            title="Upload marked files to the remote directory"
+            disabled={localMarkedFiles.length === 0}
+            onclick={upload}
+          >
+            <Icon name="upload" size={13} />
+            Upload
+          </button>
+          <button
+            type="button"
+            class={toolBtn}
+            title="Refresh"
+            aria-label="Refresh local"
+            onclick={() => refreshLocal(view.local.path)}
+          >
+            <Icon name="refresh" size={13} />
+          </button>
+        {/snippet}
+      </SftpPane>
+
+      <SftpPane
+        title={session.hostName}
+        pane={view.remote}
+        onNavigate={(e) => navigate('remote', e)}
+        onToggleMark={(p) => toggleMark('remote', p)}
+        onPreview={(e) => preview('remote', e)}
+      >
+        {#snippet toolbar()}
+          <button
+            type="button"
+            class={toolBtn}
+            title="Download marked files to the local directory"
+            disabled={remoteMarkedFiles.length === 0}
+            onclick={download}
+          >
+            <Icon name="download" size={13} />
+            Download
+          </button>
+          <button type="button" class={toolBtn} title="New folder" onclick={() => openPrompt('mkdir')}>
+            <Icon name="plus" size={13} />
+            Folder
+          </button>
+          <button
+            type="button"
+            class={toolBtn}
+            title="Rename the marked entry"
+            disabled={!singleRemoteMark}
+            onclick={() => openPrompt('rename')}
+          >
+            <Icon name="edit" size={13} />
+          </button>
+          <button
+            type="button"
+            class={toolBtn}
+            title="Delete marked entries"
+            aria-label="Delete marked entries"
+            disabled={remoteMarked.length === 0}
+            onclick={remove}
+          >
+            <Icon name="trash" size={13} />
+          </button>
+          <button
+            type="button"
+            class={toolBtn}
+            title="Refresh"
+            aria-label="Refresh remote"
+            onclick={() => refreshRemote(view.remote.path)}
+          >
+            <Icon name="refresh" size={13} />
+          </button>
+        {/snippet}
+      </SftpPane>
+    </div>
+
+    {#if transfer}
+      <div class="shrink-0 border-t border-default px-4 py-2.5" aria-label="transfer progress">
+        <div class="flex items-center justify-between gap-3 text-xs text-muted">
+          <span class="min-w-0 truncate">
+            {transfer.kind === 'upload' ? 'Uploading' : 'Downloading'}
+            <span class="font-mono text-fg">{transfer.name}</span>
+          </span>
+          <span class="shrink-0 tabular-nums">
+            {formatBytes(transfer.done)}{transfer.total > 0
+              ? ` / ${formatBytes(transfer.total)}`
+              : ''}
+          </span>
+        </div>
+        <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface-inset">
+          <div
+            class="h-full rounded-full bg-accent transition-[width]"
+            style="width: {transferPercent(transfer.done, transfer.total)}%"
+          ></div>
+        </div>
+      </div>
+    {:else if view.error}
+      <div class="shrink-0 border-t border-default px-4 py-2 text-xs text-status-crit">
+        {view.error}
+      </div>
+    {/if}
+  {/if}
+</div>
+
+{#if prompt}
+  <Modal label={prompt.kind === 'mkdir' ? 'New folder' : 'Rename'} onClose={() => (prompt = null)}>
+    <form
+      onsubmit={(e) => {
+        e.preventDefault();
+        submitPrompt();
+      }}
+    >
+      <header class="border-b border-default px-5 py-3.5">
+        <h2 class="text-sm font-semibold">
+          {prompt.kind === 'mkdir' ? 'New folder' : `Rename ${prompt.target?.name ?? ''}`}
+        </h2>
+      </header>
+      <div class="px-5 py-4">
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          autofocus
+          bind:value={prompt.value}
+          class={field}
+          placeholder={prompt.kind === 'mkdir' ? 'Folder name' : 'New name'}
+          aria-label={prompt.kind === 'mkdir' ? 'Folder name' : 'New name'}
+        />
+      </div>
+      <footer class="flex justify-end gap-2 border-t border-default px-5 py-3">
+        <button
+          type="button"
+          class="rounded-full px-4 py-2 text-sm text-muted transition hover:bg-surface-inset hover:text-fg"
+          onclick={() => (prompt = null)}
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          class="rounded-full bg-accent px-5 py-2 text-sm font-medium text-accent-fg transition hover:opacity-90 disabled:opacity-50"
+          disabled={!prompt.value.trim()}
+        >
+          {prompt.kind === 'mkdir' ? 'Create' : 'Rename'}
+        </button>
+      </footer>
+    </form>
+  </Modal>
+{/if}
+
+{#if view?.preview}
+  <Modal label="File preview" onClose={closePreview}>
+    <header class="border-b border-default px-5 py-3.5">
+      <h2 class="truncate font-mono text-xs text-muted" title={view.preview.path}>
+        {view.preview.path}
+      </h2>
+    </header>
+    <div class="min-h-0 flex-1 overflow-auto px-5 py-4">
+      {#if view.preview.content.length === 0}
+        <p class="text-sm text-faint">Empty file.</p>
+      {:else}
+        <pre class="whitespace-pre-wrap break-words font-mono text-xs text-fg">{view.preview
+            .content}</pre>
+      {/if}
+    </div>
+    <footer class="flex justify-end border-t border-default px-5 py-3">
+      <button
+        type="button"
+        class="rounded-full px-4 py-2 text-sm text-muted transition hover:bg-surface-inset hover:text-fg"
+        onclick={closePreview}
+      >
+        Close
+      </button>
+    </footer>
+  </Modal>
+{/if}

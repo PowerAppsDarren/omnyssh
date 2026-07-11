@@ -23,6 +23,12 @@ vi.mock('$lib/bindings', () => {
       servicesFailed: channel('servicesFailed'),
       snippetResult: channel('snippetResult'),
       terminalExited: channel('terminalExited'),
+      sftpConnected: channel('sftpConnected'),
+      sftpDirListed: channel('sftpDirListed'),
+      sftpOpDone: channel('sftpOpDone'),
+      sftpDisconnected: channel('sftpDisconnected'),
+      filePreview: channel('filePreview'),
+      transferProgress: channel('transferProgress'),
       error: channel('error')
     }
   };
@@ -34,6 +40,7 @@ import { metrics } from '$lib/stores/metrics';
 import { services } from '$lib/stores/services';
 import { snippetRun, beginRun, clearRun } from '$lib/stores/snippets';
 import { sessions } from '$lib/stores/sessions';
+import { sftp } from '$lib/stores/sftp';
 import { lastError } from '$lib/stores/notifications';
 import { startEventBridge } from './subscribe';
 
@@ -84,5 +91,33 @@ describe('startEventBridge', () => {
     listeners.terminalExited({ payload: { sessionId: 42 } });
 
     expect(get(sessions).some((s) => s.id === tab.id)).toBe(false);
+  });
+
+  it('routes sftp events into the matching session by its backend id (§3.4)', async () => {
+    await startEventBridge();
+    // Two concurrent SFTP tabs; a listing for one must not leak into the other.
+    sftp.open(11, 'web-1');
+    sftp.open(22, 'db-1');
+
+    listeners.sftpConnected({ payload: { sessionId: 11, hostName: 'web-1' } });
+    listeners.sftpDirListed({
+      payload: {
+        sessionId: 11,
+        path: '/srv',
+        entries: [{ name: 'app.log', path: '/srv/app.log', size: 12, isDir: false }]
+      }
+    });
+
+    const tab11 = get(sftp).get(11);
+    const tab22 = get(sftp).get(22);
+    expect(tab11?.status).toBe('connected');
+    expect(tab11?.remote.path).toBe('/srv');
+    expect(tab11?.remote.entries).toHaveLength(1);
+    // The other tab stays untouched — the stamped session id keeps them apart.
+    expect(tab22?.status).toBe('connecting');
+    expect(tab22?.remote.entries).toHaveLength(0);
+
+    sftp.remove(11);
+    sftp.remove(22);
   });
 });
