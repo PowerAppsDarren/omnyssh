@@ -71,7 +71,7 @@
     'hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
 </script>
 
-<section class="h-full p-6">
+<section class="min-h-full px-6 pb-8 pt-3">
   <div class="mb-5 flex items-center gap-3">
     <h1 class="text-lg font-semibold tracking-tight">Dashboard</h1>
     <button type="button" class="{pill} ml-auto" onclick={() => (dialog = { kind: 'add' })}>

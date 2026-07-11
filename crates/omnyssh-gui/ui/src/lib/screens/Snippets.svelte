@@ -95,7 +95,7 @@
     'hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
 </script>
 
-<section class="flex h-full flex-col p-6">
+<section class="flex h-full flex-col px-6 pb-6 pt-3">
   <div class="mb-5 flex items-center gap-3">
     <h1 class="text-lg font-semibold tracking-tight">Snippets</h1>
     <div class="ml-auto w-full max-w-xs">
