@@ -1,6 +1,7 @@
 // Pure event->store routing (tech-gui.md §3.5). Kept free of the Tauri runtime
 // so it is unit-testable; `subscribe.ts` wires these to the generated events.
 
+import { get } from 'svelte/store';
 import type {
   ConnectionStatusDto,
   HostDto,
@@ -13,6 +14,8 @@ import { statuses } from '$lib/stores/statuses';
 import { metrics, mergeMetrics } from '$lib/stores/metrics';
 import { services } from '$lib/stores/services';
 import { snippetRun, reduceRunResult } from '$lib/stores/snippets';
+import { sessions } from '$lib/stores/sessions';
+import { closeSession } from '$lib/stores/navigation';
 import { lastError } from '$lib/stores/notifications';
 
 export function applyHostsLoaded(payload: HostDto[]): void {
@@ -49,6 +52,14 @@ export function applyServicesFailed(payload: { hostName: string; message: string
 
 export function applySnippetResult(payload: SnippetResult): void {
   snippetRun.update((run) => reduceRunResult(run, payload));
+}
+
+// A terminal's remote shell exited or its connection dropped (tech-gui.md §3.4). The
+// backend already tore down its session; drop the matching tab (by its backend id).
+// A user-initiated close never emits this, so there is no double-teardown.
+export function applyTerminalExited(sessionId: number): void {
+  const target = get(sessions).find((s) => s.termId === sessionId);
+  if (target) closeSession(target.id);
 }
 
 export function applyError(message: string): void {
