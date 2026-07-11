@@ -57,9 +57,22 @@ export function applySnippetResult(payload: SnippetResult): void {
 // A terminal's remote shell exited or its connection dropped (tech-gui.md §3.4). The
 // backend already tore down its session; drop the matching tab (by its backend id).
 // A user-initiated close never emits this, so there is no double-teardown.
+//
+// An instant-fail connect can emit terminal-exited before terminalOpen resolves, so
+// the tab has no termId yet: park the id and let the tab reconcile once it records
+// its backend id (`terminalDidExit`), rather than stranding a dead tab open.
+const exitedBeforeMapped = new Set<number>();
+
 export function applyTerminalExited(sessionId: number): void {
   const target = get(sessions).find((s) => s.termId === sessionId);
   if (target) closeSession(target.id);
+  else exitedBeforeMapped.add(sessionId);
+}
+
+/** Whether backend session `termId` already exited before its tab recorded it (the
+ *  fast-fail race); consumes the pending flag. Called right after a tab sets termId. */
+export function terminalDidExit(termId: number): boolean {
+  return exitedBeforeMapped.delete(termId);
 }
 
 export function applyError(message: string): void {

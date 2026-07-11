@@ -31,6 +31,17 @@ async function boot(page: Page): Promise<void> {
         cb?.({ message: new TextEncoder().encode(text).buffer, index });
       }
 
+      function fireEvent(event: string, payload: unknown): void {
+        for (const id of listeners[event] ?? []) {
+          const cb = win[`__cb${id}`] as ((e: unknown) => void) | undefined;
+          cb?.({ event, id, payload });
+        }
+      }
+      // Lets a test simulate the remote shell exiting for a given backend session id.
+      (win as { __fireTerminalExited?: (sessionId: number) => void }).__fireTerminalExited = (
+        sessionId
+      ) => fireEvent('terminal-exited', { sessionId });
+
       (win as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
         invoke: (cmd: string, args: Record<string, unknown>) => {
           switch (cmd) {
@@ -121,4 +132,42 @@ test('action-first: the Terminal spawner opens the host picker, then a live term
 
   await expect(page.getByRole('button', { name: 'web-1 · terminal', exact: true })).toBeVisible();
   await expect(page.locator('.xterm-rows')).toContainText('omnyssh-ready');
+});
+
+test('toggling the theme re-themes a live terminal (§5.1)', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('sh on web-1').click();
+  await expect(page.locator('.xterm-rows')).toContainText('omnyssh-ready');
+
+  // xterm paints its scrollable viewport inline with theme.background; find that
+  // element's computed colour rather than assume a class (robust across versions).
+  const paintedBg = () =>
+    page.evaluate(() => {
+      const root = document.querySelector('.xterm');
+      const els = root ? Array.from(root.querySelectorAll<HTMLElement>('*')) : [];
+      const painted = els.find((el) => el.style.backgroundColor);
+      return painted ? getComputedStyle(painted).backgroundColor : '';
+    });
+
+  // App defaults to dark → the dark surface (#212121).
+  await expect.poll(paintedBg).toBe('rgb(33, 33, 33)');
+
+  // The #1 theme-regression guard: flipping the store re-themes the OPEN terminal.
+  await page.getByTitle('Switch to light theme').click();
+  await expect.poll(paintedBg).toBe('rgb(255, 255, 255)');
+});
+
+test('a remote exit (terminal-exited) tears the tab down', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('sh on web-1').click();
+  await expect(page.getByRole('button', { name: 'web-1 · terminal', exact: true })).toBeVisible();
+  await expect(page.locator('.xterm')).toBeVisible();
+
+  // The remote shell exits: the backend emits terminal-exited for session id 1.
+  await page.evaluate(() => {
+    (window as unknown as { __fireTerminalExited: (id: number) => void }).__fireTerminalExited(1);
+  });
+
+  await expect(page.getByRole('button', { name: 'web-1 · terminal', exact: true })).toHaveCount(0);
+  await expect(page.locator('.xterm')).toHaveCount(0);
 });

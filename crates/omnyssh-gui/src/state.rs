@@ -165,36 +165,33 @@ impl GuiState {
             .register_terminal(inner))
     }
 
-    /// Forward keystrokes to a terminal. Unknown/closed ids are a no-op.
-    pub fn write_terminal(&self, public: SessionId, data: &[u8]) {
+    /// Resolve a public id to its live PTY inner id and run `f` on the manager. The
+    /// un-nested lock order (sessions dropped before pty is taken) lives here alone so
+    /// write/resize can't drift apart. Unknown/closed ids are a no-op.
+    fn on_pty_inner(&self, public: SessionId, f: impl FnOnce(&mut PtyManager, SessionId)) {
         let inner = self
             .sessions
             .lock()
             .expect("sessions lock poisoned")
             .pty_inner(public);
         if let Some(inner) = inner {
-            let _ = self
-                .pty
-                .lock()
-                .expect("pty lock poisoned")
-                .write(inner, data);
+            let mut pty = self.pty.lock().expect("pty lock poisoned");
+            f(&mut pty, inner);
         }
+    }
+
+    /// Forward keystrokes to a terminal. Unknown/closed ids are a no-op.
+    pub fn write_terminal(&self, public: SessionId, data: &[u8]) {
+        self.on_pty_inner(public, |pty, inner| {
+            let _ = pty.write(inner, data);
+        });
     }
 
     /// Relay a resize (window_change) to a terminal. Unknown/closed ids are a no-op.
     pub fn resize_terminal(&self, public: SessionId, cols: u16, rows: u16) {
-        let inner = self
-            .sessions
-            .lock()
-            .expect("sessions lock poisoned")
-            .pty_inner(public);
-        if let Some(inner) = inner {
-            let _ = self
-                .pty
-                .lock()
-                .expect("pty lock poisoned")
-                .resize(inner, cols, rows);
-        }
+        self.on_pty_inner(public, |pty, inner| {
+            let _ = pty.resize(inner, cols, rows);
+        });
     }
 
     /// User-initiated close: tear down the core session and drop its routing state,
@@ -229,15 +226,19 @@ impl GuiState {
         }
     }
 
-    /// Remote-side exit: map the inner id to its public id and drop routing state.
-    /// Returns the public id to emit `terminal-exited` for, or `None` if the user
-    /// already closed it (§3.4).
+    /// Remote-side exit: map the inner id to its public id and drop all routing
+    /// state. Returns the public id to emit `terminal-exited` for, or `None` if the
+    /// user already closed it (§3.4). The ended task never prunes its own
+    /// `PtyManager` slot, so — like the TUI's `PtyExited` handler — we `close` it
+    /// here (a no-op control send to a dead task) to avoid leaking the session Vec
+    /// entry on every remote exit or failed connect.
     pub fn terminal_exited(&self, inner: SessionId) -> Option<SessionId> {
         let public = self
             .sessions
             .lock()
             .expect("sessions lock poisoned")
             .remove_by_pty(inner);
+        self.pty.lock().expect("pty lock poisoned").close(inner);
         self.term_channels
             .lock()
             .expect("term_channels lock poisoned")
@@ -248,7 +249,7 @@ impl GuiState {
 
 #[cfg(test)]
 mod tests {
-    use super::SessionRegistry;
+    use super::*;
 
     #[test]
     fn public_ids_are_unique_and_monotonic() {
@@ -307,5 +308,43 @@ mod tests {
     fn unknown_ids_resolve_to_none() {
         let reg = SessionRegistry::default();
         assert_eq!(reg.pty_inner(999), None);
+    }
+
+    // A remote exit must prune the core PtyManager slot (the ended task never removes
+    // its own entry). Without `pty.close` in `terminal_exited` this leaks per exit.
+    #[tokio::test]
+    async fn remote_exit_prunes_the_pty_session() {
+        let (engine_tx, _engine_rx) = mpsc::channel::<CoreEvent>(8);
+        let (raw_tx, _raw_rx) = mpsc::channel(8);
+        let state = GuiState::new(engine_tx, PtyManager::with_raw_output(raw_tx));
+        state.set_hosts(vec![Host {
+            name: "h".to_string(),
+            ..Host::default()
+        }]);
+
+        // A no-op output channel is enough — this asserts lifecycle, not bytes.
+        let channel = Channel::new(|_| Ok(()));
+        let public = state.open_terminal("h", 80, 24, channel).unwrap();
+        let inner = state
+            .sessions
+            .lock()
+            .unwrap()
+            .pty_inner(public)
+            .expect("registered");
+
+        // Live session: `parser_for` is Some only while the manager holds the slot.
+        assert!(state.pty.lock().unwrap().parser_for(inner).is_some());
+
+        assert_eq!(state.terminal_exited(inner), Some(public));
+        // Pruned — no leaked PtyManager.sessions entry.
+        assert!(state.pty.lock().unwrap().parser_for(inner).is_none());
+    }
+
+    #[test]
+    fn open_terminal_rejects_an_unknown_host() {
+        let (engine_tx, _engine_rx) = mpsc::channel::<CoreEvent>(8);
+        let state = GuiState::new(engine_tx, PtyManager::new());
+        let channel = Channel::new(|_| Ok(()));
+        assert!(state.open_terminal("nope", 80, 24, channel).is_err());
     }
 }

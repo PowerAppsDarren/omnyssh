@@ -6,13 +6,14 @@
   // terminal commands. Subscribes to the theme store and re-themes live (§5.1).
   import '@xterm/xterm/css/xterm.css';
   import { onMount, onDestroy } from 'svelte';
-  import { get } from 'svelte/store';
   import type { Terminal } from '@xterm/xterm';
   import type { FitAddon } from '@xterm/addon-fit';
   import { Channel } from '@tauri-apps/api/core';
   import { theme } from '$lib/stores/theme';
   import { xtermTheme } from '$lib/theme/terminalTheme';
   import { sessions, type Session } from '$lib/stores/sessions';
+  import { closeSession } from '$lib/stores/navigation';
+  import { terminalDidExit } from '$lib/ipc/router';
   import { lastError } from '$lib/stores/notifications';
   import { terminalOpen, terminalWrite, terminalResize, terminalClose } from '$lib/ipc/commands';
   import type { TerminalBytes } from '$lib/bindings';
@@ -20,6 +21,8 @@
   let { session, active }: { session: Session; active: boolean } = $props();
 
   const MONO = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+  // One encoder for the keystroke hot path instead of one per input event.
+  const ENCODER = new TextEncoder();
 
   let container: HTMLDivElement;
   let term: Terminal | undefined;
@@ -65,15 +68,15 @@
         fontFamily: MONO,
         fontSize: 13,
         cursorBlink: true,
-        scrollback: 5000,
-        theme: xtermTheme(get(theme))
+        scrollback: 5000
       });
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(container);
 
       // The #1 theme-regression guard (§5.1): push the matching xterm theme to this
-      // terminal — including already-open ones — whenever the store flips.
+      // terminal — including already-open ones — whenever the store flips. Its
+      // synchronous first call (pre-paint) also sets the initial theme.
       themeUnsub = theme.subscribe((t) => {
         if (term) term.options.theme = xtermTheme(t);
       });
@@ -99,10 +102,24 @@
       }
       termId = id;
       sessions.setTermId(session.id, id);
+      // The remote may have already exited before this id was recorded (fast-fail
+      // connect race): terminal-exited couldn't match the tab, so close it now.
+      if (terminalDidExit(id)) {
+        closeSession(session.id);
+        return;
+      }
 
+      // Text keystrokes/paste are UTF-8; onBinary carries raw 8-bit sequences
+      // (e.g. legacy mouse reporting) that must go byte-for-byte, not re-encoded.
       term.onData((data) => {
+        if (termId != null) void terminalWrite(termId, Array.from(ENCODER.encode(data))).catch(() => {});
+      });
+      term.onBinary((data) => {
         if (termId != null) {
-          void terminalWrite(termId, Array.from(new TextEncoder().encode(data))).catch(() => {});
+          void terminalWrite(
+            termId,
+            Array.from(data, (ch) => ch.charCodeAt(0) & 0xff)
+          ).catch(() => {});
         }
       });
 
@@ -112,7 +129,10 @@
       ready = true;
       if (active) term.focus();
     })().catch((err) => {
+      // `terminal_open` itself failed (e.g. an unsupported ProxyJump host): no
+      // PtyExited follows, so mark the tab failed here instead of leaving it hung.
       lastError.set(err instanceof Error ? err.message : String(err));
+      sessions.setStatus(session.id, 'failed');
     });
   });
 
@@ -123,6 +143,9 @@
     // Idempotent: a remote-exit teardown already dropped this id backend-side (§3.4).
     if (termId != null) void terminalClose(termId).catch(() => {});
     term?.dispose();
+    // Null it so a byte still in flight (destroyed-before-open race) can't write to
+    // a disposed terminal — the channel callback's `if (!term)` guard then bails.
+    term = undefined;
   });
 
   // Becoming visible: a hidden container measured 0, so refit and take focus.

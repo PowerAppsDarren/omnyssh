@@ -6,6 +6,7 @@ import { statuses } from '$lib/stores/statuses';
 import { metrics } from '$lib/stores/metrics';
 import { services } from '$lib/stores/services';
 import { snippetRun, beginRun, clearRun } from '$lib/stores/snippets';
+import { sessions } from '$lib/stores/sessions';
 import { lastError } from '$lib/stores/notifications';
 import {
   applyError,
@@ -14,7 +15,9 @@ import {
   applyMetricsUpdated,
   applyServicesDetected,
   applyServicesFailed,
-  applySnippetResult
+  applySnippetResult,
+  applyTerminalExited,
+  terminalDidExit
 } from './router';
 
 describe('ipc event router', () => {
@@ -145,5 +148,22 @@ describe('ipc event router', () => {
     expect(run?.entries[0].pending).toBe(true); // web-1 untouched
     expect(run?.entries[1]).toEqual({ hostName: 'web-2', pending: false, ok: true, output: 'done' });
     clearRun();
+  });
+
+  it('terminal-exited closes the tab matched by backend id', () => {
+    const tab = sessions.spawn('terminal', 'web-1');
+    sessions.setTermId(tab.id, 501);
+
+    applyTerminalExited(501);
+
+    expect(get(sessions).some((s) => s.id === tab.id)).toBe(false);
+  });
+
+  it('a terminal-exited that races ahead of terminalOpen reconciles on setTermId', () => {
+    // The exit fires before any tab recorded termId 777, so it is parked...
+    applyTerminalExited(777);
+    // ...then the tab records its id and learns it already exited (consumed once).
+    expect(terminalDidExit(777)).toBe(true);
+    expect(terminalDidExit(777)).toBe(false);
   });
 });
