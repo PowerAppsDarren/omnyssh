@@ -1,19 +1,19 @@
 <!-- Content follows the active entity (tech-gui.md §2): exactly one of Dashboard,
-     Snippets, or one session. Terminal tabs live in a persistent layer so their
-     scrollback and byte stream survive switching away (only visibility toggles);
-     SFTP sessions land in Stage 3.2. The list_hosts call feeds the status-bar count. -->
+     Snippets, or one session. Terminal and SFTP tabs live in a persistent layer so
+     their scrollback / byte stream (terminal) and pane state (SFTP) survive switching
+     away — only visibility toggles. The list_hosts call feeds the status-bar count. -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listHosts } from '$lib/ipc/commands';
   import { hosts } from '$lib/stores/hosts';
   import { lastError } from '$lib/stores/notifications';
   import { activeEntity } from '$lib/stores/activeEntity';
-  import { sessions, sessionLabel } from '$lib/stores/sessions';
+  import { sessions } from '$lib/stores/sessions';
   import AppShell from '$lib/components/AppShell.svelte';
   import Dashboard from '$lib/screens/Dashboard.svelte';
   import Snippets from '$lib/screens/Snippets.svelte';
   import TerminalView from '$lib/screens/TerminalView.svelte';
-  import { StatusDot } from '$lib/theme';
+  import SftpView from '$lib/screens/SftpView.svelte';
 
   onMount(async () => {
     try {
@@ -24,36 +24,29 @@
   });
 
   const activeSessionId = $derived($activeEntity.kind === 'session' ? $activeEntity.id : null);
-  const activeSession = $derived(
-    activeSessionId != null ? $sessions.find((s) => s.id === activeSessionId) : undefined
+  // A selector (Dashboard/Snippets) owns the overlay; a session owns the persistent
+  // layer. The two are mutually exclusive — the §2 exactly-one-active invariant.
+  const selectorActive = $derived(
+    $activeEntity.kind === 'dashboard' || $activeEntity.kind === 'snippets'
   );
-  // Terminals render in the persistent layer; the overlay covers every other case.
-  const terminalActive = $derived(activeSession?.kind === 'terminal');
-  const terminalSessions = $derived($sessions.filter((s) => s.kind === 'terminal'));
 </script>
 
 <AppShell>
   <div class="relative h-full">
-    {#each terminalSessions as s (s.id)}
-      <TerminalView session={s} active={activeSessionId === s.id} />
+    {#each $sessions as s (s.id)}
+      {#if s.kind === 'terminal'}
+        <TerminalView session={s} active={activeSessionId === s.id} />
+      {:else}
+        <SftpView session={s} active={activeSessionId === s.id} />
+      {/if}
     {/each}
 
-    {#if !terminalActive}
+    {#if selectorActive}
       <div class="absolute inset-0 overflow-auto">
         {#if $activeEntity.kind === 'dashboard'}
           <Dashboard />
         {:else if $activeEntity.kind === 'snippets'}
           <Snippets />
-        {:else if activeSession}
-          <div class="flex h-full flex-col items-center justify-center gap-6 p-10 text-center">
-            <div class="flex flex-col items-center gap-3">
-              <StatusDot status="unknown" size={12} label="session status" />
-              <h1 class="font-mono text-2xl font-medium tracking-tight">
-                {sessionLabel(activeSession)}
-              </h1>
-              <p class="text-muted">SFTP sessions land in Stage 3.2.</p>
-            </div>
-          </div>
         {/if}
       </div>
     {/if}

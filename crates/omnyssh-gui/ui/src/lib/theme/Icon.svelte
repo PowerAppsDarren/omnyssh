@@ -68,5 +68,22 @@
   {:else if name === 'plus'}
     <line x1="12" y1="5" x2="12" y2="19" />
     <line x1="5" y1="12" x2="19" y2="12" />
+  {:else if name === 'folder'}
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+  {:else if name === 'file'}
+    <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+    <polyline points="14 3 14 9 20 9" />
+  {:else if name === 'upload'}
+    <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+    <polyline points="8 8 12 4 16 8" />
+    <line x1="12" y1="4" x2="12" y2="16" />
+  {:else if name === 'download'}
+    <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+    <polyline points="8 12 12 16 16 12" />
+    <line x1="12" y1="4" x2="12" y2="16" />
+  {:else if name === 'refresh'}
+    <polyline points="23 4 23 10 17 10" />
+    <polyline points="1 20 1 14 7 14" />
+    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
   {/if}
 </svg>

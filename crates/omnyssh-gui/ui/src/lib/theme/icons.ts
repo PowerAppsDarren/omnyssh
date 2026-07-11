@@ -16,4 +16,9 @@ export type IconName =
   | 'play'
   | 'edit'
   | 'trash'
-  | 'plus';
+  | 'plus'
+  | 'folder'
+  | 'file'
+  | 'upload'
+  | 'download'
+  | 'refresh';

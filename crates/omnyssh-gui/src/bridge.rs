@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use tokio::sync::mpsc;
 
+use crate::dto::{FileEntryDto, TransferProgressDto};
 use crate::events;
 use crate::state::GuiState;
 
@@ -64,5 +65,206 @@ pub async fn forward_terminal_output(app: AppHandle, mut rx: mpsc::Receiver<(Ses
     while let Some((inner_id, bytes)) = rx.recv().await {
         app.state::<GuiState>()
             .send_terminal_output(inner_id, bytes);
+    }
+}
+
+/// A typed SFTP event stamped with its owning session id, ready to emit. Built by
+/// [`map_sftp_event`] so per-session routing stays pure and unit-testable (§3.4).
+enum SftpOutbound {
+    Connected(events::SftpConnected),
+    DirListed(events::SftpDirListed),
+    OpDone(events::SftpOpDone),
+    Disconnected(events::SftpDisconnected),
+    Preview(events::FilePreview),
+    Progress(events::TransferProgress),
+}
+
+impl SftpOutbound {
+    fn emit(self, app: &AppHandle) {
+        let _ = match self {
+            SftpOutbound::Connected(e) => e.emit(app),
+            SftpOutbound::DirListed(e) => e.emit(app),
+            SftpOutbound::OpDone(e) => e.emit(app),
+            SftpOutbound::Disconnected(e) => e.emit(app),
+            SftpOutbound::Preview(e) => e.emit(app),
+            SftpOutbound::Progress(e) => e.emit(app),
+        };
+    }
+}
+
+/// Stamp a core SFTP event with `session_id` (its resolved owner) and map it to a
+/// typed IPC event (§3.4). `None` for a variant that never travels a per-session SFTP
+/// channel. Pure: the session id comes from the channel's owner, never from the
+/// (absent) event field — this is what makes two tabs listing the same path resolve
+/// to distinct sessions.
+fn map_sftp_event(session_id: SessionId, event: CoreEvent) -> Option<SftpOutbound> {
+    Some(match event {
+        CoreEvent::SftpConnected { host_name } => SftpOutbound::Connected(events::SftpConnected {
+            session_id,
+            host_name,
+        }),
+        CoreEvent::FileDirListed { path, entries } => {
+            SftpOutbound::DirListed(events::SftpDirListed {
+                session_id,
+                path,
+                entries: entries.iter().map(FileEntryDto::from).collect(),
+            })
+        }
+        CoreEvent::SftpOpDone { result } => {
+            let (ok, error) = match result {
+                Ok(()) => (true, None),
+                Err(message) => (false, Some(message)),
+            };
+            SftpOutbound::OpDone(events::SftpOpDone {
+                session_id,
+                ok,
+                error,
+            })
+        }
+        CoreEvent::SftpDisconnected { reason } => {
+            SftpOutbound::Disconnected(events::SftpDisconnected { session_id, reason })
+        }
+        CoreEvent::FilePreviewReady { path, content } => {
+            SftpOutbound::Preview(events::FilePreview {
+                session_id,
+                path,
+                content,
+            })
+        }
+        CoreEvent::FileTransferProgress(transfer_id, done, total) => {
+            SftpOutbound::Progress(events::TransferProgress(TransferProgressDto {
+                session_id,
+                transfer_id,
+                done,
+                total,
+            }))
+        }
+        // Not produced on a per-session SFTP channel (`SftpManagerReady` is TUI-only).
+        _ => return None,
+    })
+}
+
+/// Per-session SFTP forwarder (§3.4): drains a tab's dedicated core-event channel,
+/// stamps each event with the tab's `session_id`, and emits the typed IPC event.
+/// Transfer progress is attributed to its owner via `transfer_owner` (the
+/// GUI-allocated transfer id's session). Ends when the core task drops its sender.
+pub async fn forward_sftp_events(
+    app: AppHandle,
+    session_id: SessionId,
+    mut rx: mpsc::Receiver<CoreEvent>,
+) {
+    while let Some(event) = rx.recv().await {
+        // A transfer's owner comes from `transfer_owner`; every other event is stamped
+        // with this forwarder's own session (§3.4).
+        let owner = match &event {
+            CoreEvent::FileTransferProgress(transfer_id, _, _) => app
+                .state::<GuiState>()
+                .transfer_session(*transfer_id)
+                .unwrap_or(session_id),
+            _ => session_id,
+        };
+        if let Some(outbound) = map_sftp_event(owner, event) {
+            outbound.emit(&app);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omnyssh_core::ssh::sftp::FileEntry;
+
+    fn file(name: &str) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            path: format!("/srv/{name}"),
+            size: 0,
+            is_dir: false,
+        }
+    }
+
+    // Two tabs listing the SAME path resolve to DISTINCT sessions — the id comes from
+    // the channel's owner, not the (absent) event field (tech-gui.md §3.2/§3.4).
+    #[test]
+    fn same_path_listing_stamps_distinct_sessions() {
+        let listing = || CoreEvent::FileDirListed {
+            path: "/srv".to_string(),
+            entries: vec![file("a")],
+        };
+        match (
+            map_sftp_event(1, listing()).unwrap(),
+            map_sftp_event(2, listing()).unwrap(),
+        ) {
+            (SftpOutbound::DirListed(a), SftpOutbound::DirListed(b)) => {
+                assert_eq!(a.path, b.path, "same remote path");
+                assert_eq!(a.session_id, 1);
+                assert_eq!(b.session_id, 2, "distinct sessions");
+                assert_eq!(a.entries.len(), 1);
+                assert_eq!(a.entries[0].name, "a");
+            }
+            _ => panic!("expected DirListed for both"),
+        }
+    }
+
+    #[test]
+    fn connected_is_stamped_with_the_owning_session() {
+        match map_sftp_event(
+            5,
+            CoreEvent::SftpConnected {
+                host_name: "web-1".to_string(),
+            },
+        )
+        .unwrap()
+        {
+            SftpOutbound::Connected(e) => {
+                assert_eq!(e.session_id, 5);
+                assert_eq!(e.host_name, "web-1");
+            }
+            _ => panic!("expected Connected"),
+        }
+    }
+
+    #[test]
+    fn progress_carries_the_resolved_owner_and_transfer_id() {
+        match map_sftp_event(7, CoreEvent::FileTransferProgress(42, 512, 2048)).unwrap() {
+            SftpOutbound::Progress(events::TransferProgress(dto)) => {
+                assert_eq!(dto.session_id, 7);
+                assert_eq!(dto.transfer_id, 42);
+                assert_eq!((dto.done, dto.total), (512, 2048));
+            }
+            _ => panic!("expected Progress"),
+        }
+    }
+
+    #[test]
+    fn op_done_flattens_ok_and_error() {
+        match map_sftp_event(1, CoreEvent::SftpOpDone { result: Ok(()) }).unwrap() {
+            SftpOutbound::OpDone(e) => {
+                assert!(e.ok);
+                assert!(e.error.is_none());
+            }
+            _ => panic!("expected OpDone"),
+        }
+        match map_sftp_event(
+            1,
+            CoreEvent::SftpOpDone {
+                result: Err("permission denied".to_string()),
+            },
+        )
+        .unwrap()
+        {
+            SftpOutbound::OpDone(e) => {
+                assert!(!e.ok);
+                assert_eq!(e.error.as_deref(), Some("permission denied"));
+            }
+            _ => panic!("expected OpDone"),
+        }
+    }
+
+    #[test]
+    fn unrelated_variants_never_map_to_an_sftp_event() {
+        // A terminal render-nudge would never arrive here, but the catch-all keeps the
+        // forwarder robust and the match exhaustive without inventing an event (§3.4).
+        assert!(map_sftp_event(1, CoreEvent::PtyOutput(3)).is_none());
     }
 }

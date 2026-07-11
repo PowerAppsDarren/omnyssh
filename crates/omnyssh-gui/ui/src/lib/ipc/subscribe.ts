@@ -6,13 +6,19 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 import { events } from '$lib/bindings';
 import {
   applyError,
+  applyFilePreview,
   applyHostStatusChanged,
   applyHostsLoaded,
   applyMetricsUpdated,
   applyServicesDetected,
   applyServicesFailed,
+  applySftpConnected,
+  applySftpDirListed,
+  applySftpDisconnected,
+  applySftpOpDone,
   applySnippetResult,
-  applyTerminalExited
+  applyTerminalExited,
+  applyTransferProgress
 } from './router';
 
 export async function startEventBridge(): Promise<() => void> {
@@ -25,6 +31,12 @@ export async function startEventBridge(): Promise<() => void> {
     offs.push(await events.servicesFailed.listen((e) => applyServicesFailed(e.payload)));
     offs.push(await events.snippetResult.listen((e) => applySnippetResult(e.payload)));
     offs.push(await events.terminalExited.listen((e) => applyTerminalExited(e.payload.sessionId)));
+    offs.push(await events.sftpConnected.listen((e) => applySftpConnected(e.payload)));
+    offs.push(await events.sftpDirListed.listen((e) => applySftpDirListed(e.payload)));
+    offs.push(await events.sftpOpDone.listen((e) => applySftpOpDone(e.payload)));
+    offs.push(await events.sftpDisconnected.listen((e) => applySftpDisconnected(e.payload)));
+    offs.push(await events.filePreview.listen((e) => applyFilePreview(e.payload)));
+    offs.push(await events.transferProgress.listen((e) => applyTransferProgress(e.payload)));
     offs.push(await events.error.listen((e) => applyError(e.payload.message)));
   } catch (err) {
     offs.forEach((off) => off());

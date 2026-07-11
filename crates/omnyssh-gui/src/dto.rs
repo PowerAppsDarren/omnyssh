@@ -9,6 +9,7 @@ use omnyssh_core::event::{
     DetectedService, MetricValue, Metrics, ProcessInfo, ServiceKind, ServiceMetric,
 };
 use omnyssh_core::ssh::client::{ConnectionStatus, Host, HostSource};
+use omnyssh_core::ssh::sftp::FileEntry;
 
 /// Host origin, mirrors `omnyssh_core::ssh::client::HostSource`.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -134,6 +135,30 @@ pub struct SnippetDto {
     pub tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Vec<String>>,
+}
+
+/// A file or directory in an SFTP panel listing (tech-gui.md §4.1). Maps from the
+/// core `FileEntry`; `path` is the absolute path the frontend marks entries by.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEntryDto {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub is_dir: bool,
+}
+
+/// Live progress for one SFTP upload/download (tech-gui.md §4.1). The GUI allocates
+/// `transferId` when it issues the transfer and resolves its owning `sessionId` via
+/// `transfer_owner` (§3.4); `done`/`total` are byte counts (`total` is `0` when the
+/// remote size could not be determined).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferProgressDto {
+    pub session_id: u64,
+    pub transfer_id: u64,
+    pub done: u64,
+    pub total: u64,
 }
 
 /// Raw PTY output bytes for a terminal session's per-session `Channel` (tech-gui.md
@@ -291,6 +316,17 @@ impl From<SnippetDto> for Snippet {
             host: dto.host,
             tags: dto.tags,
             params: dto.params,
+        }
+    }
+}
+
+impl From<&FileEntry> for FileEntryDto {
+    fn from(entry: &FileEntry) -> Self {
+        Self {
+            name: entry.name.clone(),
+            path: entry.path.clone(),
+            size: entry.size,
+            is_dir: entry.is_dir,
         }
     }
 }
@@ -545,5 +581,62 @@ mod tests {
         assert!(dto.host.is_none());
         assert!(dto.tags.is_none());
         assert!(dto.params.is_none());
+    }
+
+    #[test]
+    fn file_entry_dto_maps_a_file_and_a_directory() {
+        let file = FileEntry {
+            name: "config.toml".to_string(),
+            path: "/etc/omnyssh/config.toml".to_string(),
+            size: 4096,
+            is_dir: false,
+        };
+        let dto = FileEntryDto::from(&file);
+        assert_eq!(dto.name, "config.toml");
+        assert_eq!(dto.path, "/etc/omnyssh/config.toml");
+        assert_eq!(dto.size, 4096);
+        assert!(!dto.is_dir);
+
+        let dir = FileEntry {
+            name: "..".to_string(),
+            path: "/etc".to_string(),
+            size: 0,
+            is_dir: true,
+        };
+        let dto = FileEntryDto::from(&dir);
+        assert!(dto.is_dir);
+        assert_eq!(dto.size, 0);
+    }
+
+    #[test]
+    fn file_entry_dto_uses_camel_case_is_dir_on_the_wire() {
+        // The frontend reads `isDir` (tech-gui.md §4.1); a snake-case leak would
+        // silently render every entry as a file.
+        let json = serde_json::to_string(&FileEntryDto::from(&FileEntry {
+            name: "srv".to_string(),
+            path: "/srv".to_string(),
+            size: 0,
+            is_dir: true,
+        }))
+        .expect("serialise FileEntryDto");
+        assert_eq!(
+            json,
+            r#"{"name":"srv","path":"/srv","size":0,"isDir":true}"#
+        );
+    }
+
+    #[test]
+    fn transfer_progress_dto_carries_session_transfer_and_byte_counts() {
+        let json = serde_json::to_string(&TransferProgressDto {
+            session_id: 3,
+            transfer_id: 7,
+            done: 512,
+            total: 2048,
+        })
+        .expect("serialise TransferProgressDto");
+        assert_eq!(
+            json,
+            r#"{"sessionId":3,"transferId":7,"done":512,"total":2048}"#
+        );
     }
 }

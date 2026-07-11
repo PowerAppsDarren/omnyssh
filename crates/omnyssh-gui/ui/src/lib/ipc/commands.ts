@@ -3,7 +3,7 @@
 
 import type { Channel } from '@tauri-apps/api/core';
 import { commands } from '$lib/bindings';
-import type { HostDto, SnippetDto, TerminalBytes } from '$lib/bindings';
+import type { FileEntryDto, HostDto, SnippetDto, TerminalBytes } from '$lib/bindings';
 
 export async function listHosts(): Promise<HostDto[]> {
   const res = await commands.listHosts();
@@ -75,4 +75,78 @@ export async function terminalResize(sessionId: number, cols: number, rows: numb
 export async function terminalClose(sessionId: number): Promise<void> {
   const res = await commands.terminalClose(sessionId);
   if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Open an SFTP session for `hostName`; returns the public session id the sftp_*
+ *  wrappers use, and the tab's `sftp-*` events carry (tech-gui.md §3.4/§4.2). */
+export async function sftpOpen(hostName: string): Promise<number> {
+  const res = await commands.sftpOpen(hostName);
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
+}
+
+/** List a remote directory; the result arrives as `sftp-dir-listed`. */
+export async function sftpList(sessionId: number, path: string): Promise<void> {
+  const res = await commands.sftpList(sessionId, path);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Upload a local file to a remote path; progress arrives as `transfer-progress`. */
+export async function sftpUpload(sessionId: number, local: string, remote: string): Promise<void> {
+  const res = await commands.sftpUpload(sessionId, local, remote);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Download a remote file to a local path; progress arrives as `transfer-progress`. */
+export async function sftpDownload(
+  sessionId: number,
+  local: string,
+  remote: string
+): Promise<void> {
+  const res = await commands.sftpDownload(sessionId, local, remote);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Create a remote directory; completion arrives as `sftp-op-done`. */
+export async function sftpMkdir(sessionId: number, path: string): Promise<void> {
+  const res = await commands.sftpMkdir(sessionId, path);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Rename / move a remote path; completion arrives as `sftp-op-done`. */
+export async function sftpRename(sessionId: number, from: string, to: string): Promise<void> {
+  const res = await commands.sftpRename(sessionId, from, to);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Delete a remote file (or empty directory); completion arrives as `sftp-op-done`. */
+export async function sftpDelete(sessionId: number, path: string): Promise<void> {
+  const res = await commands.sftpDelete(sessionId, path);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Request a remote file preview; the bytes arrive as `file-preview`. */
+export async function sftpPreview(sessionId: number, path: string): Promise<void> {
+  const res = await commands.sftpPreview(sessionId, path);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Close an SFTP session and its connection. Idempotent for an already-closed id. */
+export async function sftpClose(sessionId: number): Promise<void> {
+  const res = await commands.sftpClose(sessionId);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** List a local directory (returns directly — no event). */
+export async function listLocalDir(path: string): Promise<FileEntryDto[]> {
+  const res = await commands.listLocalDir(path);
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
+}
+
+/** Read up to 4 KiB of a local file as UTF-8 for preview. */
+export async function previewLocalFile(path: string): Promise<string> {
+  const res = await commands.previewLocalFile(path);
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
 }

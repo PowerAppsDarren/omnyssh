@@ -4,10 +4,16 @@
 import { get } from 'svelte/store';
 import type {
   ConnectionStatusDto,
+  FilePreview,
   HostDto,
   MetricsDto,
   ServiceDto,
-  SnippetResult
+  SftpConnected,
+  SftpDirListed,
+  SftpDisconnected,
+  SftpOpDone,
+  SnippetResult,
+  TransferProgressDto
 } from '$lib/bindings';
 import { hosts } from '$lib/stores/hosts';
 import { statuses } from '$lib/stores/statuses';
@@ -15,6 +21,7 @@ import { metrics, mergeMetrics } from '$lib/stores/metrics';
 import { services } from '$lib/stores/services';
 import { snippetRun, reduceRunResult } from '$lib/stores/snippets';
 import { sessions } from '$lib/stores/sessions';
+import { sftp } from '$lib/stores/sftp';
 import { closeSession } from '$lib/stores/navigation';
 import { lastError } from '$lib/stores/notifications';
 
@@ -73,6 +80,35 @@ export function applyTerminalExited(sessionId: number): void {
  *  fast-fail race); consumes the pending flag. Called right after a tab sets termId. */
 export function terminalDidExit(termId: number): boolean {
   return exitedBeforeMapped.delete(termId);
+}
+
+// SFTP events (tech-gui.md §3.4/§4.3). Each carries the backend session id the sftp
+// store is keyed by, so the per-session forwarder's stamping routes it to the right
+// tab with no path-based guessing. `SftpView` mirrors the store status to the sidebar.
+export function applySftpConnected(payload: SftpConnected): void {
+  sftp.setStatus(payload.sessionId, 'connected');
+}
+
+export function applySftpDirListed(payload: SftpDirListed): void {
+  sftp.listing(payload.sessionId, 'remote', payload.path, payload.entries);
+}
+
+export function applySftpOpDone(payload: SftpOpDone): void {
+  sftp.opDone(payload.sessionId, payload.ok, payload.error ?? undefined);
+}
+
+// The core emits `sftp-disconnected` on a listing error, not a hard teardown (§4.3);
+// surface the reason but keep the tab — the user closes it explicitly.
+export function applySftpDisconnected(payload: SftpDisconnected): void {
+  sftp.sessionError(payload.sessionId, payload.reason);
+}
+
+export function applyFilePreview(payload: FilePreview): void {
+  sftp.setPreview(payload.sessionId, { path: payload.path, content: payload.content });
+}
+
+export function applyTransferProgress(payload: TransferProgressDto): void {
+  sftp.progress(payload.sessionId, payload);
 }
 
 export function applyError(message: string): void {
