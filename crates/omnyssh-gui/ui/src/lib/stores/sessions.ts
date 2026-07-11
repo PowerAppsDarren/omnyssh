@@ -22,6 +22,9 @@ export interface Session {
   kind: SessionKind;
   hostName: string;
   status: SessionStatus;
+  /** The backend public session id, set once `terminal_open` resolves (tech-gui.md
+   *  §3.4). Undefined while connecting; the id crossing IPC is always this public id. */
+  termId?: number;
 }
 
 /** How a session is labelled wherever it is shown (sidebar row + Content heading),
@@ -39,6 +42,14 @@ function createSessions() {
       const session: Session = { id: nextId++, kind, hostName, status: 'connecting' };
       update((list) => [...list, session]);
       return session;
+    },
+    /** Record the backend public id once `terminal_open` resolves (tech-gui.md §3.4). */
+    setTermId(id: number, termId: number): void {
+      update((list) => list.map((s) => (s.id === id ? { ...s, termId } : s)));
+    },
+    /** Update a session's connection state (drives its status dot). */
+    setStatus(id: number, status: SessionStatus): void {
+      update((list) => list.map((s) => (s.id === id ? { ...s, status } : s)));
     },
     close(id: number): void {
       update((list) => list.filter((s) => s.id !== id));

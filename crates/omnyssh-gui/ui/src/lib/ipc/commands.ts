@@ -1,8 +1,9 @@
 // Thin typed wrappers over the generated command bindings (tech-gui.md §3.5).
 // Components call these, never `invoke` directly.
 
+import type { Channel } from '@tauri-apps/api/core';
 import { commands } from '$lib/bindings';
-import type { HostDto, SnippetDto } from '$lib/bindings';
+import type { FileEntryDto, HostDto, HostInputDto, SnippetDto, TerminalBytes } from '$lib/bindings';
 
 export async function listHosts(): Promise<HostDto[]> {
   const res = await commands.listHosts();
@@ -13,6 +14,18 @@ export async function listHosts(): Promise<HostDto[]> {
 /** Reload hosts from disk and (re)start the pollers; broadcasts `hosts-loaded`. */
 export async function reloadHosts(): Promise<void> {
   const res = await commands.reloadHosts();
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Add or edit a manual host in `hosts.toml`. Call `reloadHosts` after to refresh. */
+export async function saveHost(input: HostInputDto): Promise<void> {
+  const res = await commands.saveHost(input);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Delete a manual host by name. A missing / SSH-config name is a no-op success. */
+export async function deleteHost(name: string): Promise<void> {
+  const res = await commands.deleteHost(name);
   if (res.status === 'error') throw new Error(res.error.message);
 }
 
@@ -43,4 +56,109 @@ export async function executeSnippet(
 ): Promise<void> {
   const res = await commands.executeSnippet(snippetName, hostNames, params);
   if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Open a terminal for `hostName`, streaming raw output into `onOutput`; returns the
+ *  public session id used by the write/resize/close wrappers (tech-gui.md §3.3/§4.2). */
+export async function terminalOpen(
+  hostName: string,
+  cols: number,
+  rows: number,
+  onOutput: Channel<TerminalBytes>
+): Promise<number> {
+  const res = await commands.terminalOpen(hostName, cols, rows, onOutput);
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
+}
+
+/** Send keystrokes (UTF-8 bytes) to a terminal. */
+export async function terminalWrite(sessionId: number, data: number[]): Promise<void> {
+  const res = await commands.terminalWrite(sessionId, data);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Reflow a terminal to `cols` x `rows`. */
+export async function terminalResize(sessionId: number, cols: number, rows: number): Promise<void> {
+  const res = await commands.terminalResize(sessionId, cols, rows);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Close a terminal and its connection. Idempotent for an already-closed id. */
+export async function terminalClose(sessionId: number): Promise<void> {
+  const res = await commands.terminalClose(sessionId);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Open an SFTP session for `hostName`; returns the public session id the sftp_*
+ *  wrappers use, and the tab's `sftp-*` events carry (tech-gui.md §3.4/§4.2). */
+export async function sftpOpen(hostName: string): Promise<number> {
+  const res = await commands.sftpOpen(hostName);
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
+}
+
+/** List a remote directory; the result arrives as `sftp-dir-listed`. */
+export async function sftpList(sessionId: number, path: string): Promise<void> {
+  const res = await commands.sftpList(sessionId, path);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Upload a local file to a remote path; progress arrives as `transfer-progress`. */
+export async function sftpUpload(sessionId: number, local: string, remote: string): Promise<void> {
+  const res = await commands.sftpUpload(sessionId, local, remote);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Download a remote file to a local path; progress arrives as `transfer-progress`. */
+export async function sftpDownload(
+  sessionId: number,
+  local: string,
+  remote: string
+): Promise<void> {
+  const res = await commands.sftpDownload(sessionId, local, remote);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Create a remote directory; completion arrives as `sftp-op-done`. */
+export async function sftpMkdir(sessionId: number, path: string): Promise<void> {
+  const res = await commands.sftpMkdir(sessionId, path);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Rename / move a remote path; completion arrives as `sftp-op-done`. */
+export async function sftpRename(sessionId: number, from: string, to: string): Promise<void> {
+  const res = await commands.sftpRename(sessionId, from, to);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Delete a remote file (or empty directory); completion arrives as `sftp-op-done`. */
+export async function sftpDelete(sessionId: number, path: string): Promise<void> {
+  const res = await commands.sftpDelete(sessionId, path);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Request a remote file preview; the bytes arrive as `file-preview`. */
+export async function sftpPreview(sessionId: number, path: string): Promise<void> {
+  const res = await commands.sftpPreview(sessionId, path);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Close an SFTP session and its connection. Idempotent for an already-closed id. */
+export async function sftpClose(sessionId: number): Promise<void> {
+  const res = await commands.sftpClose(sessionId);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** List a local directory (returns directly — no event). */
+export async function listLocalDir(path: string): Promise<FileEntryDto[]> {
+  const res = await commands.listLocalDir(path);
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
+}
+
+/** Read up to 4 KiB of a local file as UTF-8 for preview. */
+export async function previewLocalFile(path: string): Promise<string> {
+  const res = await commands.previewLocalFile(path);
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
 }

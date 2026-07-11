@@ -5,7 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::dto::{ConnectionStatusDto, HostDto, MetricsDto, ServiceDto};
+use crate::dto::{
+    ConnectionStatusDto, FileEntryDto, HostDto, MetricsDto, ServiceDto, TransferProgressDto,
+};
 
 /// Full host list broadcast. Emitted by `reload_hosts` after refreshing the
 /// cache; the bridge does not map `HostsLoaded` (tech-gui.md §3.4).
@@ -57,6 +59,70 @@ pub struct SnippetResult {
     pub ok: bool,
     pub output: String,
 }
+
+/// A terminal session's remote shell exited or its connection dropped (tech-gui.md
+/// §4.3). Carries the **public** registry id (the bridge maps the core's inner PTY
+/// id, §3.4); the frontend tears the tab down. User-initiated closes never emit this.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalExited {
+    pub session_id: u64,
+}
+
+/// An SFTP session connected (tech-gui.md §4.3). The per-session forwarder stamps
+/// `sessionId` from the channel's owner — the core `SftpConnected` carries only the
+/// host name (§3.4).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpConnected {
+    pub session_id: u64,
+    pub host_name: String,
+}
+
+/// A remote directory listing completed for one SFTP tab (tech-gui.md §4.3). Stamped
+/// with `sessionId`; the core `FileDirListed` carries only the path (§3.4).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpDirListed {
+    pub session_id: u64,
+    pub path: String,
+    pub entries: Vec<FileEntryDto>,
+}
+
+/// A mutating SFTP op (upload/download/mkdir/rename/delete) finished (tech-gui.md
+/// §4.3). The core's `Result<(), String>` is flattened to `ok` + an optional `error`.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpOpDone {
+    pub session_id: u64,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// An SFTP operation reported a failure (tech-gui.md §4.3). The core emits this on a
+/// listing error with a human reason; it does not by itself tear the session down.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpDisconnected {
+    pub session_id: u64,
+    pub reason: String,
+}
+
+/// Preview bytes for a remote file (tech-gui.md §4.3). Stamped with `sessionId`; the
+/// core `FilePreviewReady` carries only the path + content (§3.4).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePreview {
+    pub session_id: u64,
+    pub path: String,
+    pub content: String,
+}
+
+/// Live transfer progress (tech-gui.md §4.3). The payload is `TransferProgressDto`,
+/// routed to its owning session via `transfer_owner` (§3.4/§4.1).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+pub struct TransferProgress(pub TransferProgressDto);
 
 /// A background error surfaced to the user.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]

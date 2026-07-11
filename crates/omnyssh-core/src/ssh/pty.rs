@@ -92,6 +92,7 @@ async fn open_shell(
 }
 
 /// Owns the russh channel for one session and multiplexes I/O until close/EOF.
+#[allow(clippy::too_many_arguments)] // additive raw-output sink (§3.6) is the 8th
 async fn session_task(
     id: SessionId,
     host: Host,
@@ -100,6 +101,7 @@ async fn session_task(
     parser: Arc<Mutex<vt100::Parser>>,
     mut ctrl_rx: mpsc::UnboundedReceiver<Ctrl>,
     tx: mpsc::Sender<CoreEvent>,
+    raw_output: Option<mpsc::Sender<(SessionId, Vec<u8>)>>,
 ) {
     // Phase A/B: connect, authenticate, and open the remote shell. Failures are
     // reported in the status bar and tear the tab down via PtyExited.
@@ -128,6 +130,11 @@ async fn session_task(
                 | Some(ChannelMsg::ExtendedData { data, .. }) => {
                     feed_parser(&parser, &data);
                     let _ = tx.send(CoreEvent::PtyOutput(id)).await;
+                    // Additive GUI tap (tech-gui.md §3.6): mirror the raw bytes to
+                    // the frontend channel. Absent for the TUI → no behaviour change.
+                    if let Some(raw) = &raw_output {
+                        let _ = raw.send((id, data.to_vec())).await;
+                    }
                 }
                 Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
                 _ => {} // ExitStatus etc.: ignore, wait for Close.
@@ -161,14 +168,32 @@ async fn session_task(
 pub struct PtyManager {
     sessions: Vec<PtySession>,
     next_id: u64,
+    /// Optional raw-output tap (GUI only). When set, each session task ALSO
+    /// forwards every data chunk here, tagged by its [`SessionId`], alongside the
+    /// existing parser feed + `PtyOutput` nudge. `None` for the TUI, whose path is
+    /// byte-for-byte unchanged.
+    raw_output: Option<mpsc::Sender<(SessionId, Vec<u8>)>>,
 }
 
 impl PtyManager {
-    /// Creates an empty manager.
+    /// Creates an empty manager with no raw-output tap (the TUI path).
     pub fn new() -> Self {
         Self {
             sessions: Vec::new(),
             next_id: 1,
+            raw_output: None,
+        }
+    }
+
+    /// Creates an empty manager that also mirrors every session's raw bytes into
+    /// `raw_output`, keyed by [`SessionId`] (the GUI terminal tap). Sessions and
+    /// the id space are identical to [`PtyManager::new`]; only the extra sink
+    /// differs, so the TUI construction path is unaffected.
+    pub fn with_raw_output(raw_output: mpsc::Sender<(SessionId, Vec<u8>)>) -> Self {
+        Self {
+            sessions: Vec::new(),
+            next_id: 1,
+            raw_output: Some(raw_output),
         }
     }
 
@@ -204,6 +229,7 @@ impl PtyManager {
             Arc::clone(&parser),
             ctrl_rx,
             tx,
+            self.raw_output.clone(),
         ));
         self.sessions.push(PtySession {
             id,
@@ -277,6 +303,20 @@ mod tests {
 
     fn dummy_tx() -> mpsc::Sender<CoreEvent> {
         mpsc::channel(1).0
+    }
+
+    #[test]
+    fn default_construction_has_no_raw_tap() {
+        // The TUI path must be byte-for-byte unchanged (tech-gui.md §3.6): the
+        // additive sink is absent unless a GUI opts in via `with_raw_output`.
+        assert!(PtyManager::new().raw_output.is_none());
+        assert!(PtyManager::default().raw_output.is_none());
+    }
+
+    #[test]
+    fn with_raw_output_installs_the_tap() {
+        let (raw_tx, _raw_rx) = mpsc::channel::<(SessionId, Vec<u8>)>(1);
+        assert!(PtyManager::with_raw_output(raw_tx).raw_output.is_some());
     }
 
     #[tokio::test]
