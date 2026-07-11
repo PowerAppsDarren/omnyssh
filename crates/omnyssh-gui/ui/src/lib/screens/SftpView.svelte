@@ -271,7 +271,9 @@
     'focus-visible:ring-2 focus-visible:ring-focus placeholder:text-faint';
 </script>
 
-<div class="absolute inset-0 flex flex-col bg-surface {active ? '' : 'hidden'}">
+<!-- bg-surface fills behind the macOS traffic lights (no seam); the pt insets the
+     panes below them. -->
+<div class="absolute inset-0 flex flex-col bg-surface pt-[var(--titlebar-h)] {active ? '' : 'hidden'}">
   {#if openError}
     <div class="flex flex-1 flex-col items-center justify-center gap-2 p-10 text-center">
       <p class="font-medium">Could not open SFTP on {session.hostName}</p>
@@ -449,7 +451,7 @@
       {#if view.preview.content.length === 0}
         <p class="text-sm text-faint">Empty file.</p>
       {:else}
-        <pre class="whitespace-pre-wrap break-words font-mono text-xs text-fg">{view.preview
+        <pre class="select-text whitespace-pre-wrap break-words font-mono text-xs text-fg">{view.preview
             .content}</pre>
       {/if}
     </div>

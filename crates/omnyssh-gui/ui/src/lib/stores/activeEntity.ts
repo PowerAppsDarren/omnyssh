@@ -8,6 +8,7 @@ import { writable } from 'svelte/store';
 export type ActiveEntity =
   | { kind: 'dashboard' }
   | { kind: 'snippets' }
+  | { kind: 'settings' }
   | { kind: 'session'; id: number };
 
 function createActiveEntity() {
@@ -16,6 +17,7 @@ function createActiveEntity() {
     subscribe,
     selectDashboard: () => set({ kind: 'dashboard' }),
     selectSnippets: () => set({ kind: 'snippets' }),
+    selectSettings: () => set({ kind: 'settings' }),
     activateSession: (id: number) => set({ kind: 'session', id })
   };
 }

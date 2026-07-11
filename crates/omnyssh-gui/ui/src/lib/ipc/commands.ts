@@ -3,7 +3,15 @@
 
 import type { Channel } from '@tauri-apps/api/core';
 import { commands } from '$lib/bindings';
-import type { FileEntryDto, HostDto, HostInputDto, SnippetDto, TerminalBytes } from '$lib/bindings';
+import type {
+  FileEntryDto,
+  HostDto,
+  HostInputDto,
+  SnippetDto,
+  TerminalBytes,
+  UpdateConfigDto,
+  UpdateInfoDto
+} from '$lib/bindings';
 
 export async function listHosts(): Promise<HostDto[]> {
   const res = await commands.listHosts();
@@ -161,4 +169,44 @@ export async function previewLocalFile(path: string): Promise<string> {
   const res = await commands.previewLocalFile(path);
   if (res.status === 'error') throw new Error(res.error.message);
   return res.data;
+}
+
+/** Start auto SSH-key setup for a host; progress + the outcome arrive as `key-setup-*`
+ *  events (tech-gui.md §4.2). Fire-and-forget — only an unknown host rejects here. */
+export async function startKeySetup(hostName: string): Promise<void> {
+  const res = await commands.startKeySetup(hostName);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Force an immediate metric poll of every host (tech-gui.md §4.2). */
+export async function refreshMetrics(): Promise<void> {
+  const res = await commands.refreshMetrics();
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Check GitHub for a newer release; `null` means up to date (tech-gui.md §4.2). */
+export async function checkUpdate(): Promise<UpdateInfoDto | null> {
+  const res = await commands.checkUpdate();
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
+}
+
+/** Download and install the latest desktop bundle (tech-gui.md §4.3). Fully wired once
+ *  Stage 5 configures the updater endpoints; until then it reports "not available yet". */
+export async function installUpdate(): Promise<void> {
+  const res = await commands.installUpdate();
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Read the update-checker preferences from the shared config (tech-gui.md §4.3). */
+export async function loadUpdateConfig(): Promise<UpdateConfigDto> {
+  const res = await commands.loadUpdateConfig();
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
+}
+
+/** Persist the update-checker preferences to the shared config (tech-gui.md §4.3). */
+export async function saveUpdateConfig(config: UpdateConfigDto): Promise<void> {
+  const res = await commands.saveUpdateConfig(config);
+  if (res.status === 'error') throw new Error(res.error.message);
 }

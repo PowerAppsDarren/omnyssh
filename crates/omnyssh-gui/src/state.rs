@@ -111,6 +111,13 @@ impl GuiState {
         *self.hosts.write().expect("hosts lock poisoned") = hosts;
     }
 
+    /// Clone the shared engine sender for a command that drives the core directly and
+    /// reports via `CoreEvent` on the bridge — key setup (§4.2) and the startup update
+    /// check (§4.3). Same channel the pollers and PTY sessions use (§3.4).
+    pub fn engine_sender(&self) -> mpsc::Sender<CoreEvent> {
+        self.engine_tx.clone()
+    }
+
     /// Snapshot the cached hosts as wire DTOs (secret fields dropped by the map).
     pub fn host_dtos(&self) -> Vec<HostDto> {
         self.hosts
@@ -141,6 +148,14 @@ impl GuiState {
             .iter()
             .find(|h| h.name == name)
             .cloned()
+    }
+
+    /// Trigger an immediate metric poll of every host (tech-gui.md §4.2). A no-op if
+    /// the pollers have not started yet. Non-blocking — it only nudges the poller tasks.
+    pub fn refresh_metrics(&self) {
+        if let Some(poll) = self.poll.lock().expect("poll lock poisoned").as_ref() {
+            poll.refresh_all();
+        }
     }
 
     /// Start (or restart) the pollers for the cached hosts. Must run inside the

@@ -12,7 +12,8 @@
   import { spawnSession } from '$lib/stores/navigation';
   import { hosts } from '$lib/stores/hosts';
   import { lastError } from '$lib/stores/notifications';
-  import { saveHost, deleteHost, reloadHosts } from '$lib/ipc/commands';
+  import { saveHost, deleteHost, reloadHosts, startKeySetup } from '$lib/ipc/commands';
+  import { beginKeySetup, dismissKeySetup } from '$lib/stores/keySetup';
   import { emptyForm, formFromHost } from './hostForm';
   import HostEditor from './HostEditor.svelte';
   import Modal from '$lib/components/Modal.svelte';
@@ -35,6 +36,19 @@
     await saveHost(input);
     await reloadHosts();
     dialog = null;
+  }
+
+  // Host-first auto key-setup (tech-gui.md §4.2). Open the progress panel immediately,
+  // then kick the backend flow; its progress/outcome arrive as `key-setup-*` events.
+  // A synchronous reject (unknown host) closes the panel and surfaces the error.
+  async function setupKey(host: HostDto): Promise<void> {
+    beginKeySetup(host.name);
+    try {
+      await startKeySetup(host.name);
+    } catch (e) {
+      dismissKeySetup();
+      lastError.set(message(e));
+    }
   }
 
   async function confirmDelete(name: string): Promise<void> {
@@ -79,8 +93,9 @@
     <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
       {#each $serverCards as card, i (i)}
         <Surface class="flex flex-col gap-4 p-5">
-          <!-- Identity + host-first quick actions -->
-          <div class="flex items-start justify-between gap-3">
+          <!-- Identity, then the actions on their own row so the name and address
+               stay readable at any card width (a full row instead of sharing it). -->
+          <div class="flex flex-col gap-3">
             <div class="flex min-w-0 items-start gap-2.5">
               <span class="mt-1 shrink-0">
                 <StatusDot status={card.overall} size={9} label="{card.host.name} status" />
@@ -96,13 +111,32 @@
                       ssh config
                     </span>
                   {/if}
+                  <!-- Auth-state reflection (tech-gui.md §4.2): key-only once password
+                       auth is disabled, otherwise a plain key badge when a key exists. -->
+                  {#if card.host.passwordAuthDisabled}
+                    <span
+                      class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+                      title="Password authentication disabled — key only"
+                    >
+                      <Icon name="shield" size={10} />
+                      key-only
+                    </span>
+                  {:else if card.host.hasKey}
+                    <span
+                      class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+                      title="Key authentication configured"
+                    >
+                      <Icon name="key" size={10} />
+                      key
+                    </span>
+                  {/if}
                 </div>
                 <div class="truncate font-mono text-xs text-faint">
                   {card.host.user}@{card.host.hostname}:{card.host.port}
                 </div>
               </div>
             </div>
-            <div class="flex shrink-0 items-center gap-1.5">
+            <div class="flex flex-wrap items-center gap-1.5">
               {#each QUICK_ACTIONS as action (action.id)}
                 <button
                   type="button"
@@ -114,6 +148,17 @@
                   {action.label}
                 </button>
               {/each}
+              {#if card.host.source === 'manual' && !card.host.hasKey}
+                <button
+                  type="button"
+                  class={iconBtn}
+                  title="Set up an SSH key for {card.host.name}"
+                  aria-label="Set up an SSH key for {card.host.name}"
+                  onclick={() => setupKey(card.host)}
+                >
+                  <Icon name="key" size={14} />
+                </button>
+              {/if}
               {#if card.host.source === 'manual'}
                 <button
                   type="button"

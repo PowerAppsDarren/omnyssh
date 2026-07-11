@@ -1,0 +1,85 @@
+<script lang="ts">
+  // Self-update banner (tech-gui.md §4.3). Floats above the status bar whenever an update
+  // is available — from the startup `update-available` event or a manual check. Install
+  // runs the plugin-based self-update (functional once Stage 5 configures the updater
+  // endpoints; until then it reports "not available yet"). Skip persists the version to the
+  // shared config so it is never offered again; Dismiss hides it for this session only.
+  import { Icon } from '$lib/theme';
+  import { availableUpdate, dismissUpdate } from '$lib/stores/update';
+  import { installUpdate, loadUpdateConfig, saveUpdateConfig } from '$lib/ipc/commands';
+  import { lastError } from '$lib/stores/notifications';
+
+  const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+  let busy = $state(false);
+
+  async function install(): Promise<void> {
+    busy = true;
+    try {
+      await installUpdate();
+    } catch (e) {
+      lastError.set(message(e));
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Persist the skip against the current config so `check_on_startup` is preserved.
+  async function skip(version: string): Promise<void> {
+    busy = true;
+    try {
+      const config = await loadUpdateConfig();
+      await saveUpdateConfig({ ...config, skipVersion: version });
+      dismissUpdate();
+    } catch (e) {
+      lastError.set(message(e));
+    } finally {
+      busy = false;
+    }
+  }
+
+  const action =
+    'rounded-full px-3 py-1.5 text-sm transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
+</script>
+
+{#if $availableUpdate}
+  {@const info = $availableUpdate}
+  <div class="pointer-events-none fixed inset-x-0 bottom-14 z-40 flex justify-center px-4">
+    <div
+      class="pointer-events-auto flex w-full max-w-xl items-center gap-3 rounded-2xl border border-default bg-surface-raised px-4 py-3 shadow-soft"
+      role="status"
+    >
+      <span class="shrink-0 text-muted"><Icon name="download" size={18} /></span>
+      <div class="min-w-0">
+        <p class="text-sm font-medium">Update available — v{info.version}</p>
+        <p class="truncate text-xs text-muted">A newer OmnySSH release is ready.</p>
+      </div>
+      <div class="ml-auto flex shrink-0 items-center gap-1.5">
+        <button
+          type="button"
+          class="{action} bg-accent text-accent-fg hover:opacity-90"
+          disabled={busy}
+          onclick={install}
+        >
+          Install
+        </button>
+        <button
+          type="button"
+          class="{action} text-muted hover:bg-surface-inset hover:text-fg"
+          disabled={busy}
+          onclick={() => skip(info.version)}
+        >
+          Skip
+        </button>
+        <button
+          type="button"
+          class="grid h-8 w-8 place-items-center rounded-full text-muted transition hover:bg-surface-inset hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+          title="Dismiss"
+          aria-label="Dismiss update notice"
+          onclick={dismissUpdate}
+        >
+          <Icon name="close" size={15} />
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

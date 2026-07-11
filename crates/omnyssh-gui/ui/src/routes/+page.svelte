@@ -12,6 +12,7 @@
   import AppShell from '$lib/components/AppShell.svelte';
   import Dashboard from '$lib/screens/Dashboard.svelte';
   import Snippets from '$lib/screens/Snippets.svelte';
+  import Settings from '$lib/screens/Settings.svelte';
   import TerminalView from '$lib/screens/TerminalView.svelte';
   import SftpView from '$lib/screens/SftpView.svelte';
 
@@ -27,7 +28,9 @@
   // A selector (Dashboard/Snippets) owns the overlay; a session owns the persistent
   // layer. The two are mutually exclusive — the §2 exactly-one-active invariant.
   const selectorActive = $derived(
-    $activeEntity.kind === 'dashboard' || $activeEntity.kind === 'snippets'
+    $activeEntity.kind === 'dashboard' ||
+      $activeEntity.kind === 'snippets' ||
+      $activeEntity.kind === 'settings'
   );
 </script>
 
@@ -42,12 +45,18 @@
     {/each}
 
     {#if selectorActive}
-      <div class="absolute inset-0 overflow-auto">
-        {#if $activeEntity.kind === 'dashboard'}
-          <Dashboard />
-        {:else if $activeEntity.kind === 'snippets'}
-          <Snippets />
-        {/if}
+      <!-- Inset the scroll container (not the content) below the macOS title-bar strip,
+           so selector content scrolls within its pane and never under the traffic lights. -->
+      <div class="absolute inset-0 pt-[var(--titlebar-h)]">
+        <div class="h-full overflow-auto overscroll-contain">
+          {#if $activeEntity.kind === 'dashboard'}
+            <Dashboard />
+          {:else if $activeEntity.kind === 'snippets'}
+            <Snippets />
+          {:else if $activeEntity.kind === 'settings'}
+            <Settings />
+          {/if}
+        </div>
       </div>
     {/if}
   </div>

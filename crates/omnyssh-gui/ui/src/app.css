@@ -53,9 +53,24 @@
   --shadow-soft: 0 10px 30px -12px rgba(0, 0, 0, 0.5);
 }
 
+/* Overlay title-bar inset: on macOS the window draws the traffic lights over the
+   app (frameless, hiddenTitle), so the shell reserves a draggable strip at the top.
+   Zero elsewhere — Windows/Linux keep their native title bar. Set on <html> by the
+   app.html pre-paint script so there is no layout shift. */
+:root {
+  --titlebar-h: 0px;
+}
+:root[data-os='macos'] {
+  --titlebar-h: 1.75rem;
+}
+
 html,
 body {
   height: 100%;
+  /* The shell is a fixed viewport: content scrolls inside its own panes, the
+     window itself never scrolls or rubber-bands (no empty gap on overscroll). */
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {
@@ -65,6 +80,16 @@ body {
   font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Native-app feel: chrome, cards, and labels are not selectable. Selection is
+     re-enabled only inside a terminal session and in editable fields. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 ::selection {
