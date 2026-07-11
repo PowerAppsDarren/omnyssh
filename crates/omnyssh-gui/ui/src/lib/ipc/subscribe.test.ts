@@ -22,6 +22,7 @@ vi.mock('$lib/bindings', () => {
       servicesDetected: channel('servicesDetected'),
       servicesFailed: channel('servicesFailed'),
       snippetResult: channel('snippetResult'),
+      terminalExited: channel('terminalExited'),
       error: channel('error')
     }
   };
@@ -32,6 +33,7 @@ import { statuses } from '$lib/stores/statuses';
 import { metrics } from '$lib/stores/metrics';
 import { services } from '$lib/stores/services';
 import { snippetRun, beginRun, clearRun } from '$lib/stores/snippets';
+import { sessions } from '$lib/stores/sessions';
 import { lastError } from '$lib/stores/notifications';
 import { startEventBridge } from './subscribe';
 
@@ -72,5 +74,15 @@ describe('startEventBridge', () => {
     expect(get(services).get('web-1')).toEqual({ kind: 'detected', services: [{ kind: 'redis', metrics: [] }] });
     expect(get(snippetRun)?.entries[0]).toEqual({ hostName: 'web-1', pending: false, ok: true, output: 'done' });
     expect(get(lastError)).toBe('nope');
+  });
+
+  it('terminal-exited closes the tab whose backend id matches', async () => {
+    await startEventBridge();
+    const tab = sessions.spawn('terminal', 'web-1');
+    sessions.setTermId(tab.id, 42); // the backend public id the event carries
+
+    listeners.terminalExited({ payload: { sessionId: 42 } });
+
+    expect(get(sessions).some((s) => s.id === tab.id)).toBe(false);
   });
 });

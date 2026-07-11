@@ -78,6 +78,53 @@ async executeSnippet(snippetName: string, hostNames: string[], params: Partial<{
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Open a terminal for `host_name`, streaming raw output into `on_output`. Returns
+ * the public session id used by the write/resize/close commands (tech-gui.md §4.2).
+ */
+async terminalOpen(hostName: string, cols: number, rows: number, onOutput: TAURI_CHANNEL<TerminalBytes>) : Promise<Result<number, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("terminal_open", { hostName, cols, rows, onOutput }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send keystrokes / pasted bytes to a terminal (tech-gui.md §4.2). Input is
+ * low-volume, so the ordinary `number[]` path is fine here (only output is raw).
+ */
+async terminalWrite(sessionId: number, data: number[]) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("terminal_write", { sessionId, data }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Reflow a terminal to `cols` x `rows` (tech-gui.md §4.2).
+ */
+async terminalResize(sessionId: number, cols: number, rows: number) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("terminal_resize", { sessionId, cols, rows }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Close a terminal and its connection (tech-gui.md §4.2). The frontend has already
+ * dropped the tab, so the resulting `PtyExited` emits no `terminal-exited` (§3.4).
+ */
+async terminalClose(sessionId: number) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("terminal_close", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -91,7 +138,8 @@ hostsLoaded: HostsLoaded,
 metricsUpdated: MetricsUpdated,
 servicesDetected: ServicesDetected,
 servicesFailed: ServicesFailed,
-snippetResult: SnippetResult
+snippetResult: SnippetResult,
+terminalExited: TerminalExited
 }>({
 error: "error",
 hostStatusChanged: "host-status-changed",
@@ -99,7 +147,8 @@ hostsLoaded: "hosts-loaded",
 metricsUpdated: "metrics-updated",
 servicesDetected: "services-detected",
 servicesFailed: "services-failed",
-snippetResult: "snippet-result"
+snippetResult: "snippet-result",
+terminalExited: "terminal-exited"
 })
 
 /** user-defined constants **/
@@ -194,6 +243,20 @@ export type SnippetResult = { hostName: string; snippetName: string; ok: boolean
  * names are lowercase (`global`, `host`).
  */
 export type SnippetScopeDto = "global" | "host"
+/**
+ * Raw PTY output bytes for a terminal session's per-session `Channel` (tech-gui.md
+ * §3.3/§3.6). Deliberately **not** `Serialize`: that dodges the blanket
+ * `Serialize -> IpcResponse` mapping (which would JSON-encode to a slow `number[]`),
+ * so the bytes ride the channel as a raw `ArrayBuffer` that xterm writes directly.
+ * Only ever sent, never received — the sole non-DTO on the boundary.
+ */
+export type TerminalBytes = number[]
+/**
+ * A terminal session's remote shell exited or its connection dropped (tech-gui.md
+ * §4.3). Carries the **public** registry id (the bridge maps the core's inner PTY
+ * id, §3.4); the frontend tears the tab down. User-initiated closes never emit this.
+ */
+export type TerminalExited = { sessionId: number }
 
 /** tauri-specta globals **/
 

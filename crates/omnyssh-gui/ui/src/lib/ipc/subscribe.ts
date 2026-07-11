@@ -11,7 +11,8 @@ import {
   applyMetricsUpdated,
   applyServicesDetected,
   applyServicesFailed,
-  applySnippetResult
+  applySnippetResult,
+  applyTerminalExited
 } from './router';
 
 export async function startEventBridge(): Promise<() => void> {
@@ -23,6 +24,7 @@ export async function startEventBridge(): Promise<() => void> {
     offs.push(await events.servicesDetected.listen((e) => applyServicesDetected(e.payload)));
     offs.push(await events.servicesFailed.listen((e) => applyServicesFailed(e.payload)));
     offs.push(await events.snippetResult.listen((e) => applySnippetResult(e.payload)));
+    offs.push(await events.terminalExited.listen((e) => applyTerminalExited(e.payload.sessionId)));
     offs.push(await events.error.listen((e) => applyError(e.payload.message)));
   } catch (err) {
     offs.forEach((off) => off());

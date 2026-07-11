@@ -11,7 +11,9 @@ mod state;
 
 use commands::hosts::{list_hosts, reload_hosts};
 use commands::snippets::{delete_snippet, execute_snippet, list_snippets, save_snippet};
-use omnyssh_core::event::CoreEvent;
+use commands::terminal::{terminal_close, terminal_open, terminal_resize, terminal_write};
+use omnyssh_core::event::{CoreEvent, SessionId};
+use omnyssh_core::ssh::pty::PtyManager;
 use state::GuiState;
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder};
@@ -29,7 +31,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
             list_snippets,
             save_snippet,
             delete_snippet,
-            execute_snippet
+            execute_snippet,
+            terminal_open,
+            terminal_write,
+            terminal_resize,
+            terminal_close
         ])
         .events(collect_events![
             events::HostsLoaded,
@@ -38,6 +44,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             events::ServicesDetected,
             events::ServicesFailed,
             events::SnippetResult,
+            events::TerminalExited,
             events::Error
         ])
 }
@@ -70,19 +77,25 @@ fn main() {
             builder.mount_events(app);
 
             let (engine_tx, engine_rx) = tokio::sync::mpsc::channel::<CoreEvent>(256);
-            tauri::async_runtime::spawn(bridge::forward_core_events(
-                app.handle().clone(),
-                engine_rx,
-            ));
+            // The additive PTY raw-byte tap (§3.6): the manager mirrors each session's
+            // bytes into `raw_tx`; a forwarder demuxes them into per-tab channels.
+            let (raw_tx, raw_rx) = tokio::sync::mpsc::channel::<(SessionId, Vec<u8>)>(256);
+            let pty = PtyManager::with_raw_output(raw_tx);
 
             // Pre-load the shared host config so the first `list_hosts` paints
             // immediately. A load failure here is non-fatal — the frontend's
             // `reload_hosts` re-attempts and surfaces the error (tech-gui.md §3.4).
-            let gui_state = GuiState::new(engine_tx);
+            let gui_state = GuiState::new(engine_tx, pty);
             if let Ok(hosts) = omnyssh_core::config::load_all_hosts() {
                 gui_state.set_hosts(hosts);
             }
             app.manage(gui_state);
+
+            // Spawn the forwarders after `manage` so both can reach `GuiState` via
+            // `app.state()` (the bridge maps PtyExited; the tap routes raw bytes).
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(bridge::forward_core_events(handle.clone(), engine_rx));
+            tauri::async_runtime::spawn(bridge::forward_terminal_output(handle, raw_rx));
 
             // The pollers are started by the frontend via `reload_hosts` once its
             // event bridge is listening, so no HostStatusChanged is emitted before

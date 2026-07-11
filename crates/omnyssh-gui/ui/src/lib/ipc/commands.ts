@@ -1,8 +1,9 @@
 // Thin typed wrappers over the generated command bindings (tech-gui.md §3.5).
 // Components call these, never `invoke` directly.
 
+import type { Channel } from '@tauri-apps/api/core';
 import { commands } from '$lib/bindings';
-import type { HostDto, SnippetDto } from '$lib/bindings';
+import type { HostDto, SnippetDto, TerminalBytes } from '$lib/bindings';
 
 export async function listHosts(): Promise<HostDto[]> {
   const res = await commands.listHosts();
@@ -42,5 +43,36 @@ export async function executeSnippet(
   params: Record<string, string>
 ): Promise<void> {
   const res = await commands.executeSnippet(snippetName, hostNames, params);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Open a terminal for `hostName`, streaming raw output into `onOutput`; returns the
+ *  public session id used by the write/resize/close wrappers (tech-gui.md §3.3/§4.2). */
+export async function terminalOpen(
+  hostName: string,
+  cols: number,
+  rows: number,
+  onOutput: Channel<TerminalBytes>
+): Promise<number> {
+  const res = await commands.terminalOpen(hostName, cols, rows, onOutput);
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
+}
+
+/** Send keystrokes (UTF-8 bytes) to a terminal. */
+export async function terminalWrite(sessionId: number, data: number[]): Promise<void> {
+  const res = await commands.terminalWrite(sessionId, data);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Reflow a terminal to `cols` x `rows`. */
+export async function terminalResize(sessionId: number, cols: number, rows: number): Promise<void> {
+  const res = await commands.terminalResize(sessionId, cols, rows);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Close a terminal and its connection. Idempotent for an already-closed id. */
+export async function terminalClose(sessionId: number): Promise<void> {
+  const res = await commands.terminalClose(sessionId);
   if (res.status === 'error') throw new Error(res.error.message);
 }

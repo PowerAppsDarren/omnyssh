@@ -15,7 +15,9 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# The `specta` feature makes `tauri::ipc::Channel` a `specta::Type`, so the terminal
+# stream channel (§3.3/§3.6) exports through tauri-specta like any other DTO.
+tauri = { version = "2", features = ["specta"] }
 omnyssh-core = { path = "../omnyssh-core" }
 serde = { workspace = true }
 tokio = { workspace = true }

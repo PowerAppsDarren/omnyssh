@@ -136,6 +136,21 @@ pub struct SnippetDto {
     pub params: Option<Vec<String>>,
 }
 
+/// Raw PTY output bytes for a terminal session's per-session `Channel` (tech-gui.md
+/// §3.3/§3.6). Deliberately **not** `Serialize`: that dodges the blanket
+/// `Serialize -> IpcResponse` mapping (which would JSON-encode to a slow `number[]`),
+/// so the bytes ride the channel as a raw `ArrayBuffer` that xterm writes directly.
+/// Only ever sent, never received — the sole non-DTO on the boundary.
+#[derive(specta::Type)]
+#[specta(transparent)]
+pub struct TerminalBytes(pub Vec<u8>);
+
+impl tauri::ipc::IpcResponse for TerminalBytes {
+    fn body(self) -> tauri::Result<tauri::ipc::InvokeResponseBody> {
+        Ok(tauri::ipc::InvokeResponseBody::Raw(self.0))
+    }
+}
+
 impl From<&HostSource> for HostSourceDto {
     fn from(source: &HostSource) -> Self {
         match source {
