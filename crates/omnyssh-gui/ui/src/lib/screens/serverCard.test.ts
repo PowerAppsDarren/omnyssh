@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import type { ConnectionStatusDto, HostDto, MetricsDto } from '$lib/bindings';
 import type { HostServices } from '$lib/stores/services';
-import { deriveCard, metricStatus, QUICK_ACTIONS } from './serverCard';
+import { deriveCard, metricStatus, QUICK_ACTIONS, filterHosts } from './serverCard';
 
 function host(name = 'web-1'): HostDto {
   return { name, hostname: '10.0.0.1', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false };
@@ -140,6 +140,32 @@ describe('deriveCard — detected services', () => {
     const card = deriveCard(host(), CONNECTED, undefined, svc);
     expect(card.detectedServices).toEqual([]);
     expect(card.servicesError).toBe('scan timed out');
+  });
+});
+
+describe('filterHosts — mirrors the TUI host search', () => {
+  const card = (o: Partial<HostDto>) => deriveCard({ ...host(), ...o }, CONNECTED, undefined, undefined);
+  const cards = [
+    card({ name: 'web-prod', hostname: '10.0.0.1', tags: ['production'], notes: 'billing frontend' }),
+    card({ name: 'db-staging', hostname: '10.0.0.2', tags: ['staging', 'db'] }),
+    card({ name: 'cache', hostname: '192.168.1.5', tags: [] })
+  ];
+  const names = (q: string) => filterHosts(cards, q).map((c) => c.host.name);
+
+  it('keeps every card for an empty or whitespace query', () => {
+    expect(filterHosts(cards, '')).toHaveLength(3);
+    expect(filterHosts(cards, '   ')).toHaveLength(3);
+  });
+
+  it('matches name, hostname, tags and notes, case-insensitively', () => {
+    expect(names('WEB')).toEqual(['web-prod']);
+    expect(names('192.168')).toEqual(['cache']);
+    expect(names('staging')).toEqual(['db-staging']);
+    expect(names('BILLING')).toEqual(['web-prod']);
+  });
+
+  it('returns nothing when no card matches', () => {
+    expect(filterHosts(cards, 'nope')).toEqual([]);
   });
 });
 

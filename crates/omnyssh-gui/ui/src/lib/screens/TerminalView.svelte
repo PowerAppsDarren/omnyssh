@@ -34,6 +34,12 @@
   let themeUnsub: (() => void) | undefined;
   let resizeObserver: ResizeObserver | undefined;
   let fitScheduled = false;
+  // The top-edge fade is on only while scrolled off the top of the buffer: the first
+  // line stays crisp at the top, but scrolled output dissolves into the top edge.
+  let scrolled = $state(false);
+  function syncScrolled(): void {
+    scrolled = !!term && term.buffer.active.viewportY > 0;
+  }
 
   /** Fit the terminal to its container and tell the backend, but only while visible —
    *  a hidden (display:none) container measures 0, so it refits when shown instead. */
@@ -73,6 +79,7 @@
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(container);
+      term.onScroll(syncScrolled);
 
       // The #1 theme-regression guard (§5.1): push the matching xterm theme to this
       // terminal — including already-open ones — whenever the store flips. Its
@@ -154,16 +161,29 @@
       requestAnimationFrame(() => {
         safeFit();
         term?.focus();
+        syncScrolled();
       });
     }
   });
 </script>
 
-<!-- bg-surface fills behind the macOS traffic lights (no seam); the pt insets the
-     xterm below them. Text selection stays disabled app-wide (app.css); the terminal
-     is the one selectable surface, handled by xterm's own selection (not CSS). -->
-<div
-  class="absolute inset-0 overflow-hidden bg-surface pt-[var(--titlebar-h)] {active ? '' : 'hidden'}"
->
-  <div bind:this={container} class="h-full w-full p-2"></div>
+<!-- bg-surface fills behind the macOS traffic lights (no seam). Text selection stays
+     disabled app-wide (app.css); the terminal is the one selectable surface, handled
+     by xterm's own selection (not CSS). -->
+<div class="absolute inset-0 overflow-hidden bg-surface {active ? '' : 'hidden'}">
+  <!-- Inset via this wrapper, not the xterm host: padding on the element xterm mounts
+       into makes FitAddon over-size, sliding the last row under the status bar. The top
+       inset clears the macOS traffic-light strip; the bottom gap clears the footer. -->
+  <div class="h-full w-full" style="padding: max(var(--titlebar-h), 0.75rem) 0.5rem 1rem;">
+    <div bind:this={container} class="h-full w-full" class:term-fade={scrolled}></div>
+  </div>
 </div>
+
+<style>
+  /* Scrolled output dissolves into the top edge instead of hard-clipping (on only while
+     scrolled, so the first line stays crisp). black/transparent are mask alphas. */
+  .term-fade {
+    -webkit-mask-image: linear-gradient(to bottom, transparent, black 2.25rem);
+    mask-image: linear-gradient(to bottom, transparent, black 2.25rem);
+  }
+</style>
