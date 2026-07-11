@@ -150,6 +150,14 @@ impl GuiState {
             .cloned()
     }
 
+    /// Trigger an immediate metric poll of every host (tech-gui.md §4.2). A no-op if
+    /// the pollers have not started yet. Non-blocking — it only nudges the poller tasks.
+    pub fn refresh_metrics(&self) {
+        if let Some(poll) = self.poll.lock().expect("poll lock poisoned").as_ref() {
+            poll.refresh_all();
+        }
+    }
+
     /// Start (or restart) the pollers for the cached hosts. Must run inside the
     /// Tauri async runtime — `PollManager::start` spawns tokio tasks (§3.4).
     pub fn restart_pollers(&self) {

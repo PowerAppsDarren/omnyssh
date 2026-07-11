@@ -73,6 +73,13 @@ pub async fn forward_core_events(app: AppHandle, mut rx: mpsc::Receiver<CoreEven
             CoreEvent::KeySetupRollback(host_name, result) => {
                 let _ = events::KeySetupRollback { host_name, result }.emit(&app);
             }
+            // A newer release found by the startup check (§4.3) → the update banner.
+            CoreEvent::UpdateAvailable(info) => {
+                let _ = events::UpdateAvailable {
+                    info: (&info).into(),
+                }
+                .emit(&app);
+            }
             // Other variants are mapped as their producers start. `HostsLoaded`
             // is emitted directly by its command, SFTP results by the per-session
             // forwarder, and `PtyOutput` is superseded by the raw tap (§3.4/§3.6).

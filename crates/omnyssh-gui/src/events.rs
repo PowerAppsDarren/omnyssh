@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dto::{
     ConnectionStatusDto, FileEntryDto, HostDto, KeySetupStepDto, MetricsDto, ServiceDto,
-    TransferProgressDto,
+    TransferProgressDto, UpdateInfoDto,
 };
 
 /// Full host list broadcast. Emitted by `reload_hosts` after refreshing the
@@ -159,6 +159,14 @@ pub struct KeySetupFailed {
 pub struct KeySetupRollback {
     pub host_name: String,
     pub result: String,
+}
+
+/// A newer release was found by the startup check (tech-gui.md §4.3). Mapped by the
+/// shared engine bridge from `CoreEvent::UpdateAvailable`; drives the update banner.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAvailable {
+    pub info: UpdateInfoDto,
 }
 
 /// A background error surfaced to the user.

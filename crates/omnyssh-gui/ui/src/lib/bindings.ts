@@ -294,6 +294,67 @@ async startKeySetup(hostName: string) : Promise<Result<null, CommandError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Trigger an immediate metric poll of every host (tech-gui.md §4.2). Used by the
+ * settings-driven refresh cadence (§4.3); a no-op before the pollers start.
+ */
+async refreshMetrics() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("refresh_metrics") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Query GitHub for a newer release (tech-gui.md §4.2). `None` means up to date — the
+ * core swallows network/parse errors so a failed check never disrupts.
+ */
+async checkUpdate() : Promise<Result<UpdateInfoDto | null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_update") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Download and install the latest desktop bundle via `tauri-plugin-updater` (tech-gui.md
+ * §4.3/§3.7). Until Stage 5 configures the updater endpoints + signing key the plugin
+ * has nothing to point at, so this reports "not available yet" rather than touching the
+ * running binary.
+ */
+async installUpdate() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("install_update") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Read the update-checker preferences from the shared config (tech-gui.md §4.3).
+ */
+async loadUpdateConfig() : Promise<Result<UpdateConfigDto, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_update_config") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Persist the update-checker preferences to the shared config's `[update]` section
+ * (tech-gui.md §4.3). Writes off the async worker — parse + atomic write are blocking.
+ */
+async saveUpdateConfig(config: UpdateConfigDto) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_update_config", { config }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -318,7 +379,8 @@ sftpDisconnected: SftpDisconnected,
 sftpOpDone: SftpOpDone,
 snippetResult: SnippetResult,
 terminalExited: TerminalExited,
-transferProgress: TransferProgress
+transferProgress: TransferProgress,
+updateAvailable: UpdateAvailable
 }>({
 error: "error",
 filePreview: "file-preview",
@@ -337,7 +399,8 @@ sftpDisconnected: "sftp-disconnected",
 sftpOpDone: "sftp-op-done",
 snippetResult: "snippet-result",
 terminalExited: "terminal-exited",
-transferProgress: "transfer-progress"
+transferProgress: "transfer-progress",
+updateAvailable: "update-available"
 })
 
 /** user-defined constants **/
@@ -523,6 +586,23 @@ export type TransferProgress = TransferProgressDto
  * remote size could not be determined).
  */
 export type TransferProgressDto = { sessionId: number; transferId: number; done: number; total: number }
+/**
+ * A newer release was found by the startup check (tech-gui.md §4.3). Mapped by the
+ * shared engine bridge from `CoreEvent::UpdateAvailable`; drives the update banner.
+ */
+export type UpdateAvailable = { info: UpdateInfoDto }
+/**
+ * Update-checker preferences, mirrors core `UpdateConfig` (tech-gui.md §4.3). Crosses
+ * both ways: outbound for the settings screen, inbound for `save_update_config`.
+ */
+export type UpdateConfigDto = { checkOnStartup: boolean; skipVersion: string }
+/**
+ * A newer release the app can offer (tech-gui.md §4.1). `version` is the latest
+ * version (no leading `v`); `url` is the release page; `canSelfUpdate` mirrors the
+ * core's self-update eligibility. The core `UpdateInfo` has no release-notes field, so
+ * none is invented (§4.1).
+ */
+export type UpdateInfoDto = { version: string; url: string; tag: string; canSelfUpdate: boolean }
 
 /** tauri-specta globals **/
 
