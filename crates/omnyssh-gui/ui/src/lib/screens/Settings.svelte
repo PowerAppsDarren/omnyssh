@@ -32,14 +32,20 @@
     }
   });
 
-  // Persist immediately; revert the optimistic flip if the write fails.
+  // Persist immediately; revert the optimistic flip if the write fails. Read-modify-write
+  // fresh rather than from the mount-time cache: the update banner may have written a
+  // `skipVersion` out-of-band, and `save_update_config` replaces the whole [update]
+  // section — writing a stale copy would clobber that skip.
   async function toggleCheckOnStartup(): Promise<void> {
     if (!updateConfig) return;
     const previous = updateConfig;
-    const next = { ...previous, checkOnStartup: !previous.checkOnStartup };
-    updateConfig = next;
+    const desired = !previous.checkOnStartup;
+    updateConfig = { ...previous, checkOnStartup: desired };
     try {
+      const current = await loadUpdateConfig();
+      const next = { ...current, checkOnStartup: desired };
       await saveUpdateConfig(next);
+      updateConfig = next;
     } catch (e) {
       updateConfig = previous;
       lastError.set(message(e));

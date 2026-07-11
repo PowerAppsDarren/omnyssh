@@ -51,6 +51,7 @@ async function boot(page: Page, opts: { fireUpdateOnBoot: boolean }): Promise<vo
               return Promise.resolve({ ...state.updateConfig });
             case 'save_update_config':
               state.updateConfig = { ...(args.config as Record<string, unknown>) };
+              win.__savedUpdateConfig = { ...(args.config as Record<string, unknown>) };
               return Promise.resolve(null);
             case 'check_update':
               return Promise.resolve({ ...update });
@@ -114,4 +115,27 @@ test('startup update-available raises the banner; dismiss hides it', async ({ pa
 
   await page.getByRole('button', { name: 'Dismiss update notice' }).click();
   await expect(banner).toHaveCount(0);
+});
+
+test('a settings toggle preserves a skipVersion the banner wrote out-of-band', async ({ page }) => {
+  await boot(page, { fireUpdateOnBoot: true });
+
+  // Open Settings first so its config cache is seeded stale (skipVersion: '').
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+
+  // Now Skip on the banner: it writes skipVersion='2.0.0' to the shared config.
+  await page.getByRole('button', { name: 'Skip', exact: true }).click();
+  await expect(page.getByText('Update available — v2.0.0')).toHaveCount(0);
+
+  // Flipping check-on-startup must read-modify-write fresh, not clobber the skip.
+  const startupSwitch = page.getByRole('switch', { name: 'Check for updates on startup' });
+  await startupSwitch.click();
+  await expect(startupSwitch).toHaveAttribute('aria-checked', 'false');
+
+  const saved = await page.evaluate(
+    () => (window as unknown as { __savedUpdateConfig?: Record<string, unknown> }).__savedUpdateConfig
+  );
+  expect(saved?.skipVersion).toBe('2.0.0');
+  expect(saved?.checkOnStartup).toBe(false);
 });
