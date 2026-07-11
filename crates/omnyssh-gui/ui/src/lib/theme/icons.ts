@@ -23,4 +23,5 @@ export type IconName =
   | 'download'
   | 'refresh'
   | 'key'
-  | 'shield';
+  | 'shield'
+  | 'settings';

@@ -35,6 +35,8 @@ import {
   reduceProgress,
   reduceRollback
 } from '$lib/stores/keySetup';
+import { offerUpdate } from '$lib/stores/update';
+import type { UpdateAvailable } from '$lib/bindings';
 
 export function applyHostsLoaded(payload: HostDto[]): void {
   hosts.set(payload);
@@ -140,6 +142,11 @@ export function applyKeySetupFailed(payload: KeySetupFailed): void {
 
 export function applyKeySetupRollback(payload: KeySetupRollback): void {
   keySetup.set(reduceRollback(payload.hostName, payload.result));
+}
+
+// A newer release found by the startup check (tech-gui.md §4.3) → the update banner.
+export function applyUpdateAvailable(payload: UpdateAvailable): void {
+  offerUpdate(payload.info);
 }
 
 export function applyError(message: string): void {
