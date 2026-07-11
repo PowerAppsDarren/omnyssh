@@ -14,13 +14,16 @@ use crate::state::GuiState;
 /// the public session id used by the write/resize/close commands (tech-gui.md §4.2).
 #[tauri::command]
 #[specta::specta]
-pub fn terminal_open(
+pub async fn terminal_open(
     state: State<'_, GuiState>,
     host_name: String,
     cols: u16,
     rows: u16,
     on_output: Channel<TerminalBytes>,
 ) -> Result<u64, CommandError> {
+    // Async so this runs on the Tauri async runtime: `PtyManager::open` spawns the
+    // session task with `tokio::spawn`, which panics ("no reactor running") from a
+    // sync command on the main thread. Mirrors async `sftp_open`/`reload_hosts`.
     state
         .open_terminal(&host_name, cols, rows, on_output)
         .map_err(|message| CommandError { message })

@@ -14,6 +14,13 @@
         } catch (e) {
           document.documentElement.setAttribute('data-theme', 'dark');
         }
+        // Reserve the overlay title-bar inset only on macOS (--titlebar-h), where the
+        // window uses an overlay title bar with the traffic lights drawn over the app.
+        try {
+          if (/Mac/.test(navigator.userAgent)) {
+            document.documentElement.setAttribute('data-os', 'macos');
+          }
+        } catch (e) {}
       })();
     </script>
     %sveltekit.head%

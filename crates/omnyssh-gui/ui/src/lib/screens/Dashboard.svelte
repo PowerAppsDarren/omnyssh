@@ -93,8 +93,9 @@
     <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
       {#each $serverCards as card, i (i)}
         <Surface class="flex flex-col gap-4 p-5">
-          <!-- Identity + host-first quick actions -->
-          <div class="flex items-start justify-between gap-3">
+          <!-- Identity, then the actions on their own row so the name and address
+               stay readable at any card width (a full row instead of sharing it). -->
+          <div class="flex flex-col gap-3">
             <div class="flex min-w-0 items-start gap-2.5">
               <span class="mt-1 shrink-0">
                 <StatusDot status={card.overall} size={9} label="{card.host.name} status" />
@@ -135,7 +136,7 @@
                 </div>
               </div>
             </div>
-            <div class="flex shrink-0 items-center gap-1.5">
+            <div class="flex flex-wrap items-center gap-1.5">
               {#each QUICK_ACTIONS as action (action.id)}
                 <button
                   type="button"

@@ -41,7 +41,7 @@
 </script>
 
 <aside
-  class="col-start-1 row-start-1 flex h-full flex-col overflow-hidden border-r border-default bg-surface"
+  class="col-start-1 row-start-1 flex h-full flex-col overflow-hidden border-r border-default bg-surface pt-[var(--titlebar-h)]"
 >
   <header
     class="flex items-center gap-2.5 px-3 py-4 {$sidebarCollapsed ? 'justify-center' : ''}"

@@ -7,8 +7,11 @@ repository.workspace = true
 description = "OmnySSH Desktop — native GUI for the OmnySSH engine"
 publish = false
 
+# Named "OmnySSH" (not lowercased) so `cargo tauri dev` — which runs this cargo binary
+# directly, not a bundle — shows "OmnySSH" as the app name (e.g. the macOS menu bar),
+# matching productName. Still distinct from the `omny` TUI binary.
 [[bin]]
-name = "omnyssh-desktop"
+name = "OmnySSH"
 path = "src/main.rs"
 
 [build-dependencies]

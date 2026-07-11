@@ -24,12 +24,15 @@
 <svelte:window onkeydown={onKeydown} />
 
 <div
-  class="grid h-screen grid-rows-[1fr_auto] overflow-hidden bg-bg text-fg transition-[grid-template-columns] duration-200 ease-out {$sidebarCollapsed
+  class="relative grid h-screen grid-rows-[1fr_auto] overflow-hidden bg-bg text-fg transition-[grid-template-columns] duration-200 ease-out {$sidebarCollapsed
     ? 'grid-cols-[3.5rem_1fr]'
     : 'grid-cols-[15rem_1fr]'}"
 >
+  <!-- Draggable strip under the macOS overlay traffic lights; zero-height elsewhere
+       (--titlebar-h, app.css). Sits below the z-40/z-50 overlays so they stay usable. -->
+  <div data-tauri-drag-region class="absolute inset-x-0 top-0 z-20 h-[var(--titlebar-h)]"></div>
   <Sidebar />
-  <main class="col-start-2 row-start-1 overflow-auto">
+  <main class="col-start-2 row-start-1 min-h-0 overflow-hidden">
     {@render children()}
   </main>
   <StatusBar />

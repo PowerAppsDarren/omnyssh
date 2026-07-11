@@ -36,7 +36,7 @@
             <p class="px-3 py-2 text-xs text-faint">Running…</p>
           {:else if entry.output.trim()}
             <pre
-              class="max-h-52 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs {entry.ok
+              class="max-h-52 select-text overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs {entry.ok
                 ? 'text-muted'
                 : 'text-status-crit'}">{entry.output}</pre>
           {:else}

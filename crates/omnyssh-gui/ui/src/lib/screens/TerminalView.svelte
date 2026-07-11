@@ -159,6 +159,11 @@
   });
 </script>
 
-<div class="absolute inset-0 overflow-hidden bg-surface {active ? '' : 'hidden'}">
+<!-- bg-surface fills behind the macOS traffic lights (no seam); the pt insets the
+     xterm below them. Text selection stays disabled app-wide (app.css); the terminal
+     is the one selectable surface, handled by xterm's own selection (not CSS). -->
+<div
+  class="absolute inset-0 overflow-hidden bg-surface pt-[var(--titlebar-h)] {active ? '' : 'hidden'}"
+>
   <div bind:this={container} class="h-full w-full p-2"></div>
 </div>
