@@ -53,6 +53,17 @@
   --shadow-soft: 0 10px 30px -12px rgba(0, 0, 0, 0.5);
 }
 
+/* Overlay title-bar inset: on macOS the window draws the traffic lights over the
+   app (frameless, hiddenTitle), so the shell reserves a draggable strip at the top.
+   Zero elsewhere — Windows/Linux keep their native title bar. Set on <html> by the
+   app.html pre-paint script so there is no layout shift. */
+:root {
+  --titlebar-h: 0px;
+}
+:root[data-os='macos'] {
+  --titlebar-h: 1.75rem;
+}
+
 html,
 body {
   height: 100%;
