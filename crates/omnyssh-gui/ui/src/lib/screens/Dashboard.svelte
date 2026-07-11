@@ -2,24 +2,78 @@
   // Server-card grid (tech-gui.md §2, 2.1): one card per host with live health and
   // detected services. Colour is reserved for semantic state — the header dot and
   // the metric fills read from `statusToken`; everything else is ink-on-paper. The
-  // per-card `sh`/`files` buttons are the host-first spawn path (§2).
-  import { Surface, Chip, StatusDot, Icon, statusToken } from '$lib/theme';
+  // per-card `sh`/`files` buttons are the host-first spawn path (§2). Host management
+  // (add/edit/delete of manual hosts, §4.1) lives here — there is no separate Hosts
+  // screen (§2) — with SSH-config hosts shown read-only.
+  import { get } from 'svelte/store';
+  import type { HostDto, HostInputDto } from '$lib/bindings';
+  import { Surface, Chip, StatusDot, Icon, Button, statusToken } from '$lib/theme';
   import { serverCards, QUICK_ACTIONS } from './serverCard';
   import { spawnSession } from '$lib/stores/navigation';
+  import { hosts } from '$lib/stores/hosts';
+  import { lastError } from '$lib/stores/notifications';
+  import { saveHost, deleteHost, reloadHosts } from '$lib/ipc/commands';
+  import { emptyForm, formFromHost } from './hostForm';
+  import HostEditor from './HostEditor.svelte';
+  import Modal from '$lib/components/Modal.svelte';
 
-  const quickAction =
+  type Dialog = { kind: 'add' } | { kind: 'edit'; host: HostDto } | { kind: 'delete'; host: HostDto };
+
+  let dialog = $state<Dialog | null>(null);
+
+  const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+  // Persist an add/edit, then reload so the merged cache + pollers pick it up
+  // (`reload_hosts` broadcasts `hosts-loaded`). Throws propagate to the editor so a
+  // failed save surfaces inline and keeps the form open.
+  async function submit(input: HostInputDto, previousName: string | undefined): Promise<void> {
+    // Adding: refuse a name already taken (a save would silently overwrite it). An
+    // edit keeps its name (the name field is immutable, §4.1), so it can't collide.
+    if (!previousName && get(hosts).some((h) => h.name === input.name)) {
+      throw new Error(`A host named "${input.name}" already exists`);
+    }
+    await saveHost(input);
+    await reloadHosts();
+    dialog = null;
+  }
+
+  async function confirmDelete(name: string): Promise<void> {
+    try {
+      await deleteHost(name);
+      await reloadHosts();
+    } catch (e) {
+      lastError.set(message(e));
+    }
+    dialog = null;
+  }
+
+  // Shared pill used by the header/empty-state "Add host" and the per-card quick actions.
+  const pill =
     'inline-flex items-center gap-1.5 rounded-full border border-default px-2.5 py-1 text-xs ' +
     'font-medium text-muted transition hover:border-strong hover:bg-accent hover:text-accent-fg ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
+  const iconBtn =
+    'grid h-7 w-7 place-items-center rounded-lg text-muted transition hover:bg-surface-inset ' +
+    'hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
 </script>
 
 <section class="h-full p-6">
-  <h1 class="mb-5 text-lg font-semibold tracking-tight">Dashboard</h1>
+  <div class="mb-5 flex items-center gap-3">
+    <h1 class="text-lg font-semibold tracking-tight">Dashboard</h1>
+    <button type="button" class="{pill} ml-auto" onclick={() => (dialog = { kind: 'add' })}>
+      <Icon name="plus" size={13} />
+      Add host
+    </button>
+  </div>
 
   {#if $serverCards.length === 0}
     <div class="flex flex-col items-center justify-center gap-2 py-20 text-center">
       <p class="font-medium">No servers yet</p>
-      <p class="text-sm text-muted">Add hosts to your SSH config or OmnySSH to see them here.</p>
+      <p class="text-sm text-muted">Add a host, or import one from your SSH config, to see it here.</p>
+      <button type="button" class="{pill} mt-2" onclick={() => (dialog = { kind: 'add' })}>
+        <Icon name="plus" size={13} />
+        Add host
+      </button>
     </div>
   {:else}
     <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
@@ -32,17 +86,27 @@
                 <StatusDot status={card.overall} size={9} label="{card.host.name} status" />
               </span>
               <div class="min-w-0">
-                <div class="truncate font-medium" title={card.host.name}>{card.host.name}</div>
+                <div class="flex min-w-0 items-center gap-2">
+                  <span class="truncate font-medium" title={card.host.name}>{card.host.name}</span>
+                  {#if card.host.source === 'sshConfig'}
+                    <span
+                      class="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+                      title="Imported from ~/.ssh/config — read-only"
+                    >
+                      ssh config
+                    </span>
+                  {/if}
+                </div>
                 <div class="truncate font-mono text-xs text-faint">
                   {card.host.user}@{card.host.hostname}:{card.host.port}
                 </div>
               </div>
             </div>
-            <div class="flex shrink-0 gap-1.5">
+            <div class="flex shrink-0 items-center gap-1.5">
               {#each QUICK_ACTIONS as action (action.id)}
                 <button
                   type="button"
-                  class={quickAction}
+                  class={pill}
                   title="{action.label} on {card.host.name}"
                   onclick={() => spawnSession(action.kind, card.host.name)}
                 >
@@ -50,6 +114,26 @@
                   {action.label}
                 </button>
               {/each}
+              {#if card.host.source === 'manual'}
+                <button
+                  type="button"
+                  class={iconBtn}
+                  title="Edit {card.host.name}"
+                  aria-label="Edit {card.host.name}"
+                  onclick={() => (dialog = { kind: 'edit', host: card.host })}
+                >
+                  <Icon name="edit" size={14} />
+                </button>
+                <button
+                  type="button"
+                  class={iconBtn}
+                  title="Delete {card.host.name}"
+                  aria-label="Delete {card.host.name}"
+                  onclick={() => (dialog = { kind: 'delete', host: card.host })}
+                >
+                  <Icon name="trash" size={14} />
+                </button>
+              {/if}
             </div>
           </div>
 
@@ -115,3 +199,30 @@
     </div>
   {/if}
 </section>
+
+{#if dialog?.kind === 'add'}
+  <HostEditor mode="add" initial={emptyForm()} onSubmit={submit} onCancel={() => (dialog = null)} />
+{:else if dialog?.kind === 'edit'}
+  {@const host = dialog.host}
+  <HostEditor
+    mode="edit"
+    initial={formFromHost(host)}
+    previousName={host.name}
+    onSubmit={submit}
+    onCancel={() => (dialog = null)}
+  />
+{:else if dialog?.kind === 'delete'}
+  {@const host = dialog.host}
+  <Modal label="Delete host" onClose={() => (dialog = null)}>
+    <div class="space-y-3 px-5 py-4">
+      <h2 class="text-sm font-semibold">Delete host</h2>
+      <p class="text-sm text-muted">
+        Delete “{host.name}”? This removes it from <span class="font-mono">hosts.toml</span>.
+      </p>
+      <div class="flex justify-end gap-2 pt-1">
+        <Button variant="ghost" onclick={() => (dialog = null)}>Cancel</Button>
+        <Button variant="primary" onclick={() => confirmDelete(host.name)}>Delete</Button>
+      </div>
+    </div>
+  </Modal>
+{/if}
