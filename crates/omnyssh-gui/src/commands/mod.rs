@@ -2,6 +2,7 @@
 //! thin: validate input, call the core, return a DTO or an error.
 
 pub mod hosts;
+pub mod keysetup;
 pub mod sftp;
 pub mod snippets;
 pub mod terminal;

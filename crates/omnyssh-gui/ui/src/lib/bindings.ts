@@ -280,6 +280,20 @@ async previewLocalFile(path: string) : Promise<Result<string, CommandError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Start auto key-setup for `host_name` (tech-gui.md §4.2). Fire-and-forget: the flow
+ * runs on a background task and reports via `key-setup-*` events, mirroring the core's
+ * own model. Resolving the full host record (secrets included) stays backend-side
+ * (§3.4); an unknown host is the one synchronous error.
+ */
+async startKeySetup(hostName: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_key_setup", { hostName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -291,6 +305,10 @@ error: Error,
 filePreview: FilePreview,
 hostStatusChanged: HostStatusChanged,
 hostsLoaded: HostsLoaded,
+keySetupComplete: KeySetupComplete,
+keySetupFailed: KeySetupFailed,
+keySetupProgress: KeySetupProgress,
+keySetupRollback: KeySetupRollback,
 metricsUpdated: MetricsUpdated,
 servicesDetected: ServicesDetected,
 servicesFailed: ServicesFailed,
@@ -306,6 +324,10 @@ error: "error",
 filePreview: "file-preview",
 hostStatusChanged: "host-status-changed",
 hostsLoaded: "hosts-loaded",
+keySetupComplete: "key-setup-complete",
+keySetupFailed: "key-setup-failed",
+keySetupProgress: "key-setup-progress",
+keySetupRollback: "key-setup-rollback",
 metricsUpdated: "metrics-updated",
 servicesDetected: "services-detected",
 servicesFailed: "services-failed",
@@ -371,6 +393,32 @@ export type HostStatusChanged = { hostName: string; status: ConnectionStatusDto 
  * cache; the bridge does not map `HostsLoaded` (tech-gui.md §3.4).
  */
 export type HostsLoaded = HostDto[]
+/**
+ * Key setup finished successfully — key auth is configured (tech-gui.md §4.3).
+ * `keyPath` is the generated private-key path (a path, never key material, §3.4).
+ */
+export type KeySetupComplete = { hostName: string; keyPath: string }
+/**
+ * Key setup failed before touching the server's auth config (tech-gui.md §4.3).
+ * Password authentication is never disabled unless a key was verified first.
+ */
+export type KeySetupFailed = { hostName: string; error: string }
+/**
+ * A progress step of an auto key-setup run (tech-gui.md §4.3). Mapped by the shared
+ * engine bridge from `CoreEvent::KeySetupProgress`; the host name identifies the run.
+ */
+export type KeySetupProgress = { hostName: string; step: KeySetupStepDto }
+/**
+ * Key setup rolled the server's sshd config back after a late failure (tech-gui.md
+ * §4.3). `result` is the human-readable rollback outcome.
+ */
+export type KeySetupRollback = { hostName: string; result: string }
+/**
+ * One step of the auto key-setup flow, for the progress view (tech-gui.md §4.2/§4.3).
+ * `index` is 1-based (`1..=total`); `description` is the core's human-readable label.
+ * Maps from the core `KeySetupStep`.
+ */
+export type KeySetupStepDto = { index: number; total: number; description: string }
 /**
  * A metrics snapshot for a host (tech-gui.md §4.1). The core's `Instant` is
  * flattened to `ageSeconds` (seconds since the sample) so it can serialise.

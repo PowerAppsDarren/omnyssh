@@ -2927,6 +2927,7 @@ dependencies = [
 name = "omnyssh-gui"
 version = "1.1.0"
 dependencies = [
+ "chrono",
  "omnyssh-core",
  "proptest",
  "serde",

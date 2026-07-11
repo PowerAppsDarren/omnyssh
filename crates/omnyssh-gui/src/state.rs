@@ -111,6 +111,13 @@ impl GuiState {
         *self.hosts.write().expect("hosts lock poisoned") = hosts;
     }
 
+    /// Clone the shared engine sender for a command that drives the core directly and
+    /// reports via `CoreEvent` on the bridge — key setup (§4.2) and the startup update
+    /// check (§4.3). Same channel the pollers and PTY sessions use (§3.4).
+    pub fn engine_sender(&self) -> mpsc::Sender<CoreEvent> {
+        self.engine_tx.clone()
+    }
+
     /// Snapshot the cached hosts as wire DTOs (secret fields dropped by the map).
     pub fn host_dtos(&self) -> Vec<HostDto> {
         self.hosts

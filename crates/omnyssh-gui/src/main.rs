@@ -10,6 +10,7 @@ mod events;
 mod state;
 
 use commands::hosts::{delete_host, list_hosts, reload_hosts, save_host};
+use commands::keysetup::start_key_setup;
 use commands::sftp::{
     list_local_dir, preview_local_file, sftp_close, sftp_delete, sftp_download, sftp_list,
     sftp_mkdir, sftp_open, sftp_preview, sftp_rename, sftp_upload,
@@ -52,7 +53,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             sftp_preview,
             sftp_close,
             list_local_dir,
-            preview_local_file
+            preview_local_file,
+            start_key_setup
         ])
         .events(collect_events![
             events::HostsLoaded,
@@ -68,6 +70,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
             events::SftpDisconnected,
             events::FilePreview,
             events::TransferProgress,
+            events::KeySetupProgress,
+            events::KeySetupComplete,
+            events::KeySetupFailed,
+            events::KeySetupRollback,
             events::Error
         ])
 }

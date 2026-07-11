@@ -9,6 +9,7 @@ use omnyssh_core::event::{
     DetectedService, MetricValue, Metrics, ProcessInfo, ServiceKind, ServiceMetric,
 };
 use omnyssh_core::ssh::client::{ConnectionStatus, Host, HostSource};
+use omnyssh_core::ssh::key_setup::KeySetupStep;
 use omnyssh_core::ssh::sftp::FileEntry;
 
 /// Host origin, mirrors `omnyssh_core::ssh::client::HostSource`.
@@ -184,6 +185,17 @@ pub struct TransferProgressDto {
     pub transfer_id: u64,
     pub done: u64,
     pub total: u64,
+}
+
+/// One step of the auto key-setup flow, for the progress view (tech-gui.md §4.2/§4.3).
+/// `index` is 1-based (`1..=total`); `description` is the core's human-readable label.
+/// Maps from the core `KeySetupStep`.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct KeySetupStepDto {
+    pub index: u8,
+    pub total: u8,
+    pub description: String,
 }
 
 /// Raw PTY output bytes for a terminal session's per-session `Channel` (tech-gui.md
@@ -381,6 +393,18 @@ impl From<&FileEntry> for FileEntryDto {
             path: entry.path.clone(),
             size: entry.size,
             is_dir: entry.is_dir,
+        }
+    }
+}
+
+impl From<KeySetupStep> for KeySetupStepDto {
+    fn from(step: KeySetupStep) -> Self {
+        Self {
+            // The core enum is a plain C-like discriminant (`GenerateKey = 1 ..=
+            // FinalCheck = 6`), so the cast is the 1-based position directly.
+            index: step as u8,
+            total: KeySetupStep::all_steps().len() as u8,
+            description: step.description().to_string(),
         }
     }
 }
@@ -746,6 +770,29 @@ mod tests {
         assert_eq!(
             json,
             r#"{"name":"srv","path":"/srv","size":0,"isDir":true}"#
+        );
+    }
+
+    #[test]
+    fn key_setup_step_dto_maps_index_total_and_label() {
+        // The progress view reads a 1-based `index` out of `total` plus the core's
+        // label (tech-gui.md §4.2). The first/last steps pin the discriminant range.
+        let dto = KeySetupStepDto::from(KeySetupStep::VerifyKeyAuth);
+        assert_eq!(dto.index, 3);
+        assert_eq!(dto.total, 6);
+        assert_eq!(dto.description, "Verifying key authentication");
+        assert_eq!(KeySetupStepDto::from(KeySetupStep::GenerateKey).index, 1);
+        assert_eq!(KeySetupStepDto::from(KeySetupStep::FinalCheck).index, 6);
+    }
+
+    #[test]
+    fn key_setup_step_dto_uses_camel_case_wire_names() {
+        // The frontend reads `index`/`total`/`description` (tech-gui.md §4.2).
+        let json = serde_json::to_string(&KeySetupStepDto::from(KeySetupStep::CopyPublicKey))
+            .expect("serialise KeySetupStepDto");
+        assert_eq!(
+            json,
+            r#"{"index":2,"total":6,"description":"Copying public key to server"}"#
         );
     }
 
