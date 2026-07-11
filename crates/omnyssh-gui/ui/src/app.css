@@ -67,6 +67,10 @@
 html,
 body {
   height: 100%;
+  /* The shell is a fixed viewport: content scrolls inside its own panes, the
+     window itself never scrolls or rubber-bands (no empty gap on overscroll). */
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {
@@ -76,6 +80,16 @@ body {
   font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Native-app feel: chrome, cards, and labels are not selectable. Selection is
+     re-enabled only inside a terminal session and in editable fields. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 ::selection {
