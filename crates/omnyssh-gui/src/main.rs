@@ -9,7 +9,7 @@ mod error;
 mod events;
 mod state;
 
-use commands::hosts::{list_hosts, reload_hosts};
+use commands::hosts::{delete_host, list_hosts, reload_hosts, save_host};
 use commands::sftp::{
     list_local_dir, preview_local_file, sftp_close, sftp_delete, sftp_download, sftp_list,
     sftp_mkdir, sftp_open, sftp_preview, sftp_rename, sftp_upload,
@@ -32,6 +32,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             list_hosts,
             reload_hosts,
+            save_host,
+            delete_host,
             list_snippets,
             save_snippet,
             delete_snippet,

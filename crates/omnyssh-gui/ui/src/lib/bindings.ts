@@ -30,6 +30,34 @@ async reloadHosts() : Promise<Result<null, CommandError>> {
 }
 },
 /**
+ * Add or edit a **manual** host and persist to `hosts.toml` (tech-gui.md §4.2, Stage
+ * 4.1). Upserts by name; SSH-config hosts are read-only imports and are never written
+ * (this operates on the manual `hosts.toml` alone). The frontend calls `reload_hosts`
+ * afterwards to refresh the merged cache + restart the pollers. Secrets stay
+ * backend-side (§3.4): the payload's password/identity never left the backend.
+ */
+async saveHost(input: HostInputDto) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_host", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete a manual host by name and persist (tech-gui.md §4.2, Stage 4.1). Only manual
+ * entries live in `hosts.toml`, so an SSH-config name — or a missing one — is a no-op
+ * success: the desired end state (absent) already holds.
+ */
+async deleteHost(name: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_host", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * List saved snippets from the shared `snippets.toml` (tech-gui.md §4.2).
  */
 async listSnippets() : Promise<Result<SnippetDto[], CommandError>> {
@@ -322,6 +350,14 @@ export type FilePreview = { sessionId: number; path: string; content: string }
  * the key path itself never crosses the boundary.
  */
 export type HostDto = { name: string; hostname: string; user: string; port: number; tags: string[]; notes?: string | null; source: HostSourceDto; hasKey: boolean; passwordAuthDisabled?: boolean | null }
+/**
+ * Inbound host form payload for `save_host` (tech-gui.md §4.1, Stage 4.1). Builds a
+ * **manual** `Host` — SSH-config hosts are read-only imports and are never saved.
+ * `password`/`identityFile` arrive here (the create/edit form owns them) but never
+ * travel back out: the outbound `HostDto` omits both (§3.4). Inbound only, so it
+ * derives `Deserialize` (not `Serialize`).
+ */
+export type HostInputDto = { name: string; hostname: string; user: string; port: number; identityFile?: string | null; password?: string | null; proxyJump?: string | null; tags: string[]; notes?: string | null }
 /**
  * Host origin, mirrors `omnyssh_core::ssh::client::HostSource`.
  */

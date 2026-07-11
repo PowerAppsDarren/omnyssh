@@ -38,6 +38,31 @@ pub struct HostDto {
     pub password_auth_disabled: Option<bool>,
 }
 
+/// Inbound host form payload for `save_host` (tech-gui.md §4.1, Stage 4.1). Builds a
+/// **manual** `Host` — SSH-config hosts are read-only imports and are never saved.
+/// `password`/`identityFile` arrive here (the create/edit form owns them) but never
+/// travel back out: the outbound `HostDto` omits both (§3.4). Inbound only, so it
+/// derives `Deserialize` (not `Serialize`).
+#[derive(Debug, Clone, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HostInputDto {
+    pub name: String,
+    pub hostname: String,
+    pub user: String,
+    pub port: u16,
+    #[serde(default)]
+    pub identity_file: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub proxy_jump: Option<String>,
+    // `tags[]` is required on the wire (tech-gui.md §4.1); the form always sends an
+    // array, so no `serde(default)` — that would emit an optional `tags?` and drift.
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
 /// Live connection state for a host (tech-gui.md §4.1). Internally tagged so the
 /// frontend consumes a discriminated union keyed on `kind`.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -197,6 +222,35 @@ impl From<&Host> for HostDto {
             source: (&host.source).into(),
             has_key: host.identity_file.is_some(),
             password_auth_disabled: host.password_auth_disabled,
+        }
+    }
+}
+
+impl From<HostInputDto> for Host {
+    /// Build a **manual** host from the form payload (tech-gui.md §4.1, Stage 4.1).
+    /// `source` is forced to `Manual` (the form only ever authors manual entries);
+    /// blank optional fields collapse to `None` so an empty identity path never reads
+    /// as `hasKey` and an empty password is not persisted. Key-setup metadata
+    /// (`password_auth_disabled`, `key_setup_date`) and the SSH-config rename origin
+    /// are not the form's to set — `save_host` carries them over across an edit.
+    fn from(dto: HostInputDto) -> Self {
+        // The frontend already trims; collapse an exact-empty string to `None` as a
+        // last guard. Password is not trimmed — its bytes are preserved verbatim.
+        let non_empty = |s: Option<String>| s.filter(|v| !v.is_empty());
+        Host {
+            name: dto.name,
+            hostname: dto.hostname,
+            user: dto.user,
+            port: dto.port,
+            identity_file: non_empty(dto.identity_file),
+            password: non_empty(dto.password),
+            proxy_jump: non_empty(dto.proxy_jump),
+            tags: dto.tags,
+            notes: non_empty(dto.notes),
+            source: HostSource::Manual,
+            original_ssh_host: None,
+            key_setup_date: None,
+            password_auth_disabled: None,
         }
     }
 }
@@ -387,6 +441,76 @@ mod tests {
             identity_file: None,
             ..Host::default()
         };
+        assert!(!HostDto::from(&host).has_key);
+    }
+
+    fn full_input() -> HostInputDto {
+        HostInputDto {
+            name: "web-prod-1".to_string(),
+            hostname: "10.0.0.1".to_string(),
+            user: "deploy".to_string(),
+            port: 2222,
+            identity_file: Some("/home/me/.ssh/id_ed25519".to_string()),
+            password: Some("s3cr3t-p4ss".to_string()),
+            proxy_jump: Some("bastion".to_string()),
+            tags: vec!["prod".to_string()],
+            notes: Some("primary".to_string()),
+        }
+    }
+
+    #[test]
+    fn host_input_maps_to_a_manual_host() {
+        // The form only authors manual entries; SSH-config hosts are read-only imports
+        // (tech-gui.md §4.1, Stage 4.1) — so `source` is forced regardless of input.
+        let host = Host::from(full_input());
+        assert_eq!(host.name, "web-prod-1");
+        assert_eq!(host.hostname, "10.0.0.1");
+        assert_eq!(host.user, "deploy");
+        assert_eq!(host.port, 2222);
+        assert_eq!(
+            host.identity_file.as_deref(),
+            Some("/home/me/.ssh/id_ed25519")
+        );
+        assert_eq!(host.proxy_jump.as_deref(), Some("bastion"));
+        assert_eq!(host.tags, vec!["prod".to_string()]);
+        assert_eq!(host.notes.as_deref(), Some("primary"));
+        assert_eq!(host.source, HostSource::Manual);
+        // Key-setup metadata + rename origin are never the form's to set.
+        assert!(host.original_ssh_host.is_none());
+        assert!(host.key_setup_date.is_none());
+        assert!(host.password_auth_disabled.is_none());
+    }
+
+    #[test]
+    fn host_input_keeps_the_password_backend_side() {
+        // The password rides inbound into the backend `Host`, then the outbound
+        // `HostDto` must drop it: it never reaches the webview (§3.4).
+        let host = Host::from(full_input());
+        assert_eq!(host.password.as_deref(), Some("s3cr3t-p4ss"));
+        let json = serde_json::to_string(&HostDto::from(&host)).expect("serialise HostDto");
+        assert!(!json.contains("password"), "password leaked: {json}");
+        assert!(!json.contains("s3cr3t"), "password value leaked: {json}");
+    }
+
+    #[test]
+    fn host_input_collapses_blank_optionals_to_none() {
+        // An empty identity path must not read as `hasKey`; an empty password/proxy/
+        // notes must not persist an empty string.
+        let host = Host::from(HostInputDto {
+            name: "h".to_string(),
+            hostname: "example.com".to_string(),
+            user: "root".to_string(),
+            port: 22,
+            identity_file: Some(String::new()),
+            password: Some(String::new()),
+            proxy_jump: Some(String::new()),
+            tags: vec![],
+            notes: Some(String::new()),
+        });
+        assert!(host.identity_file.is_none());
+        assert!(host.password.is_none());
+        assert!(host.proxy_jump.is_none());
+        assert!(host.notes.is_none());
         assert!(!HostDto::from(&host).has_key);
     }
 
