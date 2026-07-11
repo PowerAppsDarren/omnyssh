@@ -3,7 +3,7 @@
 
 import type { Channel } from '@tauri-apps/api/core';
 import { commands } from '$lib/bindings';
-import type { FileEntryDto, HostDto, SnippetDto, TerminalBytes } from '$lib/bindings';
+import type { FileEntryDto, HostDto, HostInputDto, SnippetDto, TerminalBytes } from '$lib/bindings';
 
 export async function listHosts(): Promise<HostDto[]> {
   const res = await commands.listHosts();
@@ -14,6 +14,18 @@ export async function listHosts(): Promise<HostDto[]> {
 /** Reload hosts from disk and (re)start the pollers; broadcasts `hosts-loaded`. */
 export async function reloadHosts(): Promise<void> {
   const res = await commands.reloadHosts();
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Add or edit a manual host in `hosts.toml`. Call `reloadHosts` after to refresh. */
+export async function saveHost(input: HostInputDto): Promise<void> {
+  const res = await commands.saveHost(input);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Delete a manual host by name. A missing / SSH-config name is a no-op success. */
+export async function deleteHost(name: string): Promise<void> {
+  const res = await commands.deleteHost(name);
   if (res.status === 'error') throw new Error(res.error.message);
 }
 
