@@ -451,7 +451,7 @@
       {#if view.preview.content.length === 0}
         <p class="text-sm text-faint">Empty file.</p>
       {:else}
-        <pre class="whitespace-pre-wrap break-words font-mono text-xs text-fg">{view.preview
+        <pre class="select-text whitespace-pre-wrap break-words font-mono text-xs text-fg">{view.preview
             .content}</pre>
       {/if}
     </div>
