@@ -150,5 +150,20 @@
       <Icon name="command" />
     </Button>
     <ThemeToggle />
+    <!-- Settings is a selector-like screen; the gear holds the active highlight like
+         Dashboard/Snippets do, and stays icon-only so it survives collapse (§5.1). -->
+    <button
+      type="button"
+      class="grid h-9 w-9 place-items-center rounded-full transition {focusRing} {$activeEntity.kind ===
+      'settings'
+        ? 'bg-accent text-accent-fg'
+        : 'text-muted hover:bg-surface-inset hover:text-fg'}"
+      title="Settings"
+      aria-label="Settings"
+      aria-current={$activeEntity.kind === 'settings' ? 'page' : undefined}
+      onclick={() => activeEntity.selectSettings()}
+    >
+      <Icon name="settings" />
+    </button>
   </footer>
 </aside>

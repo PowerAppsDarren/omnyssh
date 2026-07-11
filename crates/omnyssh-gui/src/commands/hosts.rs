@@ -16,6 +16,15 @@ pub fn list_hosts(state: State<'_, GuiState>) -> Result<Vec<HostDto>, CommandErr
     Ok(state.host_dtos())
 }
 
+/// Trigger an immediate metric poll of every host (tech-gui.md §4.2). Used by the
+/// settings-driven refresh cadence (§4.3); a no-op before the pollers start.
+#[tauri::command]
+#[specta::specta]
+pub fn refresh_metrics(state: State<'_, GuiState>) -> Result<(), CommandError> {
+    state.refresh_metrics();
+    Ok(())
+}
+
 /// Reload hosts from the shared config, refresh the cache, restart the pollers,
 /// and broadcast the new list via `hosts-loaded` (tech-gui.md §4.2). Also the
 /// startup entry point: the frontend calls it once its event bridge is up.

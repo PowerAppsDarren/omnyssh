@@ -280,6 +280,81 @@ async previewLocalFile(path: string) : Promise<Result<string, CommandError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Start auto key-setup for `host_name` (tech-gui.md §4.2). Fire-and-forget: the flow
+ * runs on a background task and reports via `key-setup-*` events, mirroring the core's
+ * own model. Resolving the full host record (secrets included) stays backend-side
+ * (§3.4); an unknown host is the one synchronous error.
+ */
+async startKeySetup(hostName: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_key_setup", { hostName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Trigger an immediate metric poll of every host (tech-gui.md §4.2). Used by the
+ * settings-driven refresh cadence (§4.3); a no-op before the pollers start.
+ */
+async refreshMetrics() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("refresh_metrics") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Query GitHub for a newer release (tech-gui.md §4.2). `None` means up to date — the
+ * core swallows network/parse errors so a failed check never disrupts.
+ */
+async checkUpdate() : Promise<Result<UpdateInfoDto | null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_update") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Download and install the latest desktop bundle via `tauri-plugin-updater` (tech-gui.md
+ * §4.3/§3.7). Until Stage 5 configures the updater endpoints + signing key the plugin
+ * has nothing to point at, so this reports "not available yet" rather than touching the
+ * running binary.
+ */
+async installUpdate() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("install_update") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Read the update-checker preferences from the shared config (tech-gui.md §4.3).
+ */
+async loadUpdateConfig() : Promise<Result<UpdateConfigDto, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_update_config") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Persist the update-checker preferences to the shared config's `[update]` section
+ * (tech-gui.md §4.3). Writes off the async worker — parse + atomic write are blocking.
+ */
+async saveUpdateConfig(config: UpdateConfigDto) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_update_config", { config }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -291,6 +366,10 @@ error: Error,
 filePreview: FilePreview,
 hostStatusChanged: HostStatusChanged,
 hostsLoaded: HostsLoaded,
+keySetupComplete: KeySetupComplete,
+keySetupFailed: KeySetupFailed,
+keySetupProgress: KeySetupProgress,
+keySetupRollback: KeySetupRollback,
 metricsUpdated: MetricsUpdated,
 servicesDetected: ServicesDetected,
 servicesFailed: ServicesFailed,
@@ -300,12 +379,17 @@ sftpDisconnected: SftpDisconnected,
 sftpOpDone: SftpOpDone,
 snippetResult: SnippetResult,
 terminalExited: TerminalExited,
-transferProgress: TransferProgress
+transferProgress: TransferProgress,
+updateAvailable: UpdateAvailable
 }>({
 error: "error",
 filePreview: "file-preview",
 hostStatusChanged: "host-status-changed",
 hostsLoaded: "hosts-loaded",
+keySetupComplete: "key-setup-complete",
+keySetupFailed: "key-setup-failed",
+keySetupProgress: "key-setup-progress",
+keySetupRollback: "key-setup-rollback",
 metricsUpdated: "metrics-updated",
 servicesDetected: "services-detected",
 servicesFailed: "services-failed",
@@ -315,7 +399,8 @@ sftpDisconnected: "sftp-disconnected",
 sftpOpDone: "sftp-op-done",
 snippetResult: "snippet-result",
 terminalExited: "terminal-exited",
-transferProgress: "transfer-progress"
+transferProgress: "transfer-progress",
+updateAvailable: "update-available"
 })
 
 /** user-defined constants **/
@@ -371,6 +456,32 @@ export type HostStatusChanged = { hostName: string; status: ConnectionStatusDto 
  * cache; the bridge does not map `HostsLoaded` (tech-gui.md §3.4).
  */
 export type HostsLoaded = HostDto[]
+/**
+ * Key setup finished successfully — key auth is configured (tech-gui.md §4.3).
+ * `keyPath` is the generated private-key path (a path, never key material, §3.4).
+ */
+export type KeySetupComplete = { hostName: string; keyPath: string }
+/**
+ * Key setup failed before touching the server's auth config (tech-gui.md §4.3).
+ * Password authentication is never disabled unless a key was verified first.
+ */
+export type KeySetupFailed = { hostName: string; error: string }
+/**
+ * A progress step of an auto key-setup run (tech-gui.md §4.3). Mapped by the shared
+ * engine bridge from `CoreEvent::KeySetupProgress`; the host name identifies the run.
+ */
+export type KeySetupProgress = { hostName: string; step: KeySetupStepDto }
+/**
+ * Key setup rolled the server's sshd config back after a late failure (tech-gui.md
+ * §4.3). `result` is the human-readable rollback outcome.
+ */
+export type KeySetupRollback = { hostName: string; result: string }
+/**
+ * One step of the auto key-setup flow, for the progress view (tech-gui.md §4.2/§4.3).
+ * `index` is 1-based (`1..=total`); `description` is the core's human-readable label.
+ * Maps from the core `KeySetupStep`.
+ */
+export type KeySetupStepDto = { index: number; total: number; description: string }
 /**
  * A metrics snapshot for a host (tech-gui.md §4.1). The core's `Instant` is
  * flattened to `ageSeconds` (seconds since the sample) so it can serialise.
@@ -475,6 +586,23 @@ export type TransferProgress = TransferProgressDto
  * remote size could not be determined).
  */
 export type TransferProgressDto = { sessionId: number; transferId: number; done: number; total: number }
+/**
+ * A newer release was found by the startup check (tech-gui.md §4.3). Mapped by the
+ * shared engine bridge from `CoreEvent::UpdateAvailable`; drives the update banner.
+ */
+export type UpdateAvailable = { info: UpdateInfoDto }
+/**
+ * Update-checker preferences, mirrors core `UpdateConfig` (tech-gui.md §4.3). Crosses
+ * both ways: outbound for the settings screen, inbound for `save_update_config`.
+ */
+export type UpdateConfigDto = { checkOnStartup: boolean; skipVersion: string }
+/**
+ * A newer release the app can offer (tech-gui.md §4.1). `version` is the latest
+ * version (no leading `v`); `url` is the release page; `canSelfUpdate` mirrors the
+ * core's self-update eligibility. The core `UpdateInfo` has no release-notes field, so
+ * none is invented (§4.1).
+ */
+export type UpdateInfoDto = { version: string; url: string; tag: string; canSelfUpdate: boolean }
 
 /** tauri-specta globals **/
 

@@ -4,12 +4,15 @@
 
 use serde::{Deserialize, Serialize};
 
+use omnyssh_core::config::app_config::UpdateConfig;
 use omnyssh_core::config::snippets::{Snippet, SnippetScope};
 use omnyssh_core::event::{
     DetectedService, MetricValue, Metrics, ProcessInfo, ServiceKind, ServiceMetric,
 };
 use omnyssh_core::ssh::client::{ConnectionStatus, Host, HostSource};
+use omnyssh_core::ssh::key_setup::KeySetupStep;
 use omnyssh_core::ssh::sftp::FileEntry;
+use omnyssh_core::update::UpdateInfo;
 
 /// Host origin, mirrors `omnyssh_core::ssh::client::HostSource`.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -184,6 +187,39 @@ pub struct TransferProgressDto {
     pub transfer_id: u64,
     pub done: u64,
     pub total: u64,
+}
+
+/// A newer release the app can offer (tech-gui.md §4.1). `version` is the latest
+/// version (no leading `v`); `url` is the release page; `canSelfUpdate` mirrors the
+/// core's self-update eligibility. The core `UpdateInfo` has no release-notes field, so
+/// none is invented (§4.1).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfoDto {
+    pub version: String,
+    pub url: String,
+    pub tag: String,
+    pub can_self_update: bool,
+}
+
+/// Update-checker preferences, mirrors core `UpdateConfig` (tech-gui.md §4.3). Crosses
+/// both ways: outbound for the settings screen, inbound for `save_update_config`.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateConfigDto {
+    pub check_on_startup: bool,
+    pub skip_version: String,
+}
+
+/// One step of the auto key-setup flow, for the progress view (tech-gui.md §4.2/§4.3).
+/// `index` is 1-based (`1..=total`); `description` is the core's human-readable label.
+/// Maps from the core `KeySetupStep`.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct KeySetupStepDto {
+    pub index: u8,
+    pub total: u8,
+    pub description: String,
 }
 
 /// Raw PTY output bytes for a terminal session's per-session `Channel` (tech-gui.md
@@ -381,6 +417,47 @@ impl From<&FileEntry> for FileEntryDto {
             path: entry.path.clone(),
             size: entry.size,
             is_dir: entry.is_dir,
+        }
+    }
+}
+
+impl From<&UpdateInfo> for UpdateInfoDto {
+    fn from(info: &UpdateInfo) -> Self {
+        Self {
+            version: info.latest.clone(),
+            url: info.release_url(),
+            tag: info.tag.clone(),
+            can_self_update: info.can_self_update,
+        }
+    }
+}
+
+impl From<&UpdateConfig> for UpdateConfigDto {
+    fn from(config: &UpdateConfig) -> Self {
+        Self {
+            check_on_startup: config.check_on_startup,
+            skip_version: config.skip_version.clone(),
+        }
+    }
+}
+
+impl From<UpdateConfigDto> for UpdateConfig {
+    fn from(dto: UpdateConfigDto) -> Self {
+        Self {
+            check_on_startup: dto.check_on_startup,
+            skip_version: dto.skip_version,
+        }
+    }
+}
+
+impl From<KeySetupStep> for KeySetupStepDto {
+    fn from(step: KeySetupStep) -> Self {
+        Self {
+            // The core enum is a plain C-like discriminant (`GenerateKey = 1 ..=
+            // FinalCheck = 6`), so the cast is the 1-based position directly.
+            index: step as u8,
+            total: KeySetupStep::all_steps().len() as u8,
+            description: step.description().to_string(),
         }
     }
 }
@@ -746,6 +823,73 @@ mod tests {
         assert_eq!(
             json,
             r#"{"name":"srv","path":"/srv","size":0,"isDir":true}"#
+        );
+    }
+
+    #[test]
+    fn update_info_dto_maps_from_core_and_omits_notes() {
+        use omnyssh_core::update::InstallMethod;
+        let info = UpdateInfo {
+            current: "1.0.0".to_string(),
+            latest: "1.2.0".to_string(),
+            tag: "v1.2.0".to_string(),
+            method: InstallMethod::Manual,
+            can_self_update: true,
+        };
+        let dto = UpdateInfoDto::from(&info);
+        // `version` is the latest release, `url` the core's release page (tech-gui.md §4.1).
+        assert_eq!(dto.version, "1.2.0");
+        assert_eq!(dto.tag, "v1.2.0");
+        assert_eq!(dto.url, info.release_url());
+        assert!(dto.can_self_update);
+        // No release-notes field is invented.
+        let json = serde_json::to_string(&dto).expect("serialise UpdateInfoDto");
+        assert!(!json.contains("notes"), "invented a notes field: {json}");
+        assert!(
+            json.contains(r#""canSelfUpdate":true"#),
+            "wire name drift: {json}"
+        );
+    }
+
+    #[test]
+    fn update_config_dto_round_trips_through_core() {
+        // The settings screen edits these and `save_update_config` persists them; the
+        // round-trip must be lossless (tech-gui.md §4.3 test obligation).
+        let core = UpdateConfig {
+            check_on_startup: false,
+            skip_version: "1.2.3".to_string(),
+        };
+        let dto = UpdateConfigDto::from(&core);
+        assert!(!dto.check_on_startup);
+        assert_eq!(dto.skip_version, "1.2.3");
+        let json = serde_json::to_string(&dto).expect("serialise UpdateConfigDto");
+        assert_eq!(json, r#"{"checkOnStartup":false,"skipVersion":"1.2.3"}"#);
+
+        let back: UpdateConfig = dto.into();
+        assert!(!back.check_on_startup);
+        assert_eq!(back.skip_version, "1.2.3");
+    }
+
+    #[test]
+    fn key_setup_step_dto_maps_index_total_and_label() {
+        // The progress view reads a 1-based `index` out of `total` plus the core's
+        // label (tech-gui.md §4.2). The first/last steps pin the discriminant range.
+        let dto = KeySetupStepDto::from(KeySetupStep::VerifyKeyAuth);
+        assert_eq!(dto.index, 3);
+        assert_eq!(dto.total, 6);
+        assert_eq!(dto.description, "Verifying key authentication");
+        assert_eq!(KeySetupStepDto::from(KeySetupStep::GenerateKey).index, 1);
+        assert_eq!(KeySetupStepDto::from(KeySetupStep::FinalCheck).index, 6);
+    }
+
+    #[test]
+    fn key_setup_step_dto_uses_camel_case_wire_names() {
+        // The frontend reads `index`/`total`/`description` (tech-gui.md §4.2).
+        let json = serde_json::to_string(&KeySetupStepDto::from(KeySetupStep::CopyPublicKey))
+            .expect("serialise KeySetupStepDto");
+        assert_eq!(
+            json,
+            r#"{"index":2,"total":6,"description":"Copying public key to server"}"#
         );
     }
 

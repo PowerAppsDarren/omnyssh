@@ -9,13 +9,15 @@ mod error;
 mod events;
 mod state;
 
-use commands::hosts::{delete_host, list_hosts, reload_hosts, save_host};
+use commands::hosts::{delete_host, list_hosts, refresh_metrics, reload_hosts, save_host};
+use commands::keysetup::start_key_setup;
 use commands::sftp::{
     list_local_dir, preview_local_file, sftp_close, sftp_delete, sftp_download, sftp_list,
     sftp_mkdir, sftp_open, sftp_preview, sftp_rename, sftp_upload,
 };
 use commands::snippets::{delete_snippet, execute_snippet, list_snippets, save_snippet};
 use commands::terminal::{terminal_close, terminal_open, terminal_resize, terminal_write};
+use commands::update::{check_update, install_update, load_update_config, save_update_config};
 use omnyssh_core::event::{CoreEvent, SessionId};
 use omnyssh_core::ssh::pty::PtyManager;
 use state::GuiState;
@@ -52,7 +54,13 @@ fn specta_builder() -> Builder<tauri::Wry> {
             sftp_preview,
             sftp_close,
             list_local_dir,
-            preview_local_file
+            preview_local_file,
+            start_key_setup,
+            refresh_metrics,
+            check_update,
+            install_update,
+            load_update_config,
+            save_update_config
         ])
         .events(collect_events![
             events::HostsLoaded,
@@ -68,6 +76,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
             events::SftpDisconnected,
             events::FilePreview,
             events::TransferProgress,
+            events::KeySetupProgress,
+            events::KeySetupComplete,
+            events::KeySetupFailed,
+            events::KeySetupRollback,
+            events::UpdateAvailable,
             events::Error
         ])
 }
@@ -92,9 +105,11 @@ fn main() {
     export_bindings(BINDINGS_PATH);
 
     tauri::Builder::default()
-        // Persists UI prefs (theme, later sidebar collapse) from the frontend JS
-        // API — no bespoke command (tech-gui.md §4.2, §5.1).
+        // Persists UI prefs (theme, sidebar collapse, refresh interval) from the
+        // frontend JS API — no bespoke command (tech-gui.md §4.2, §5.1).
         .plugin(tauri_plugin_store::Builder::new().build())
+        // Desktop self-update (tech-gui.md §4.3); endpoints/signing land in Stage 5.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -119,6 +134,13 @@ fn main() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(bridge::forward_core_events(handle.clone(), engine_rx));
             tauri::async_runtime::spawn(bridge::forward_terminal_output(handle, raw_rx));
+
+            // Kick the startup update check (tech-gui.md §3.4). It honours the config's
+            // check-on-startup / skip-version and emits `UpdateAvailable` on the engine
+            // channel the bridge already drains; the network latency gives the webview
+            // time to attach its listener.
+            let update_tx = app.state::<GuiState>().engine_sender();
+            tauri::async_runtime::spawn(commands::update::startup_update_check(update_tx));
 
             // The pollers are started by the frontend via `reload_hosts` once its
             // event bridge is listening, so no HostStatusChanged is emitted before

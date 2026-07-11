@@ -51,6 +51,35 @@ pub async fn forward_core_events(app: AppHandle, mut rx: mpsc::Receiver<CoreEven
                     let _ = events::TerminalExited { session_id }.emit(&app);
                 }
             }
+            // Auto key-setup (§4.2): `start_key_setup` drives the core and reports these
+            // on the shared engine channel; the host name identifies the run.
+            CoreEvent::KeySetupProgress(host_name, step) => {
+                let _ = events::KeySetupProgress {
+                    host_name,
+                    step: step.into(),
+                }
+                .emit(&app);
+            }
+            CoreEvent::KeySetupComplete(host_name, key_path) => {
+                let _ = events::KeySetupComplete {
+                    host_name,
+                    key_path: key_path.to_string_lossy().to_string(),
+                }
+                .emit(&app);
+            }
+            CoreEvent::KeySetupFailed(host_name, error) => {
+                let _ = events::KeySetupFailed { host_name, error }.emit(&app);
+            }
+            CoreEvent::KeySetupRollback(host_name, result) => {
+                let _ = events::KeySetupRollback { host_name, result }.emit(&app);
+            }
+            // A newer release found by the startup check (§4.3) → the update banner.
+            CoreEvent::UpdateAvailable(info) => {
+                let _ = events::UpdateAvailable {
+                    info: (&info).into(),
+                }
+                .emit(&app);
+            }
             // Other variants are mapped as their producers start. `HostsLoaded`
             // is emitted directly by its command, SFTP results by the per-session
             // forwarder, and `PtyOutput` is superseded by the raw tap (§3.4/§3.6).

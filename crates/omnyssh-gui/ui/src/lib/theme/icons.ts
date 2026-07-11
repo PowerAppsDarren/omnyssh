@@ -21,4 +21,7 @@ export type IconName =
   | 'file'
   | 'upload'
   | 'download'
-  | 'refresh';
+  | 'refresh'
+  | 'key'
+  | 'shield'
+  | 'settings';

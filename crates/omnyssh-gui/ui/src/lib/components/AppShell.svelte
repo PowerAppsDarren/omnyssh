@@ -7,6 +7,8 @@
   import Sidebar from './Sidebar.svelte';
   import StatusBar from './StatusBar.svelte';
   import CommandPalette from './CommandPalette.svelte';
+  import KeySetupProgress from '$lib/screens/KeySetupProgress.svelte';
+  import UpdateBanner from './UpdateBanner.svelte';
   import { sidebarCollapsed, isCollapseChord } from '$lib/stores/ui';
 
   let { children }: { children: Snippet } = $props();
@@ -32,4 +34,6 @@
   </main>
   <StatusBar />
   <CommandPalette />
+  <KeySetupProgress />
+  <UpdateBanner />
 </div>

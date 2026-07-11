@@ -27,5 +27,11 @@
   },
   "bundle": {
     "active": false
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": []
+    }
   }
 }
