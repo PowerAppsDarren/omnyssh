@@ -29,6 +29,10 @@ vi.mock('$lib/bindings', () => {
       sftpDisconnected: channel('sftpDisconnected'),
       filePreview: channel('filePreview'),
       transferProgress: channel('transferProgress'),
+      keySetupProgress: channel('keySetupProgress'),
+      keySetupComplete: channel('keySetupComplete'),
+      keySetupFailed: channel('keySetupFailed'),
+      keySetupRollback: channel('keySetupRollback'),
       error: channel('error')
     }
   };

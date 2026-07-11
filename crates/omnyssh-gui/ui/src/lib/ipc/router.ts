@@ -6,6 +6,10 @@ import type {
   ConnectionStatusDto,
   FilePreview,
   HostDto,
+  KeySetupComplete,
+  KeySetupFailed,
+  KeySetupProgress,
+  KeySetupRollback,
   MetricsDto,
   ServiceDto,
   SftpConnected,
@@ -24,6 +28,13 @@ import { sessions } from '$lib/stores/sessions';
 import { sftp } from '$lib/stores/sftp';
 import { closeSession } from '$lib/stores/navigation';
 import { lastError } from '$lib/stores/notifications';
+import {
+  keySetup,
+  reduceComplete,
+  reduceFailed,
+  reduceProgress,
+  reduceRollback
+} from '$lib/stores/keySetup';
 
 export function applyHostsLoaded(payload: HostDto[]): void {
   hosts.set(payload);
@@ -109,6 +120,26 @@ export function applyFilePreview(payload: FilePreview): void {
 
 export function applyTransferProgress(payload: TransferProgressDto): void {
   sftp.progress(payload.sessionId, payload);
+}
+
+// Auto key-setup events (tech-gui.md §4.2/§4.3). Progress advances only the active
+// host's run; a terminal outcome always shows for its host. The card refresh on
+// completion is driven by the progress panel component (an ipc call), so this stays a
+// pure store update.
+export function applyKeySetupProgress(payload: KeySetupProgress): void {
+  keySetup.update((run) => reduceProgress(run, payload.hostName, payload.step));
+}
+
+export function applyKeySetupComplete(payload: KeySetupComplete): void {
+  keySetup.set(reduceComplete(payload.hostName, payload.keyPath));
+}
+
+export function applyKeySetupFailed(payload: KeySetupFailed): void {
+  keySetup.set(reduceFailed(payload.hostName, payload.error));
+}
+
+export function applyKeySetupRollback(payload: KeySetupRollback): void {
+  keySetup.set(reduceRollback(payload.hostName, payload.result));
 }
 
 export function applyError(message: string): void {

@@ -162,3 +162,10 @@ export async function previewLocalFile(path: string): Promise<string> {
   if (res.status === 'error') throw new Error(res.error.message);
   return res.data;
 }
+
+/** Start auto SSH-key setup for a host; progress + the outcome arrive as `key-setup-*`
+ *  events (tech-gui.md §4.2). Fire-and-forget — only an unknown host rejects here. */
+export async function startKeySetup(hostName: string): Promise<void> {
+  const res = await commands.startKeySetup(hostName);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
