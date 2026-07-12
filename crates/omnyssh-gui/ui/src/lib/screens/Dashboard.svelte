@@ -10,6 +10,7 @@
   import { Surface, Chip, StatusDot, Icon, Button, statusToken } from '$lib/theme';
   import { serverCards, filterHosts, QUICK_ACTIONS } from './serverCard';
   import { spawnSession } from '$lib/stores/navigation';
+  import { streamerMode, displayHostname } from '$lib/stores/streamer';
   import { hosts } from '$lib/stores/hosts';
   import { lastError } from '$lib/stores/notifications';
   import { saveHost, deleteHost, reloadHosts, startKeySetup } from '$lib/ipc/commands';
@@ -185,7 +186,8 @@
                   {/if}
                 </div>
                 <div class="truncate font-mono text-xs text-faint">
-                  {card.host.user}@{card.host.hostname}:{card.host.port}
+                  {card.host.user}@{displayHostname(card.host.hostname, $streamerMode)}:{card.host
+                    .port}
                 </div>
               </div>
             </div>

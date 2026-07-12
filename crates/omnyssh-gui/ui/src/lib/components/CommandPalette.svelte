@@ -11,6 +11,7 @@
   import { sessions, sessionLabel, sessionStatusDot } from '$lib/stores/sessions';
   import { activeEntity } from '$lib/stores/activeEntity';
   import { spawnSession } from '$lib/stores/navigation';
+  import { streamerMode, displayHostname } from '$lib/stores/streamer';
   import { isPaletteChord } from '$lib/stores/ui';
 
   let inputEl = $state<HTMLInputElement>();
@@ -197,7 +198,7 @@
                   <StatusDot status={hostStatusDot($statuses.get(item.host.name))} />
                   <span class="min-w-0 flex-1 truncate font-medium">{item.host.name}</span>
                   <span class="shrink-0 truncate font-mono text-xs {selected === i ? '' : 'text-faint'}">
-                    {item.host.user}@{item.host.hostname}
+                    {item.host.user}@{displayHostname(item.host.hostname, $streamerMode)}
                   </span>
                 {/if}
               </button>

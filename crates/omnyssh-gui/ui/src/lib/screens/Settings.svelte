@@ -7,6 +7,7 @@
   import type { UpdateConfigDto } from '$lib/bindings';
   import { Surface, Icon } from '$lib/theme';
   import { theme } from '$lib/stores/theme';
+  import { streamerMode } from '$lib/stores/streamer';
   import { refreshInterval, REFRESH_OPTIONS } from '$lib/stores/settings';
   import { offerUpdate } from '$lib/stores/update';
   import { lastError } from '$lib/stores/notifications';
@@ -103,6 +104,35 @@
             <span class="flex items-center gap-1.5"><Icon name="moon" size={14} /> Dark</span>
           </button>
         </div>
+      </div>
+    </Surface>
+
+    <!-- Privacy -->
+    <Surface class="p-5">
+      <h2 class="mb-3 text-sm font-semibold">Privacy</h2>
+      <div class="flex items-center justify-between gap-4">
+        <div class="min-w-0">
+          <p class="text-sm">Streamer mode</p>
+          <p class="text-xs text-muted">
+            Mask host addresses with realistic fakes, so real IPs stay off-screen while recording.
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={$streamerMode}
+          aria-label="Streamer mode"
+          onclick={() => streamerMode.toggle()}
+          class="relative h-6 w-11 shrink-0 rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus {$streamerMode
+            ? 'bg-accent'
+            : 'bg-surface-inset'}"
+        >
+          <span
+            class="absolute top-0.5 h-5 w-5 rounded-full bg-surface shadow-soft transition-[left] {$streamerMode
+              ? 'left-[1.375rem]'
+              : 'left-0.5'}"
+          ></span>
+        </button>
       </div>
     </Surface>
 
