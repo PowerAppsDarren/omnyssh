@@ -167,4 +167,16 @@ describe('sftp store', () => {
     sftp.listing(999, 'remote', '/gone', [entry('x')]);
     expect(get(sftp).has(999)).toBe(false);
   });
+
+  it('sessionError clears pane loading so a failed listing never sticks on "Loading…"', () => {
+    sftp.open(1, 'web-1');
+    sftp.beginLoading(1, 'remote');
+    expect(get(sftp).get(1)?.remote.loading).toBe(true);
+    sftp.sessionError(1, 'ListDir failed: connection reset');
+    const s = get(sftp).get(1);
+    expect(s?.error).toBe('ListDir failed: connection reset');
+    expect(s?.remote.loading).toBe(false);
+    expect(s?.local.loading).toBe(false);
+    sftp.remove(1);
+  });
 });

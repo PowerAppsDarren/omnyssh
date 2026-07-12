@@ -196,9 +196,16 @@ function createSftp() {
     clearRefresh(id: number): void {
       mut(id, (s) => ({ ...s, refresh: undefined }));
     },
-    /** A soft error (e.g. a failed listing reported as `sftp-disconnected`, §4.3). */
+    /** A soft error (e.g. a failed listing reported as `sftp-disconnected`, §4.3). Clears
+     *  both panes' loading flags too — the failed listing sent one loading but never
+     *  arrives, and leaving it set strands the pane on "Loading…" forever. */
     sessionError(id: number, error: string): void {
-      mut(id, (s) => ({ ...s, error }));
+      mut(id, (s) => ({
+        ...s,
+        error,
+        local: { ...s.local, loading: false },
+        remote: { ...s.remote, loading: false }
+      }));
     },
     remove(id: number): void {
       update((m) => {
