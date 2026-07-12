@@ -185,7 +185,11 @@
   }
 
   function enqueue(...actions: Array<() => void>): void {
-    if (actions.length) outbox = [...outbox, ...actions];
+    if (!actions.length) return;
+    // A new user batch starts clean: drop the prior batch's error, which lingered so a
+    // masked mid-batch failure stayed visible until the next action (see applyOpDone).
+    if (backendId != null) sftp.clearError(backendId);
+    outbox = [...outbox, ...actions];
   }
 
   function upload(): void {
