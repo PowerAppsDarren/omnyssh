@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { isCollapseChord, isPaletteChord } from './ui';
+import { isCollapseChord, isPaletteChord, isRefreshHotkey } from './ui';
 
 // Collapse persistence (tech-gui.md §2, §3.5). The canonical layer needs a fake
 // Tauri store — Vitest has no runtime — and a fresh module per test isolates the
@@ -118,5 +118,33 @@ describe('palette chord (⌘K / Ctrl+K)', () => {
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }));
     input.remove();
     expect(matched).toBe(true);
+  });
+});
+
+describe('refresh hotkey (r)', () => {
+  const hot = (init: KeyboardEventInit) => isRefreshHotkey(new KeyboardEvent('keydown', init));
+
+  it('matches a bare r/R with no modifier', () => {
+    expect(hot({ key: 'r' })).toBe(true);
+    expect(hot({ key: 'R' })).toBe(true);
+  });
+
+  it('rejects any modifier, auto-repeat, IME composing, and other keys', () => {
+    expect(hot({ key: 'r', metaKey: true })).toBe(false);
+    expect(hot({ key: 'r', ctrlKey: true })).toBe(false);
+    expect(hot({ key: 'r', altKey: true })).toBe(false);
+    expect(hot({ key: 'r', repeat: true })).toBe(false);
+    expect(hot({ key: 'r', isComposing: true })).toBe(false);
+    expect(hot({ key: 's' })).toBe(false);
+  });
+
+  it('does not fire while typing in an editable field (never eats a keystroke)', () => {
+    const input = document.createElement('input');
+    document.body.append(input);
+    let matched = true;
+    input.addEventListener('keydown', (e) => (matched = isRefreshHotkey(e)));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }));
+    input.remove();
+    expect(matched).toBe(false);
   });
 });

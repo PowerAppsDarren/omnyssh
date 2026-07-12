@@ -13,7 +13,8 @@
   import { streamerMode, displayHostname } from '$lib/stores/streamer';
   import { hosts } from '$lib/stores/hosts';
   import { lastError } from '$lib/stores/notifications';
-  import { saveHost, deleteHost, reloadHosts, startKeySetup } from '$lib/ipc/commands';
+  import { saveHost, deleteHost, reloadHosts, startKeySetup, refreshMetrics } from '$lib/ipc/commands';
+  import { isRefreshHotkey } from '$lib/stores/ui';
   import { beginKeySetup, dismissKeySetup } from '$lib/stores/keySetup';
   import { emptyForm, formFromHost } from './hostForm';
   import HostEditor from './HostEditor.svelte';
@@ -37,6 +38,33 @@
   }
 
   const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+  // Force an immediate metric poll of every host (tech-gui.md §4.2), shared by the
+  // refresh button and the `r` hotkey (mirrors the TUI). The command returns before the
+  // fresh metrics arrive (they land via `metrics-updated` events), so a short minimum
+  // spin gives the click/keypress visible feedback.
+  let refreshing = $state(false);
+  async function refresh(): Promise<void> {
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      await refreshMetrics();
+    } catch (e) {
+      lastError.set(message(e));
+    }
+    setTimeout(() => (refreshing = false), 500);
+  }
+
+  // Dashboard hotkeys (tech-gui.md §2): `r` refreshes metrics. This listener only exists
+  // while the dashboard is mounted (the selector unmounts when a session is active), so
+  // it never reaches terminal input. Suppressed while a host dialog owns the keyboard.
+  function onKeydown(e: KeyboardEvent): void {
+    if (dialog) return;
+    if (isRefreshHotkey(e)) {
+      e.preventDefault();
+      void refresh();
+    }
+  }
 
   // Persist an add/edit, then reload so the merged cache + pollers pick it up
   // (`reload_hosts` broadcasts `hosts-loaded`). Throws propagate to the editor so a
@@ -92,6 +120,8 @@
     'placeholder:text-faint focus-visible:ring-2 focus-visible:ring-focus';
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 <section class="min-h-full px-6 pb-8 pt-3">
   <div class="mb-5 flex items-center gap-3">
     <h1 class="text-lg font-semibold tracking-tight">Dashboard</h1>
@@ -123,6 +153,20 @@
           <Icon name={searchOpen ? 'close' : 'search'} size={15} />
         </button>
       </div>
+      <!-- Force an immediate metric refresh of every host, like the TUI's `r` (also the
+           `r` hotkey). Spins while in flight for feedback. -->
+      <button
+        type="button"
+        class="{roundBtn} disabled:opacity-60"
+        title="Refresh metrics (R)"
+        aria-label="Refresh metrics"
+        disabled={refreshing}
+        onclick={() => refresh()}
+      >
+        <span class="inline-flex {refreshing ? 'animate-spin' : ''}">
+          <Icon name="refresh" size={15} />
+        </span>
+      </button>
       <button type="button" class={pill} onclick={() => (dialog = { kind: 'add' })}>
         <Icon name="plus" size={13} />
         Add host
