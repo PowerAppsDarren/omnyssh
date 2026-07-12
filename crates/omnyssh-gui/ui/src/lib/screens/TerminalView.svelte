@@ -35,7 +35,12 @@
     writeChain = writeChain.then(async () => {
       for (const chunk of chunkBytes(bytes)) {
         if (destroyed || termId == null) return;
-        await terminalWrite(termId, Array.from(chunk)).catch(() => {});
+        try {
+          await terminalWrite(termId, Array.from(chunk));
+        } catch {
+          // Stop this input on a write failure rather than sending a gapped stream.
+          return;
+        }
       }
     });
   }
