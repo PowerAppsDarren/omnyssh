@@ -186,15 +186,16 @@ describe('sftp store', () => {
     sftp.remove(1);
   });
 
-  it('sessionError clears pane loading so a failed listing never sticks on "Loading…"', () => {
+  it('sessionError clears the remote pane loading so a failed listing never sticks, but leaves a live local load', () => {
     sftp.open(1, 'web-1');
     sftp.beginLoading(1, 'remote');
-    expect(get(sftp).get(1)?.remote.loading).toBe(true);
+    sftp.beginLoading(1, 'local');
     sftp.sessionError(1, 'ListDir failed: connection reset');
     const s = get(sftp).get(1);
     expect(s?.error).toBe('ListDir failed: connection reset');
     expect(s?.remote.loading).toBe(false);
-    expect(s?.local.loading).toBe(false);
+    // A remote failure must not drop a legitimately in-flight local listing's spinner.
+    expect(s?.local.loading).toBe(true);
     sftp.remove(1);
   });
 });

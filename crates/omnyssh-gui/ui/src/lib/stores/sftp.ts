@@ -203,16 +203,12 @@ function createSftp() {
     clearError(id: number): void {
       mut(id, (s) => ({ ...s, error: undefined }));
     },
-    /** A soft error (e.g. a failed listing reported as `sftp-disconnected`, §4.3). Clears
-     *  both panes' loading flags too — the failed listing sent one loading but never
-     *  arrives, and leaving it set strands the pane on "Loading…" forever. */
+    /** A soft error (e.g. a failed listing reported as `sftp-disconnected`, §4.3). The
+     *  core emits it only for a remote `ListDir`, so clear just the remote pane's loading
+     *  (leaving it set strands it on "Loading…"); a legit in-flight local listing keeps
+     *  its own spinner. */
     sessionError(id: number, error: string): void {
-      mut(id, (s) => ({
-        ...s,
-        error,
-        local: { ...s.local, loading: false },
-        remote: { ...s.remote, loading: false }
-      }));
+      mut(id, (s) => ({ ...s, error, remote: { ...s.remote, loading: false } }));
     },
     remove(id: number): void {
       update((m) => {
