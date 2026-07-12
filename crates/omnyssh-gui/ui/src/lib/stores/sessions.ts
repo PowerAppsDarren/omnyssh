@@ -27,9 +27,15 @@ export interface Session {
   termId?: number;
 }
 
-/** How a session is labelled wherever it is shown (sidebar row + Content heading),
- *  kept next to the type so both surfaces stay in step. */
+/** The visible session label: just the host name. The type (terminal/SFTP) is already
+ *  carried by the row's type icon, so the text stays compact and readable at any width. */
 export function sessionLabel(s: Session): string {
+  return s.hostName;
+}
+
+/** The accessible/tooltip label: host + type, so hover and screen readers still convey
+ *  the connection type the icon shows visually. */
+export function sessionTitle(s: Session): string {
   return `${s.hostName} · ${s.kind}`;
 }
 

@@ -110,6 +110,8 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::new().build())
         // Desktop self-update (tech-gui.md §4.3); endpoints/signing land in Stage 5.
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Opens the support dialog's GitHub/Telegram links in the default browser.
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -135,17 +137,10 @@ fn main() {
             tauri::async_runtime::spawn(bridge::forward_core_events(handle.clone(), engine_rx));
             tauri::async_runtime::spawn(bridge::forward_terminal_output(handle, raw_rx));
 
-            // Kick the startup update check (tech-gui.md §3.4). It honours the config's
-            // check-on-startup / skip-version and emits `UpdateAvailable` on the engine
-            // channel the bridge already drains; the network latency gives the webview
-            // time to attach its listener.
-            let update_tx = app.state::<GuiState>().engine_sender();
-            tauri::async_runtime::spawn(commands::update::startup_update_check(update_tx));
-
-            // The pollers are started by the frontend via `reload_hosts` once its
-            // event bridge is listening, so no HostStatusChanged is emitted before
-            // the webview can receive it (starting them here would race listener
-            // registration and strand a host as offline).
+            // The pollers and the startup update check are both started by the frontend's
+            // first `reload_hosts`, once its event bridge is listening — starting them
+            // here would race listener registration and drop `HostStatusChanged` /
+            // `UpdateAvailable` before the webview can receive them (§3.4).
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -24,4 +24,6 @@ export type IconName =
   | 'refresh'
   | 'key'
   | 'shield'
-  | 'settings';
+  | 'settings'
+  | 'telegram'
+  | 'star';

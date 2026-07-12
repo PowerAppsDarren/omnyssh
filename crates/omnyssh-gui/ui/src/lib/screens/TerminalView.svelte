@@ -16,6 +16,8 @@
   import { terminalDidExit } from '$lib/ipc/router';
   import { lastError } from '$lib/stores/notifications';
   import { terminalOpen, terminalWrite, terminalResize, terminalClose } from '$lib/ipc/commands';
+  import { shouldFadeTop } from './terminalFade';
+  import { chunkBytes } from './terminalInput';
   import type { TerminalBytes } from '$lib/bindings';
 
   let { session, active }: { session: Session; active: boolean } = $props();
@@ -23,6 +25,25 @@
   const MONO = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
   // One encoder for the keystroke hot path instead of one per input event.
   const ENCODER = new TextEncoder();
+
+  // A large paste arrives as one onData; sending it as a single number[] would freeze
+  // the UI thread (§9). Split into bounded chunks and await each so paint yields between
+  // them; a serialization chain keeps all input strictly in order across events.
+  let writeChain: Promise<void> = Promise.resolve();
+  function sendInput(bytes: Uint8Array): void {
+    if (termId == null || bytes.length === 0) return;
+    writeChain = writeChain.then(async () => {
+      for (const chunk of chunkBytes(bytes)) {
+        if (destroyed || termId == null) return;
+        try {
+          await terminalWrite(termId, Array.from(chunk));
+        } catch {
+          // Stop this input on a write failure rather than sending a gapped stream.
+          return;
+        }
+      }
+    });
+  }
 
   let container: HTMLDivElement;
   let term: Terminal | undefined;
@@ -34,11 +55,14 @@
   let themeUnsub: (() => void) | undefined;
   let resizeObserver: ResizeObserver | undefined;
   let fitScheduled = false;
-  // The top-edge fade is on only while scrolled off the top of the buffer: the first
-  // line stays crisp at the top, but scrolled output dissolves into the top edge.
+  // The top-edge fade dissolves scrolled output into the top edge, but never the live
+  // prompt: after `clear`/Ctrl+L the cursor homes to the top, so the fade must lift
+  // there (see terminalFade). Recomputed after every write too, since those resets
+  // move the viewport without firing onScroll.
   let scrolled = $state(false);
   function syncScrolled(): void {
-    scrolled = !!term && term.buffer.active.viewportY > 0;
+    const buf = term?.buffer.active;
+    scrolled = !!buf && shouldFadeTop(buf.viewportY, buf.baseY, buf.cursorY);
   }
 
   /** Fit the terminal to its container and tell the backend, but only while visible —
@@ -97,7 +121,7 @@
           connected = true;
           sessions.setStatus(session.id, 'connected');
         }
-        term.write(new Uint8Array(msg as unknown as ArrayBuffer));
+        term.write(new Uint8Array(msg as unknown as ArrayBuffer), syncScrolled);
       };
 
       // Fit before opening so the remote PTY starts at the visible size.
@@ -118,17 +142,8 @@
 
       // Text keystrokes/paste are UTF-8; onBinary carries raw 8-bit sequences
       // (e.g. legacy mouse reporting) that must go byte-for-byte, not re-encoded.
-      term.onData((data) => {
-        if (termId != null) void terminalWrite(termId, Array.from(ENCODER.encode(data))).catch(() => {});
-      });
-      term.onBinary((data) => {
-        if (termId != null) {
-          void terminalWrite(
-            termId,
-            Array.from(data, (ch) => ch.charCodeAt(0) & 0xff)
-          ).catch(() => {});
-        }
-      });
+      term.onData((data) => sendInput(ENCODER.encode(data)));
+      term.onBinary((data) => sendInput(Uint8Array.from(data, (ch) => ch.charCodeAt(0) & 0xff)));
 
       resizeObserver = new ResizeObserver(() => scheduleFit());
       resizeObserver.observe(container);

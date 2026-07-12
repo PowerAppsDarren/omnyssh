@@ -285,7 +285,8 @@ async previewLocalFile(path: string) : Promise<Result<string, CommandError>> {
  * Start auto key-setup for `host_name` (tech-gui.md §4.2). Fire-and-forget: the flow
  * runs on a background task and reports via `key-setup-*` events, mirroring the core's
  * own model. Resolving the full host record (secrets included) stays backend-side
- * (§3.4); an unknown host is the one synchronous error.
+ * (§3.4). One run at a time: an unknown host or a run already in flight is the
+ * synchronous error, so two runs never race a `hosts.toml` write.
  */
 async startKeySetup(hostName: string) : Promise<Result<null, CommandError>> {
     try {

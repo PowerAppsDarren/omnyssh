@@ -5,6 +5,7 @@
   import { reloadHosts, refreshMetrics } from '$lib/ipc/commands';
   import { theme } from '$lib/stores/theme';
   import { sidebarCollapsed } from '$lib/stores/ui';
+  import { streamerMode } from '$lib/stores/streamer';
   import { refreshInterval, driveMetricsRefresh } from '$lib/stores/settings';
   import { lastError } from '$lib/stores/notifications';
 
@@ -17,6 +18,7 @@
     // the synchronous localStorage mirrors already seeded the first paint (§5.1, §2).
     void theme.hydrate();
     void sidebarCollapsed.hydrate();
+    void streamerMode.hydrate();
     void refreshInterval.hydrate();
     // Force a metric refresh on the user's interval; re-arms when the interval changes.
     const stopRefresh = driveMetricsRefresh(() => {

@@ -185,7 +185,13 @@
   }
 
   function enqueue(...actions: Array<() => void>): void {
-    if (actions.length) outbox = [...outbox, ...actions];
+    if (!actions.length) return;
+    // Clear the prior batch's lingering error only when starting from idle. Piling onto a
+    // batch that is still draining must not wipe a failure it already recorded (that error
+    // stays visible until the next fresh action — see applyOpDone).
+    const draining = outbox.length > 0 || (view?.pending.length ?? 0) > 0;
+    if (backendId != null && !draining) sftp.clearError(backendId);
+    outbox = [...outbox, ...actions];
   }
 
   function upload(): void {

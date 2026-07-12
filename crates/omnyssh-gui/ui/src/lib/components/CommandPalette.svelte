@@ -5,12 +5,13 @@
   // to filter, ↑/↓ to move, ↵ to select, esc to dismiss. Glass/blur per the brandbook.
   import { tick } from 'svelte';
   import { Icon, StatusDot } from '$lib/theme';
-  import { palette, paletteItems, nextIndex, hostStatusDot } from '$lib/stores/palette';
+  import { palette, paletteItems, paletteSignature, nextIndex, hostStatusDot } from '$lib/stores/palette';
   import { hosts } from '$lib/stores/hosts';
   import { statuses } from '$lib/stores/statuses';
   import { sessions, sessionLabel, sessionStatusDot } from '$lib/stores/sessions';
   import { activeEntity } from '$lib/stores/activeEntity';
   import { spawnSession } from '$lib/stores/navigation';
+  import { streamerMode, displayHostname } from '$lib/stores/streamer';
   import { isPaletteChord } from '$lib/stores/ui';
 
   let inputEl = $state<HTMLInputElement>();
@@ -19,6 +20,9 @@
   let selected = $state(0);
 
   const items = $derived(paletteItems($palette.mode, $hosts, $sessions, query));
+  // A value-stable key over the result set: unchanged by a background status flip (same
+  // ids, new objects), so the reset effect below can ignore those (see the effect).
+  const itemsSignature = $derived(paletteSignature(items));
   const firstSession = $derived(items.findIndex((it) => it.kind === 'session'));
   const firstHost = $derived(items.findIndex((it) => it.kind === 'host'));
 
@@ -47,6 +51,7 @@
       // with the palette's own input.
       restoreFocus ??= document.activeElement as HTMLElement | null;
       query = '';
+      selected = 0;
       void tick().then(() => inputEl?.focus());
     } else if (restoreFocus) {
       if (restoreFocus.isConnected) restoreFocus.focus();
@@ -54,11 +59,12 @@
     }
   });
 
-  // Reset the highlight to the top match whenever the result set changes — typing, a
-  // mode switch, or a live hosts/sessions update — so arrow-nav and Enter never target a
-  // stale or reordered row.
+  // Reset the highlight to the top match whenever the result *set* changes — typing, a
+  // mode switch, an added/removed/reordered row — so arrow-nav and Enter never target a
+  // stale row. Keyed on the signature, not `items`: a background status flip re-derives
+  // `items` (a new array) but not the signature, so it no longer snaps the selection.
   $effect(() => {
-    void items;
+    void itemsSignature;
     selected = 0;
   });
 
@@ -197,7 +203,7 @@
                   <StatusDot status={hostStatusDot($statuses.get(item.host.name))} />
                   <span class="min-w-0 flex-1 truncate font-medium">{item.host.name}</span>
                   <span class="shrink-0 truncate font-mono text-xs {selected === i ? '' : 'text-faint'}">
-                    {item.host.user}@{item.host.hostname}
+                    {item.host.user}@{displayHostname(item.host.hostname, $streamerMode)}
                   </span>
                 {/if}
               </button>

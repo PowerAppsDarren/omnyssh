@@ -95,3 +95,14 @@ export function isPaletteChord(e: KeyboardEvent): boolean {
   if (e.repeat || e.altKey || e.isComposing) return false;
   return (e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K');
 }
+
+/** The dashboard metric-refresh hotkey (mirrors the TUI's `r`): a bare r/R with no
+ *  modifier, ignored while typing in an editable surface so it never eats a keystroke.
+ *  Terminal input is never disrupted because the dashboard — the only mounter of this
+ *  listener — unmounts whenever a session is active (tech-gui.md §2). */
+export function isRefreshHotkey(e: KeyboardEvent): boolean {
+  if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return false;
+  if (e.key !== 'r' && e.key !== 'R') return false;
+  const t = e.target as HTMLElement | null;
+  return !t?.isContentEditable && !/^(input|textarea|select)$/i.test(t?.tagName ?? '');
+}

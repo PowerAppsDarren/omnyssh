@@ -8,10 +8,17 @@
   import ThemeToggle from './ThemeToggle.svelte';
   import { Button, Icon, StatusDot, type IconName } from '$lib/theme';
   import { activeEntity } from '$lib/stores/activeEntity';
-  import { sessions, sessionLabel, sessionStatusDot, type SessionKind } from '$lib/stores/sessions';
+  import {
+    sessions,
+    sessionLabel,
+    sessionTitle,
+    sessionStatusDot,
+    type SessionKind
+  } from '$lib/stores/sessions';
   import { sidebarCollapsed } from '$lib/stores/ui';
   import { spawnSession, closeSession } from '$lib/stores/navigation';
   import { palette } from '$lib/stores/palette';
+  import { support } from '$lib/stores/support';
 
   // Action-first spawn (tech-gui.md §2): a spawner opens the host-picker, then creates
   // a session of its kind for the chosen host. A dismissed picker spawns nothing.
@@ -105,8 +112,8 @@
               <button
                 type="button"
                 class="flex min-w-0 flex-1 items-center gap-2.5 rounded text-left {focusRing}"
-                title={sessionLabel(s)}
-                aria-label={sessionLabel(s)}
+                title={sessionTitle(s)}
+                aria-label={sessionTitle(s)}
                 aria-current={active ? 'true' : undefined}
                 onclick={() => activeEntity.activateSession(s.id)}
               >
@@ -150,6 +157,12 @@
       <Icon name="command" />
     </Button>
     <ThemeToggle />
+    <!-- Support/about overlay: free + open-source note and the two ways to help.
+         Opens a modal, not a screen, so it holds no highlight and never becomes the
+         active entity (§2). Sits left of the gear, icon-only so it survives collapse. -->
+    <Button variant="icon" title="Support OmnySSH" onclick={() => support.open()}>
+      <Icon name="telegram" />
+    </Button>
     <!-- Settings is a selector-like screen; the gear holds the active highlight like
          Dashboard/Snippets do, and stays icon-only so it survives collapse (§5.1). -->
     <button

@@ -49,6 +49,16 @@ export function paletteItems(
   return [...sessionRows, ...hostRows];
 }
 
+/** A stable key for the current result set — its rows' identity and order, but not
+ *  volatile fields like a session's live status. The palette resets its highlight only
+ *  when this changes, so a background status flip (which mints fresh item objects with
+ *  the same ids) never snaps the selection back to the top mid-navigation. */
+export function paletteSignature(items: PaletteItem[]): string {
+  return items
+    .map((it) => (it.kind === 'session' ? `s:${it.session.id}` : `h:${it.host.name}`))
+    .join('\u0000');
+}
+
 /** Move the selection by `delta`, wrapping at both ends; an empty list stays at 0. */
 export function nextIndex(current: number, delta: number, length: number): number {
   if (length === 0) return 0;

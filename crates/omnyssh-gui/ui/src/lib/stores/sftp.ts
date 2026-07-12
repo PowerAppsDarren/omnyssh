@@ -136,8 +136,10 @@ export function applyOpDone(session: SftpSession, ok: boolean, error?: string): 
     ...session,
     pending: rest,
     refresh: mergeRefresh(session.refresh, front.refresh),
-    // A successful op clears any stale error so it does not linger in the UI forever.
-    error: ok ? undefined : (error ?? 'Operation failed'),
+    // A later op's success must NOT wipe an earlier op's failure in the same batch — that
+    // silently masks e.g. a non-empty-folder delete beside a deleted sibling. The error
+    // persists until the next batch clears it (`clearError`, called on enqueue).
+    error: ok ? session.error : (error ?? 'Operation failed'),
     transfer: wasTransfer ? undefined : session.transfer
   };
 }
@@ -196,9 +198,17 @@ function createSftp() {
     clearRefresh(id: number): void {
       mut(id, (s) => ({ ...s, refresh: undefined }));
     },
-    /** A soft error (e.g. a failed listing reported as `sftp-disconnected`, §4.3). */
+    /** Drop the surfaced op error — called when a new batch is enqueued, so a fresh
+     *  action starts clean while a finished batch's error still lingered until now. */
+    clearError(id: number): void {
+      mut(id, (s) => ({ ...s, error: undefined }));
+    },
+    /** A soft error (e.g. a failed listing reported as `sftp-disconnected`, §4.3). The
+     *  core emits it only for a remote `ListDir`, so clear just the remote pane's loading
+     *  (leaving it set strands it on "Loading…"); a legit in-flight local listing keeps
+     *  its own spinner. */
     sessionError(id: number, error: string): void {
-      mut(id, (s) => ({ ...s, error }));
+      mut(id, (s) => ({ ...s, error, remote: { ...s.remote, loading: false } }));
     },
     remove(id: number): void {
       update((m) => {
