@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
-import { sessions, sessionLabel, sessionStatusDot } from './sessions';
+import { sessions, sessionLabel, sessionTitle, sessionStatusDot } from './sessions';
 
 // The sessions list backs the sidebar rows and the terminal layer (tech-gui.md §2,
 // §3.1). Ids are monotonic (never reused) and each session carries the backend
@@ -45,9 +45,11 @@ describe('sessions store', () => {
     sessions.close(b.id);
   });
 
-  it('labels a session as host · kind and maps status to a server-state dot', () => {
+  it('shows the host name alone but keeps the type in the accessible title', () => {
     const s = sessions.spawn('terminal', 'web-1');
-    expect(sessionLabel(s)).toBe('web-1 · terminal');
+    // Visible label drops the type (the row icon carries it); the title retains it.
+    expect(sessionLabel(s)).toBe('web-1');
+    expect(sessionTitle(s)).toBe('web-1 · terminal');
     expect(sessionStatusDot.connected).toBe('ok');
     expect(sessionStatusDot.failed).toBe('crit');
     expect(sessionStatusDot.connecting).toBe('unknown');

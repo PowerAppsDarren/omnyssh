@@ -16,6 +16,7 @@
   import { terminalDidExit } from '$lib/ipc/router';
   import { lastError } from '$lib/stores/notifications';
   import { terminalOpen, terminalWrite, terminalResize, terminalClose } from '$lib/ipc/commands';
+  import { shouldFadeTop } from './terminalFade';
   import type { TerminalBytes } from '$lib/bindings';
 
   let { session, active }: { session: Session; active: boolean } = $props();
@@ -34,11 +35,14 @@
   let themeUnsub: (() => void) | undefined;
   let resizeObserver: ResizeObserver | undefined;
   let fitScheduled = false;
-  // The top-edge fade is on only while scrolled off the top of the buffer: the first
-  // line stays crisp at the top, but scrolled output dissolves into the top edge.
+  // The top-edge fade dissolves scrolled output into the top edge, but never the live
+  // prompt: after `clear`/Ctrl+L the cursor homes to the top, so the fade must lift
+  // there (see terminalFade). Recomputed after every write too, since those resets
+  // move the viewport without firing onScroll.
   let scrolled = $state(false);
   function syncScrolled(): void {
-    scrolled = !!term && term.buffer.active.viewportY > 0;
+    const buf = term?.buffer.active;
+    scrolled = !!buf && shouldFadeTop(buf.viewportY, buf.baseY, buf.cursorY);
   }
 
   /** Fit the terminal to its container and tell the backend, but only while visible —
@@ -97,7 +101,7 @@
           connected = true;
           sessions.setStatus(session.id, 'connected');
         }
-        term.write(new Uint8Array(msg as unknown as ArrayBuffer));
+        term.write(new Uint8Array(msg as unknown as ArrayBuffer), syncScrolled);
       };
 
       // Fit before opening so the remote PTY starts at the visible size.

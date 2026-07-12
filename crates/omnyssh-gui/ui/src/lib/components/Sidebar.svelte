@@ -8,7 +8,13 @@
   import ThemeToggle from './ThemeToggle.svelte';
   import { Button, Icon, StatusDot, type IconName } from '$lib/theme';
   import { activeEntity } from '$lib/stores/activeEntity';
-  import { sessions, sessionLabel, sessionStatusDot, type SessionKind } from '$lib/stores/sessions';
+  import {
+    sessions,
+    sessionLabel,
+    sessionTitle,
+    sessionStatusDot,
+    type SessionKind
+  } from '$lib/stores/sessions';
   import { sidebarCollapsed } from '$lib/stores/ui';
   import { spawnSession, closeSession } from '$lib/stores/navigation';
   import { palette } from '$lib/stores/palette';
@@ -105,8 +111,8 @@
               <button
                 type="button"
                 class="flex min-w-0 flex-1 items-center gap-2.5 rounded text-left {focusRing}"
-                title={sessionLabel(s)}
-                aria-label={sessionLabel(s)}
+                title={sessionTitle(s)}
+                aria-label={sessionTitle(s)}
                 aria-current={active ? 'true' : undefined}
                 onclick={() => activeEntity.activateSession(s.id)}
               >

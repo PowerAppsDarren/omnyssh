@@ -8,6 +8,7 @@
   import Modal from '$lib/components/Modal.svelte';
   import { hosts } from '$lib/stores/hosts';
   import { statuses } from '$lib/stores/statuses';
+  import { streamerMode, displayHostname } from '$lib/stores/streamer';
   import { hostStatusDot } from '$lib/stores/palette';
   import { declaredParams } from './snippetForm';
 
@@ -108,7 +109,7 @@
                 <StatusDot status={hostStatusDot($statuses.get(host.name))} />
                 <span class="min-w-0 flex-1 truncate font-medium">{host.name}</span>
                 <span class="shrink-0 truncate font-mono text-xs {checked ? '' : 'text-faint'}">
-                  {host.user}@{host.hostname}
+                  {host.user}@{displayHostname(host.hostname, $streamerMode)}
                 </span>
               </button>
             </li>
