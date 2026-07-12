@@ -4,7 +4,7 @@
 //! the core's inner handles. The shared engine channel feeds the bridge.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
@@ -85,6 +85,9 @@ pub struct GuiState {
     transfer_owner: Mutex<HashMap<TransferId, SessionId>>,
     /// Monotonic source for GUI-allocated transfer ids (§3.4).
     next_transfer_id: AtomicU64,
+    /// One-shot latch so the startup update check fires once, on the frontend's first
+    /// `reload_hosts` — i.e. only after its event bridge is listening (§3.4).
+    update_check_started: AtomicBool,
     /// Public id <-> inner handle mapping for all sessions.
     sessions: Mutex<SessionRegistry>,
     /// Shared engine channel the bridge drains; cloned to `PollManager`/`PtyManager`.
@@ -101,6 +104,7 @@ impl GuiState {
             sftp: Mutex::new(HashMap::new()),
             transfer_owner: Mutex::new(HashMap::new()),
             next_transfer_id: AtomicU64::new(0),
+            update_check_started: AtomicBool::new(false),
             sessions: Mutex::new(SessionRegistry::default()),
             engine_tx,
         }
@@ -156,6 +160,15 @@ impl GuiState {
         if let Some(poll) = self.poll.lock().expect("poll lock poisoned").as_ref() {
             poll.refresh_all();
         }
+    }
+
+    /// Claim the one-shot startup update check: `true` exactly once, on the first call.
+    /// Driven from `reload_hosts` so the check runs only after the frontend's event
+    /// bridge is listening, never dropping `update-available` on a listener race (§3.4).
+    pub fn claim_update_check(&self) -> bool {
+        self.update_check_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
     }
 
     /// Start (or restart) the pollers for the cached hosts. Must run inside the
@@ -486,6 +499,17 @@ mod tests {
         assert_eq!(state.terminal_exited(inner), Some(public));
         // Pruned — no leaked PtyManager.sessions entry.
         assert!(state.pty.lock().unwrap().parser_for(inner).is_none());
+    }
+
+    #[test]
+    fn update_check_is_claimed_exactly_once() {
+        // The startup update check must fire once (the first reload), never again — so a
+        // later `reload_hosts` (after a host edit) does not re-hit GitHub (§3.4).
+        let (engine_tx, _engine_rx) = mpsc::channel::<CoreEvent>(8);
+        let state = GuiState::new(engine_tx, PtyManager::new());
+        assert!(state.claim_update_check());
+        assert!(!state.claim_update_check());
+        assert!(!state.claim_update_check());
     }
 
     #[test]
