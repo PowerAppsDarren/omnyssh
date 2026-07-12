@@ -110,6 +110,8 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::new().build())
         // Desktop self-update (tech-gui.md §4.3); endpoints/signing land in Stage 5.
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Opens the support dialog's GitHub/Telegram links in the default browser.
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
