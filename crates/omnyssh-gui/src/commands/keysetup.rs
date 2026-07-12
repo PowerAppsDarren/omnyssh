@@ -6,7 +6,7 @@
 //! manual host in `hosts.toml`, the same completion write the TUI performs, so a
 //! `reload_hosts` afterwards refreshes `hasKey`/`passwordAuthDisabled` on the card.
 
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::mpsc;
 
 use omnyssh_core::config::{load_hosts, save_hosts};
@@ -21,21 +21,29 @@ use crate::state::GuiState;
 /// Start auto key-setup for `host_name` (tech-gui.md §4.2). Fire-and-forget: the flow
 /// runs on a background task and reports via `key-setup-*` events, mirroring the core's
 /// own model. Resolving the full host record (secrets included) stays backend-side
-/// (§3.4); an unknown host is the one synchronous error.
+/// (§3.4). One run at a time: an unknown host or a run already in flight is the
+/// synchronous error, so two runs never race a `hosts.toml` write.
 #[tauri::command]
 #[specta::specta]
-pub fn start_key_setup(state: State<'_, GuiState>, host_name: String) -> Result<(), CommandError> {
+pub fn start_key_setup(
+    app: AppHandle,
+    state: State<'_, GuiState>,
+    host_name: String,
+) -> Result<(), CommandError> {
     let host = state.host_by_name(&host_name).ok_or_else(|| CommandError {
         message: format!("unknown host '{host_name}'"),
     })?;
-    tauri::async_runtime::spawn(run_key_setup(host, state.engine_sender()));
+    state
+        .try_begin_key_setup(&host_name)
+        .map_err(|message| CommandError { message })?;
+    tauri::async_runtime::spawn(run_key_setup(app, host, state.engine_sender()));
     Ok(())
 }
 
 /// The background flow: forward each step as `KeySetupProgress`, connect with the
 /// password, run `setup_key_for_host`, then map the final state to exactly one terminal
 /// event (`KeySetupComplete` / `KeySetupRollback` / `KeySetupFailed`).
-async fn run_key_setup(host: Host, engine_tx: mpsc::Sender<CoreEvent>) {
+async fn run_key_setup(app: AppHandle, host: Host, engine_tx: mpsc::Sender<CoreEvent>) {
     // Drain the core's per-step channel onto the shared engine channel, tagging each
     // step with the host name (the core's `Sender<KeySetupStep>` carries no host).
     let (progress_tx, mut progress_rx) = mpsc::channel::<KeySetupStep>(8);
@@ -58,6 +66,7 @@ async fn run_key_setup(host: Host, engine_tx: mpsc::Sender<CoreEvent>) {
                     format!("Connection failed: {e}"),
                 ))
                 .await;
+            app.state::<GuiState>().end_key_setup();
             return;
         }
     };
@@ -118,6 +127,9 @@ async fn run_key_setup(host: Host, engine_tx: mpsc::Sender<CoreEvent>) {
                 .await;
         }
     }
+    // Release the single key-setup slot on every terminal outcome, so the host can be
+    // retried once this run ends (§4.2).
+    app.state::<GuiState>().end_key_setup();
 }
 
 /// Write the generated key onto the manual host in `hosts.toml`, mirroring the TUI's

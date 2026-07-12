@@ -88,6 +88,10 @@ pub struct GuiState {
     /// One-shot latch so the startup update check fires once, on the frontend's first
     /// `reload_hosts` — i.e. only after its event bridge is listening (§3.4).
     update_check_started: AtomicBool,
+    /// The host with a key-setup in flight, if any. One run at a time, mirroring the
+    /// TUI's single-popup model — a second run would race a second `hosts.toml` write
+    /// and clobber the progress panel (§4.2).
+    key_setup: Mutex<Option<String>>,
     /// Public id <-> inner handle mapping for all sessions.
     sessions: Mutex<SessionRegistry>,
     /// Shared engine channel the bridge drains; cloned to `PollManager`/`PtyManager`.
@@ -105,6 +109,7 @@ impl GuiState {
             transfer_owner: Mutex::new(HashMap::new()),
             next_transfer_id: AtomicU64::new(0),
             update_check_started: AtomicBool::new(false),
+            key_setup: Mutex::new(None),
             sessions: Mutex::new(SessionRegistry::default()),
             engine_tx,
         }
@@ -160,6 +165,24 @@ impl GuiState {
         if let Some(poll) = self.poll.lock().expect("poll lock poisoned").as_ref() {
             poll.refresh_all();
         }
+    }
+
+    /// Reserve the single key-setup slot for `host`. `Ok` starts the run; `Err` names the
+    /// host already running one, so a concurrent start is rejected instead of racing a
+    /// second `hosts.toml` write and clobbering the progress panel (§4.2). Paired with
+    /// `end_key_setup`, called on every terminal outcome of the run.
+    pub fn try_begin_key_setup(&self, host: &str) -> Result<(), String> {
+        let mut slot = self.key_setup.lock().expect("key_setup lock poisoned");
+        if let Some(active) = slot.as_ref() {
+            return Err(format!("Key setup is already running for '{active}'"));
+        }
+        *slot = Some(host.to_string());
+        Ok(())
+    }
+
+    /// Release the key-setup slot when a run reaches any terminal outcome.
+    pub fn end_key_setup(&self) {
+        *self.key_setup.lock().expect("key_setup lock poisoned") = None;
     }
 
     /// Claim the one-shot startup update check: `true` exactly once, on the first call.
@@ -499,6 +522,26 @@ mod tests {
         assert_eq!(state.terminal_exited(inner), Some(public));
         // Pruned — no leaked PtyManager.sessions entry.
         assert!(state.pty.lock().unwrap().parser_for(inner).is_none());
+    }
+
+    #[test]
+    fn key_setup_runs_one_at_a_time() {
+        // A second start while one is in flight is rejected (no racing hosts.toml write /
+        // panel clobber); the slot frees on the terminal outcome so a retry succeeds (§4.2).
+        let (engine_tx, _engine_rx) = mpsc::channel::<CoreEvent>(8);
+        let state = GuiState::new(engine_tx, PtyManager::new());
+
+        assert!(state.try_begin_key_setup("web-1").is_ok());
+        let busy = state.try_begin_key_setup("web-2").unwrap_err();
+        assert!(
+            busy.contains("web-1"),
+            "rejection names the busy host: {busy}"
+        );
+        // The same host cannot double-start either.
+        assert!(state.try_begin_key_setup("web-1").is_err());
+
+        state.end_key_setup();
+        assert!(state.try_begin_key_setup("web-2").is_ok());
     }
 
     #[test]
