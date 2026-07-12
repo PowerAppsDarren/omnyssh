@@ -31,6 +31,15 @@ pub fn refresh_metrics(state: State<'_, GuiState>) -> Result<(), CommandError> {
 #[tauri::command]
 #[specta::specta]
 pub async fn reload_hosts(app: AppHandle, state: State<'_, GuiState>) -> Result<(), CommandError> {
+    // Kick the one-shot startup update check first: the frontend calls `reload_hosts` only
+    // after its event bridge is listening (so `update-available` isn't dropped, §3.4), and
+    // doing it before the fallible load means a malformed config can't also suppress the
+    // update banner for the session.
+    if state.claim_update_check() {
+        tauri::async_runtime::spawn(crate::commands::update::startup_update_check(
+            state.engine_sender(),
+        ));
+    }
     // Parsing hosts.toml + ~/.ssh/config is blocking I/O — keep it off the async
     // worker so in-flight commands and the event bridge don't stall.
     let hosts = tauri::async_runtime::spawn_blocking(omnyssh_core::config::load_all_hosts)
@@ -44,14 +53,6 @@ pub async fn reload_hosts(app: AppHandle, state: State<'_, GuiState>) -> Result<
     state.set_hosts(hosts);
     state.restart_pollers();
     let _ = events::HostsLoaded(state.host_dtos()).emit(&app);
-    // Kick the startup update check once, here rather than at `setup`: the frontend
-    // calls `reload_hosts` only after its event bridge is listening, so `update-available`
-    // can't be emitted before the webview can receive it (§3.4).
-    if state.claim_update_check() {
-        tauri::async_runtime::spawn(crate::commands::update::startup_update_check(
-            state.engine_sender(),
-        ));
-    }
     Ok(())
 }
 
