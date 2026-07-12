@@ -40,10 +40,24 @@ pub fn start_key_setup(
     Ok(())
 }
 
+/// Releases the single key-setup slot on drop, so it frees on every exit of the spawned
+/// task — a normal outcome or a panic in the core connect/setup path — and never wedges
+/// all future key-setups (§4.2).
+struct KeySetupSlot(AppHandle);
+
+impl Drop for KeySetupSlot {
+    fn drop(&mut self) {
+        self.0.state::<GuiState>().end_key_setup();
+    }
+}
+
 /// The background flow: forward each step as `KeySetupProgress`, connect with the
 /// password, run `setup_key_for_host`, then map the final state to exactly one terminal
 /// event (`KeySetupComplete` / `KeySetupRollback` / `KeySetupFailed`).
 async fn run_key_setup(app: AppHandle, host: Host, engine_tx: mpsc::Sender<CoreEvent>) {
+    // Frees the slot on any return path, including an unwind (see `KeySetupSlot`).
+    let _slot = KeySetupSlot(app);
+
     // Drain the core's per-step channel onto the shared engine channel, tagging each
     // step with the host name (the core's `Sender<KeySetupStep>` carries no host).
     let (progress_tx, mut progress_rx) = mpsc::channel::<KeySetupStep>(8);
@@ -66,7 +80,6 @@ async fn run_key_setup(app: AppHandle, host: Host, engine_tx: mpsc::Sender<CoreE
                     format!("Connection failed: {e}"),
                 ))
                 .await;
-            app.state::<GuiState>().end_key_setup();
             return;
         }
     };
@@ -127,9 +140,6 @@ async fn run_key_setup(app: AppHandle, host: Host, engine_tx: mpsc::Sender<CoreE
                 .await;
         }
     }
-    // Release the single key-setup slot on every terminal outcome, so the host can be
-    // retried once this run ends (§4.2).
-    app.state::<GuiState>().end_key_setup();
 }
 
 /// Write the generated key onto the manual host in `hosts.toml`, mirroring the TUI's
