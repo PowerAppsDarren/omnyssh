@@ -37,6 +37,9 @@ tauri-plugin-store = "2.4.3"
 # Stage 5; the plugin is wired here so `install_update` targets it, never the core's TUI
 # self-replace.
 tauri-plugin-updater = "2"
+# Opens external URLs (the GitHub repo + Telegram channel from the support dialog) in
+# the user's default browser; the webview itself must never navigate away from the app.
+tauri-plugin-opener = "2"
 # `generate_context!` embeds the `plugins.updater` config and expands to serde_json at
 # runtime; also asserts the wire form of DTOs in tests (e.g. HostDto never carries a password).
 serde_json = "1"
