@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
 import type { ConnectionStatusDto, HostDto } from '$lib/bindings';
 import type { Session } from './sessions';
-import { palette, paletteItems, nextIndex, hostStatusDot } from './palette';
+import { palette, paletteItems, paletteSignature, nextIndex, hostStatusDot } from './palette';
 
 function host(name: string, extra: Partial<HostDto> = {}): HostDto {
   return {
@@ -58,6 +58,35 @@ describe('paletteItems — filter & sections', () => {
 
   it('an empty query keeps everything', () => {
     expect(paletteItems('navigate', hosts, sessions, '   ')).toHaveLength(5);
+  });
+});
+
+describe('paletteSignature — stable across volatile updates', () => {
+  it('is identical when only a session status changes (no spurious highlight reset)', () => {
+    const connecting = paletteItems('navigate', [host('web-1')], [session(1, 'web-1')], '');
+    const connected = paletteItems(
+      'navigate',
+      [host('web-1')],
+      [{ ...session(1, 'web-1'), status: 'connected' }],
+      ''
+    );
+    expect(paletteSignature(connecting)).toBe(paletteSignature(connected));
+  });
+
+  it('changes when a row is added, removed, or reordered', () => {
+    const base = paletteItems('navigate', [host('web-1'), host('web-2')], [], '');
+    expect(paletteSignature(base)).not.toBe(
+      paletteSignature(paletteItems('navigate', [host('web-1')], [], ''))
+    );
+    expect(paletteSignature(base)).not.toBe(
+      paletteSignature(paletteItems('navigate', [host('web-2'), host('web-1')], [], ''))
+    );
+  });
+
+  it('changes when a session row appears', () => {
+    const withoutSession = paletteItems('navigate', [host('web-1')], [], '');
+    const withSession = paletteItems('navigate', [host('web-1')], [session(1, 'web-1')], '');
+    expect(paletteSignature(withoutSession)).not.toBe(paletteSignature(withSession));
   });
 });
 

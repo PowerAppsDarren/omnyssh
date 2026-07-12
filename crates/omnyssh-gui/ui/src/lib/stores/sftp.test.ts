@@ -107,13 +107,21 @@ describe('sftp reducers', () => {
     expect(next.pending).toEqual([]);
   });
 
-  it('applyOpDone clears a stale error on the next successful op', () => {
-    const s: SftpSession = {
+  it('applyOpDone keeps a prior op error on a later success (no mid-batch masking)', () => {
+    // A batch of [delete non-empty folder (fails), delete sibling (ok)] must not let the
+    // sibling's success hide the folder's failure — the error persists.
+    let s: SftpSession = {
       ...newSession('web-1'),
-      error: 'permission denied',
-      pending: [{ kind: 'mkdir', refresh: 'remote' }]
+      pending: [
+        { kind: 'delete', name: 'logs', refresh: 'remote' },
+        { kind: 'delete', name: 'notes.txt', refresh: 'remote' }
+      ]
     };
-    expect(applyOpDone(s, true).error).toBeUndefined();
+    s = applyOpDone(s, false, 'directory not empty');
+    expect(s.error).toBe('directory not empty');
+    s = applyOpDone(s, true);
+    expect(s.error).toBe('directory not empty');
+    expect(s.pending).toEqual([]);
   });
 
   it('correlates a two-file batch by FIFO order across progress + op-done', () => {
@@ -166,5 +174,28 @@ describe('sftp store', () => {
   it('ignores mutations targeting an unknown (closed) session', () => {
     sftp.listing(999, 'remote', '/gone', [entry('x')]);
     expect(get(sftp).has(999)).toBe(false);
+  });
+
+  it('clearError drops a lingering batch error when a new batch is enqueued', () => {
+    sftp.open(1, 'web-1');
+    sftp.pushOp(1, { kind: 'delete', name: 'logs', refresh: 'remote' });
+    sftp.opDone(1, false, 'directory not empty');
+    expect(get(sftp).get(1)?.error).toBe('directory not empty');
+    sftp.clearError(1);
+    expect(get(sftp).get(1)?.error).toBeUndefined();
+    sftp.remove(1);
+  });
+
+  it('sessionError clears the remote pane loading so a failed listing never sticks, but leaves a live local load', () => {
+    sftp.open(1, 'web-1');
+    sftp.beginLoading(1, 'remote');
+    sftp.beginLoading(1, 'local');
+    sftp.sessionError(1, 'ListDir failed: connection reset');
+    const s = get(sftp).get(1);
+    expect(s?.error).toBe('ListDir failed: connection reset');
+    expect(s?.remote.loading).toBe(false);
+    // A remote failure must not drop a legitimately in-flight local listing's spinner.
+    expect(s?.local.loading).toBe(true);
+    sftp.remove(1);
   });
 });

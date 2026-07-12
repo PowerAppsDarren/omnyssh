@@ -17,6 +17,7 @@
   import { lastError } from '$lib/stores/notifications';
   import { terminalOpen, terminalWrite, terminalResize, terminalClose } from '$lib/ipc/commands';
   import { shouldFadeTop } from './terminalFade';
+  import { chunkBytes } from './terminalInput';
   import type { TerminalBytes } from '$lib/bindings';
 
   let { session, active }: { session: Session; active: boolean } = $props();
@@ -24,6 +25,25 @@
   const MONO = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
   // One encoder for the keystroke hot path instead of one per input event.
   const ENCODER = new TextEncoder();
+
+  // A large paste arrives as one onData; sending it as a single number[] would freeze
+  // the UI thread (§9). Split into bounded chunks and await each so paint yields between
+  // them; a serialization chain keeps all input strictly in order across events.
+  let writeChain: Promise<void> = Promise.resolve();
+  function sendInput(bytes: Uint8Array): void {
+    if (termId == null || bytes.length === 0) return;
+    writeChain = writeChain.then(async () => {
+      for (const chunk of chunkBytes(bytes)) {
+        if (destroyed || termId == null) return;
+        try {
+          await terminalWrite(termId, Array.from(chunk));
+        } catch {
+          // Stop this input on a write failure rather than sending a gapped stream.
+          return;
+        }
+      }
+    });
+  }
 
   let container: HTMLDivElement;
   let term: Terminal | undefined;
@@ -122,17 +142,8 @@
 
       // Text keystrokes/paste are UTF-8; onBinary carries raw 8-bit sequences
       // (e.g. legacy mouse reporting) that must go byte-for-byte, not re-encoded.
-      term.onData((data) => {
-        if (termId != null) void terminalWrite(termId, Array.from(ENCODER.encode(data))).catch(() => {});
-      });
-      term.onBinary((data) => {
-        if (termId != null) {
-          void terminalWrite(
-            termId,
-            Array.from(data, (ch) => ch.charCodeAt(0) & 0xff)
-          ).catch(() => {});
-        }
-      });
+      term.onData((data) => sendInput(ENCODER.encode(data)));
+      term.onBinary((data) => sendInput(Uint8Array.from(data, (ch) => ch.charCodeAt(0) & 0xff)));
 
       resizeObserver = new ResizeObserver(() => scheduleFit());
       resizeObserver.observe(container);
