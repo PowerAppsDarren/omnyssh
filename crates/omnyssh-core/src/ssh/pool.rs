@@ -124,7 +124,6 @@ async fn run_host_poller(
             send_status(&tx, &host.name, ConnectionStatus::Connecting).await;
             match SshSession::connect(&host).await {
                 Ok(s) => {
-                    backoff.reset();
                     send_status(&tx, &host.name, ConnectionStatus::Connected).await;
                     session = Some(s);
                     discovery_done = false; // Reset discovery flag on new connection
@@ -134,7 +133,7 @@ async fn run_host_poller(
                     send_status(&tx, &host.name, ConnectionStatus::Failed(e.to_string())).await;
                     // Wait with backoff, allowing early refresh.
                     let delay = backoff.next_delay();
-                    wait_or_refresh(delay, &mut refresh_rx).await;
+                    wait_backoff(delay, &mut refresh_rx).await;
                     continue;
                 }
             }
@@ -180,6 +179,10 @@ async fn run_host_poller(
         let sess = session.as_ref().expect("session is Some here");
         match collect_metrics(sess, &host.name).await {
             Ok(metrics) => {
+                // A cycle that produced data proves the host is pollable. Resetting
+                // on connect instead pins a host that authenticates but cannot run
+                // commands (a network appliance) to the first backoff step forever.
+                backoff.reset();
                 if tx
                     .send(CoreEvent::MetricsUpdate(host.name.clone(), metrics))
                     .await
@@ -194,7 +197,7 @@ async fn run_host_poller(
                 session.take();
                 send_status(&tx, &host.name, ConnectionStatus::Failed(e.to_string())).await;
                 let delay = backoff.next_delay();
-                wait_or_refresh(delay, &mut refresh_rx).await;
+                wait_backoff(delay, &mut refresh_rx).await;
                 continue;
             }
         }
@@ -209,6 +212,25 @@ async fn wait_or_refresh(delay: Duration, refresh_rx: &mut mpsc::Receiver<()>) {
     tokio::select! {
         _ = tokio::time::sleep(delay) => {}
         _ = refresh_rx.recv() => {}
+    }
+}
+
+/// Sleep the whole `delay`, discarding refresh signals.
+///
+/// A reconnect must never dial faster than the backoff schedule: the GUI drives
+/// `refresh_all` on its own timer, which is indistinguishable from a keypress
+/// here and would otherwise retry a failing host every few seconds.
+async fn wait_backoff(delay: Duration, refresh_rx: &mut mpsc::Receiver<()>) {
+    let deadline = Instant::now() + delay;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(left) => return,
+            _ = refresh_rx.recv() => {}
+        }
     }
 }
 
@@ -396,6 +418,40 @@ async fn parse_ram_combined(mem_out: &str, session: &SshSession) -> Option<f64> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backoff_escalates_and_only_a_reset_returns_it_to_the_first_step() {
+        let mut backoff = BackoffState::new();
+        let steps: Vec<u64> = (0..5).map(|_| backoff.next_delay().as_secs()).collect();
+        assert_eq!(steps, vec![30, 60, 120, 300, 300]);
+
+        backoff.reset();
+        assert_eq!(backoff.next_delay().as_secs(), 30);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_backoff_ignores_refresh_signals() {
+        let (tx, mut rx) = mpsc::channel::<()>(4);
+        for _ in 0..4 {
+            tx.try_send(()).expect("channel has room");
+        }
+
+        let start = tokio::time::Instant::now();
+        wait_backoff(Duration::from_secs(300), &mut rx).await;
+
+        assert_eq!(start.elapsed(), Duration::from_secs(300));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_or_refresh_still_returns_early() {
+        let (tx, mut rx) = mpsc::channel::<()>(4);
+        tx.try_send(()).expect("channel has room");
+
+        let start = tokio::time::Instant::now();
+        wait_or_refresh(Duration::from_secs(300), &mut rx).await;
+
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn top_processes_command_excludes_monitor_pid_chain() {
