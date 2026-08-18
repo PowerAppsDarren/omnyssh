@@ -9,7 +9,7 @@ use omnyssh_core::config::snippets::{Snippet, SnippetScope};
 use omnyssh_core::event::{
     DetectedService, MetricValue, Metrics, ProcessInfo, ServiceKind, ServiceMetric,
 };
-use omnyssh_core::ssh::client::{ConnectionStatus, Host, HostSource};
+use omnyssh_core::ssh::client::{ConnectionStatus, Host, HostSource, MonitorMode};
 use omnyssh_core::ssh::key_setup::KeySetupStep;
 use omnyssh_core::ssh::sftp::FileEntry;
 use omnyssh_core::update::UpdateInfo;
@@ -285,6 +285,8 @@ impl From<HostInputDto> for Host {
             notes: non_empty(dto.notes),
             source: HostSource::Manual,
             original_ssh_host: None,
+            monitoring: MonitorMode::default(),
+            monitor_port: None,
             key_setup_date: None,
             password_auth_disabled: None,
         }

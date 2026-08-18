@@ -13,11 +13,13 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time;
 
 use crate::event::{CoreEvent, Metrics, ProcessInfo};
-use crate::ssh::client::{ConnectionStatus, Host};
+use crate::ssh::client::{ConnectionStatus, Host, MonitorMode};
 use crate::ssh::metrics::{
     parse_cpu_proc_stat, parse_cpu_top, parse_cpu_top_macos, parse_disk_df, parse_loadavg,
     parse_ram_free, parse_ram_vmstat, parse_top_processes, parse_uptime,
@@ -126,6 +128,97 @@ impl PollManager {
 // ---------------------------------------------------------------------------
 
 async fn run_host_poller(
+    host: Host,
+    tx: mpsc::Sender<CoreEvent>,
+    poll_interval: Duration,
+    refresh_rx: mpsc::Receiver<()>,
+) {
+    match host.monitoring {
+        MonitorMode::Ssh => run_ssh_poller(host, tx, poll_interval, refresh_rx).await,
+        MonitorMode::TcpPort => run_tcp_poller(host, tx, poll_interval, refresh_rx).await,
+    }
+}
+
+/// How long a reachability probe waits for the port to answer.
+const TCP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Reachability-only poller: one TCP connect per cycle, no SSH session and no
+/// authentication, so a device that cannot serve metrics is never logged in to.
+/// Emits status only — a host in this mode reports no metrics.
+async fn run_tcp_poller(
+    host: Host,
+    tx: mpsc::Sender<CoreEvent>,
+    poll_interval: Duration,
+    mut refresh_rx: mpsc::Receiver<()>,
+) {
+    // A bare TCP dial cannot traverse a bastion, and probing the target address
+    // direct would silently report on whatever else answers it.
+    if host.proxy_jump.is_some() {
+        send_status(
+            &tx,
+            &host.name,
+            ConnectionStatus::Failed(String::from(
+                "a port check cannot reach a host behind ProxyJump - use SSH monitoring",
+            )),
+        )
+        .await;
+        return;
+    }
+
+    let port = host.monitor_port.filter(|&p| p != 0).unwrap_or(host.port);
+    let addr = format!("{}:{}", host.hostname, port);
+    let mut backoff = BackoffState::new();
+    let mut last: Option<ConnectionStatus> = None;
+
+    loop {
+        if last.is_none()
+            && tx
+                .send(CoreEvent::HostStatusChanged(
+                    host.name.clone(),
+                    ConnectionStatus::Connecting,
+                ))
+                .await
+                .is_err()
+        {
+            return; // App has shut down.
+        }
+
+        let status = match time::timeout(TCP_PROBE_TIMEOUT, TcpStream::connect(&addr)).await {
+            Ok(Ok(_)) => ConnectionStatus::Connected,
+            Ok(Err(e)) => ConnectionStatus::Failed(e.to_string()),
+            Err(_) => ConnectionStatus::Failed(format!("no answer from {addr}")),
+        };
+        let reachable = matches!(status, ConnectionStatus::Connected);
+
+        // Only on a change: re-announcing every cycle flickers the card between
+        // reachable and checking and re-buckets the host in the status bar.
+        if last.as_ref() != Some(&status) {
+            if tx
+                .send(CoreEvent::HostStatusChanged(
+                    host.name.clone(),
+                    status.clone(),
+                ))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            last = Some(status);
+        }
+
+        if reachable {
+            backoff.reset();
+            wait_or_refresh(poll_interval, &mut refresh_rx).await;
+        } else {
+            // Same restraint as the SSH poller: a device that is down should not
+            // be re-dialled on every refresh tick.
+            let delay = backoff.next_delay().max(poll_interval);
+            wait_backoff(delay, &mut refresh_rx).await;
+        }
+    }
+}
+
+async fn run_ssh_poller(
     host: Host,
     tx: mpsc::Sender<CoreEvent>,
     poll_interval: Duration,

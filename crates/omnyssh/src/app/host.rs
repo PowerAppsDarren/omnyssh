@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use super::*;
-use omnyssh_core::ssh::client::HostSource;
+use omnyssh_core::ssh::client::{HostSource, MonitorMode};
 
 // ---------------------------------------------------------------------------
 // Host form (used in Add / Edit popups)
@@ -175,6 +175,8 @@ impl HostForm {
             notes,
             source,
             original_ssh_host: None,
+            monitoring: MonitorMode::default(),
+            monitor_port: None,
             key_setup_date: None,
             password_auth_disabled: None,
         })

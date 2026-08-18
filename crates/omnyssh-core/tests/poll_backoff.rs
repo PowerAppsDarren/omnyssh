@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
 use omnyssh_core::event::CoreEvent;
-use omnyssh_core::ssh::client::Host;
+use omnyssh_core::ssh::client::{ConnectionStatus, Host, MonitorMode};
 use omnyssh_core::ssh::pool::PollManager;
 
 /// Counts connections, answering none of them.
@@ -100,4 +100,113 @@ async fn an_unreachable_host_keeps_retrying_on_its_own_schedule() {
 
     // A host that stops answering is retried, not abandoned.
     assert!(retried, "the poller stopped retrying an unreachable host");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reachability_host_is_probed_without_an_ssh_session() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("local addr").port();
+    tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+
+    let host = Host {
+        monitoring: MonitorMode::TcpPort,
+        // The probe port wins over the SSH port, which is deliberately dead here.
+        port: 1,
+        monitor_port: Some(port),
+        ..unreachable_host(port)
+    };
+    let (tx, mut rx) = mpsc::channel(64);
+    let manager = PollManager::start(vec![host], tx, Duration::from_secs(30));
+
+    // Bounded: the poller never closes the channel, so an unbounded wait would
+    // hang instead of failing when the expected status stops arriving.
+    let reachable = tokio::time::timeout(Duration::from_secs(60), async {
+        while let Some(event) = rx.recv().await {
+            if let CoreEvent::HostStatusChanged(_, ConnectionStatus::Connected) = event {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(
+        reachable,
+        Ok(true),
+        "the probe never reported the port as reachable"
+    );
+
+    // And over the cycles that follow, it reports status only — metrics would be
+    // invented. Elapsing without a metrics event is the pass.
+    let stray_metrics = tokio::time::timeout(Duration::from_secs(120), async {
+        while let Some(event) = rx.recv().await {
+            if matches!(event, CoreEvent::MetricsUpdate(..)) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    manager.shutdown();
+
+    assert_ne!(
+        stray_metrics,
+        Ok(true),
+        "a tcp-probed host must not report metrics"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reachability_host_reports_a_closed_port_as_failed() {
+    // Port 1 is closed and cannot be re-bound by anything else mid-test.
+    let port = 1;
+
+    let host = Host {
+        monitoring: MonitorMode::TcpPort,
+        ..unreachable_host(port)
+    };
+    let (tx, mut rx) = mpsc::channel(64);
+    let manager = PollManager::start(vec![host], tx, Duration::from_secs(30));
+
+    let failed = tokio::time::timeout(Duration::from_secs(60), async {
+        while let Some(event) = rx.recv().await {
+            if let CoreEvent::HostStatusChanged(_, ConnectionStatus::Failed(_)) = event {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    manager.shutdown();
+
+    assert_eq!(
+        failed,
+        Ok(true),
+        "a closed port was not reported as unreachable"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reachability_host_behind_a_bastion_says_so_instead_of_probing_direct() {
+    let host = Host {
+        monitoring: MonitorMode::TcpPort,
+        proxy_jump: Some(String::from("bastion")),
+        ..unreachable_host(22)
+    };
+    let (tx, mut rx) = mpsc::channel(64);
+    let manager = PollManager::start(vec![host], tx, Duration::from_secs(30));
+
+    let explained = tokio::time::timeout(Duration::from_secs(60), async {
+        while let Some(event) = rx.recv().await {
+            if let CoreEvent::HostStatusChanged(_, ConnectionStatus::Failed(message)) = event {
+                // Probing the target address direct would report on whatever
+                // else answers it, which is worse than saying nothing.
+                return message.contains("ProxyJump");
+            }
+        }
+        false
+    })
+    .await;
+    manager.shutdown();
+
+    assert_eq!(explained, Ok(true), "a bastion host was probed direct");
 }
