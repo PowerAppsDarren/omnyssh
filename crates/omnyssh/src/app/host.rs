@@ -20,7 +20,32 @@ pub const FORM_FIELD_LABELS: &[&str] = &[
     "Password (optional)",
     "Tags (comma-sep)",
     "Notes",
+    "Monitoring (ssh | tcp | tcp:PORT)",
 ];
+
+/// Renders a host's monitoring mode back into its form field.
+fn monitoring_value(host: &Host) -> String {
+    match (host.monitoring, host.monitor_port) {
+        (MonitorMode::Ssh, _) => String::new(),
+        (MonitorMode::TcpPort, Some(port)) => format!("tcp:{port}"),
+        (MonitorMode::TcpPort, None) => String::from("tcp"),
+    }
+}
+
+/// Parses the monitoring field: empty or `ssh` keeps the SSH poller, `tcp`
+/// probes the host's SSH port, `tcp:PORT` probes another one.
+fn parse_monitoring(value: &str) -> Result<(MonitorMode, Option<u16>), String> {
+    match value {
+        "" | "ssh" => Ok((MonitorMode::Ssh, None)),
+        "tcp" => Ok((MonitorMode::TcpPort, None)),
+        other => other
+            .strip_prefix("tcp:")
+            .and_then(|p| p.parse::<u16>().ok())
+            .filter(|&p| p != 0)
+            .map(|p| (MonitorMode::TcpPort, Some(p)))
+            .ok_or_else(|| format!("Monitoring must be 'ssh', 'tcp' or 'tcp:PORT', got '{other}'")),
+    }
+}
 
 /// A single editable text field in the host form.
 #[derive(Debug, Clone, Default)]
@@ -91,6 +116,7 @@ impl HostForm {
         form.fields[5] = FormField::with_value(host.password.as_deref().unwrap_or(""));
         form.fields[6] = FormField::with_value(host.tags.join(", "));
         form.fields[7] = FormField::with_value(host.notes.as_deref().unwrap_or(""));
+        form.fields[8] = FormField::with_value(monitoring_value(host));
         form
     }
 
@@ -163,6 +189,8 @@ impl HostForm {
             }
         };
 
+        let (monitoring, monitor_port) = parse_monitoring(self.fields[8].value.trim())?;
+
         Ok(Host {
             name,
             hostname,
@@ -175,8 +203,8 @@ impl HostForm {
             notes,
             source,
             original_ssh_host: None,
-            monitoring: MonitorMode::default(),
-            monitor_port: None,
+            monitoring,
+            monitor_port,
             key_setup_date: None,
             password_auth_disabled: None,
         })
@@ -492,6 +520,21 @@ impl App {
                     }
 
                     self.save_manual_hosts().await;
+
+                    // The edit can change the address, the port or the monitoring
+                    // mode, none of which a running poller picks up.
+                    {
+                        let state = self.state.read().await;
+                        if let Some(old) = self.poll_manager.take() {
+                            old.shutdown();
+                        }
+                        self.poll_manager = Some(PollManager::start(
+                            state.hosts.clone(),
+                            self.core_tx.clone(),
+                            Duration::from_secs(30),
+                        ));
+                    }
+
                     let state = self.state.read().await;
                     self.view.host_list.rebuild_filter(
                         &state.hosts,
@@ -546,15 +589,46 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
-    /// Builds a host form from the 8 field values, in `FORM_FIELD_LABELS` order.
+    /// Builds a host form from the field values, in `FORM_FIELD_LABELS` order.
     fn host_form(values: [&str; 8]) -> HostForm {
         let mut form = HostForm::empty();
         for (i, v) in values.iter().enumerate() {
             form.fields[i] = FormField::with_value(*v);
         }
         form
+    }
+
+    #[test]
+    fn the_monitoring_field_round_trips_through_the_form() {
+        for (text, mode, port) in [
+            ("", MonitorMode::Ssh, None),
+            ("ssh", MonitorMode::Ssh, None),
+            ("tcp", MonitorMode::TcpPort, None),
+            ("tcp:8443", MonitorMode::TcpPort, Some(8443)),
+        ] {
+            let parsed = parse_monitoring(text).expect("valid monitoring value");
+            assert_eq!(parsed, (mode, port), "parsing '{text}'");
+
+            let host = Host {
+                monitoring: mode,
+                monitor_port: port,
+                ..Host::default()
+            };
+            assert_eq!(parse_monitoring(&monitoring_value(&host)), Ok((mode, port)));
+        }
+    }
+
+    #[test]
+    fn an_unusable_monitoring_value_is_rejected() {
+        for text in ["tcp:0", "tcp:99999", "http", "tcp:"] {
+            assert!(
+                parse_monitoring(text).is_err(),
+                "'{text}' should be rejected"
+            );
+        }
     }
 
     // --- HostForm::to_host (P0.2) -----------------------------------------
