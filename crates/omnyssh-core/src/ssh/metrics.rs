@@ -379,7 +379,12 @@ pub fn parse_top_processes(output: &str) -> Option<Vec<ProcessInfo>> {
             continue;
         };
         // The first two columns must be numeric — this skips the header row.
-        let (Ok(cpu), Ok(mem)) = (cpu_str.parse::<f64>(), mem_str.parse::<f64>()) else {
+        // `ps` prints them in the server's locale, so a decimal comma is normalised
+        // here too; a non-numeric token still fails to parse.
+        let (Ok(cpu), Ok(mem)) = (
+            normalize_decimal_commas(cpu_str).parse::<f64>(),
+            normalize_decimal_commas(mem_str).parse::<f64>(),
+        ) else {
             continue;
         };
         let name = fields.collect::<Vec<&str>>().join(" ");

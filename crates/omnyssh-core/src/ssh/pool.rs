@@ -45,7 +45,7 @@ const UPTIME_CMD: &str = "env LC_ALL=C uptime 2>/dev/null";
 const CPU_MACOS_CMD: &str = "env LC_ALL=C top -l 1 -n 0 2>/dev/null | grep 'CPU usage'";
 // `ps` output reaches the user, so keep the host's LC_CTYPE: under a full
 // `LC_ALL=C` GNU ps replaces every non-ASCII byte of a process name with '?'.
-const PS_LOCALE: &str = "env LC_NUMERIC=C LC_MESSAGES=C";
+const PS_LOCALE: &str = "env LC_ALL= LC_NUMERIC=C LC_MESSAGES=C";
 
 struct BackoffState {
     step: usize,
@@ -498,16 +498,22 @@ mod tests {
 
         // Both `ps` invocations are pinned, so a comma-decimal host still parses.
         assert_eq!(cmd.matches(PS_LOCALE).count(), 2);
-        // LC_CTYPE stays with the host: process names reach the user verbatim.
-        assert!(!cmd.contains("LC_ALL"));
+        // LC_ALL is cleared rather than set: it outranks LC_NUMERIC, so leaving a
+        // host's own LC_ALL in place would defeat the pin. LC_CTYPE still falls
+        // through to the host, so process names reach the user verbatim.
+        assert!(cmd.contains("LC_ALL="));
+        assert!(!cmd.contains("LC_ALL=C"));
+        assert!(!cmd.contains("LC_CTYPE"));
     }
 
     #[test]
     fn top_processes_command_excludes_monitor_pid_chain() {
         let cmd = top_processes_command("-eo pid=,ppid=,pcpu=,pmem=,comm= --sort=-pcpu");
 
-        // The grandparent PID is resolved before the pipeline runs.
-        assert!(cmd.contains("ps -o ppid= -p $PPID"));
+        // The grandparent PID is resolved in a substitution that runs before
+        // the pipeline does.
+        assert!(cmd.starts_with("g=$("));
+        assert!(cmd.contains("ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')"));
         // The awk filter binds the shell, its parent sshd and the grandparent.
         assert!(cmd.contains("-v s=$$"));
         assert!(cmd.contains("-v p=$PPID"));
