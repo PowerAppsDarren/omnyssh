@@ -78,10 +78,18 @@ fn a_relative_include_ignores_the_process_working_directory() {
     )
     .expect("write decoy");
 
-    let previous = std::env::current_dir().expect("read working directory");
+    // Restore on the way out even if the parse panics: the working directory is
+    // process-global and the decoy is deleted when this test ends.
+    struct RestoreCwd(std::path::PathBuf);
+    impl Drop for RestoreCwd {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+    let guard = RestoreCwd(std::env::current_dir().expect("read working directory"));
     std::env::set_current_dir(decoy.path()).expect("enter decoy directory");
     let names = hosts_for(tmp.path(), "Include conf.d/*.conf");
-    std::env::set_current_dir(previous).expect("restore working directory");
+    drop(guard);
 
     assert_eq!(names, ["vps", "work-test", "work-stage", "local-direct"]);
 }
@@ -106,6 +114,20 @@ fn absolute_and_glob7_include_patterns_resolve() {
             "pattern did not match: {body}"
         );
     }
+}
+
+/// A home directory containing a glob metacharacter must not be treated as a
+/// pattern: the base is a real path, only the `Include` value is a pattern.
+#[test]
+fn a_base_directory_containing_glob_metacharacters_still_resolves() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let awkward = tmp.path().join("us[er]");
+    fs::create_dir_all(&awkward).expect("create awkward base");
+    write_fixture(&awkward);
+
+    let names = hosts_for(&awkward, "Include conf.d/*.conf");
+
+    assert_eq!(names, ["vps", "work-test", "work-stage", "local-direct"]);
 }
 
 #[test]

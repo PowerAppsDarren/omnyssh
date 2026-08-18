@@ -18,7 +18,7 @@ use crate::ssh::client::{Host, HostSource};
 /// configuration.
 pub fn parse_ssh_config(content: &str) -> Vec<Host> {
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    parse_content(content, &default_include_base(), 0, &mut visited)
+    parse_content(content, default_include_base().as_deref(), 0, &mut visited)
 }
 
 /// Loads and parses an SSH config file from disk.
@@ -31,15 +31,15 @@ pub fn load_from_file(path: &Path) -> anyhow::Result<Vec<Host>> {
     let base = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .map_or_else(default_include_base, Path::to_path_buf);
+        .map_or_else(default_include_base, |p| Some(p.to_path_buf()));
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    Ok(parse_content(&content, &base, 0, &mut visited))
+    Ok(parse_content(&content, base.as_deref(), 0, &mut visited))
 }
 
 /// `~/.ssh` — where `ssh_config(5)` resolves a relative `Include` in a user
 /// configuration. Never the process working directory.
-fn default_include_base() -> PathBuf {
-    dirs::home_dir().map(|h| h.join(".ssh")).unwrap_or_default()
+fn default_include_base() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".ssh"))
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ fn default_include_base() -> PathBuf {
 
 fn parse_content(
     content: &str,
-    base: &Path,
+    base: Option<&Path>,
     depth: usize,
     visited: &mut HashSet<PathBuf>,
 ) -> Vec<Host> {
@@ -129,10 +129,13 @@ fn parse_content(
                     &mut hosts
                 };
                 for pattern in split_include_patterns(value) {
-                    let resolved = resolve_include(&pattern, base);
+                    let Some(resolved) = resolve_include(&pattern, base) else {
+                        tracing::warn!(pattern, "relative Include with no home directory");
+                        continue;
+                    };
                     let matched = expand_include_glob(&resolved);
                     if matched.is_empty() {
-                        tracing::warn!(pattern = %resolved.display(), "Include matched no files");
+                        tracing::warn!(pattern = resolved, "Include matched no files");
                     }
                     for path in matched {
                         // Canonicalise to catch cycles (symlinks, etc.).
@@ -240,24 +243,26 @@ fn split_include_patterns(value: &str) -> Vec<String> {
 
 /// Anchors an `Include` pattern: absolute and `~/` patterns stand alone, a
 /// relative one resolves against `base` — never the process working directory.
-fn resolve_include(pattern: &str, base: &Path) -> PathBuf {
+///
+/// `None` when the pattern is relative and there is no base to anchor it to;
+/// dropping the include is the only honest option, since resolving it would
+/// silently read the process working directory.
+fn resolve_include(pattern: &str, base: Option<&Path>) -> Option<String> {
     let expanded = expand_tilde(pattern);
-    let path = PathBuf::from(&expanded);
-    if path.is_absolute() {
-        path
-    } else {
-        base.join(path)
+    if Path::new(&expanded).is_absolute() {
+        return Some(expanded);
     }
+    // The base is a real path, not a pattern: escape it so a home directory
+    // containing `[` or `*` cannot swallow the include.
+    let base = glob::Pattern::escape(base?.to_str()?);
+    Some(format!("{}/{}", base.trim_end_matches('/'), expanded))
 }
 
 /// Resolves an Include pattern to the files it matches, in a stable order.
 ///
 /// Full glob(7) syntax, as `ssh_config(5)` specifies. Directories that match
 /// are skipped.
-fn expand_include_glob(pattern: &Path) -> Vec<PathBuf> {
-    let Some(pattern) = pattern.to_str() else {
-        return Vec::new();
-    };
+fn expand_include_glob(pattern: &str) -> Vec<PathBuf> {
     match glob::glob(pattern) {
         // `glob` yields matches in sorted order, so the host list is stable.
         Ok(paths) => paths.flatten().filter(|p| p.is_file()).collect(),
