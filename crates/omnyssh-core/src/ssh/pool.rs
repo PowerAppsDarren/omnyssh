@@ -30,6 +30,23 @@ use crate::ssh::session::SshSession;
 
 const BACKOFF_SECS: [u64; 4] = [30, 60, 120, 300];
 
+// ---------------------------------------------------------------------------
+// Metric commands
+// ---------------------------------------------------------------------------
+
+// Metric output is machine-parsed, so the locale has to be pinned: a server set
+// to a comma-decimal language prints "99,1 id" and "Speicher:", which the parsers
+// read as garbage or not at all. `env` rather than a `VAR=value cmd` prefix, which
+// is not valid csh/tcsh syntax.
+const CPU_CMD: &str = "env LC_ALL=C top -bn1 2>/dev/null | head -5";
+const MEM_CMD: &str = "env LC_ALL=C free -b 2>/dev/null || env LC_ALL=C vm_stat 2>/dev/null";
+const DISK_CMD: &str = "env LC_ALL=C df -k / 2>/dev/null";
+const UPTIME_CMD: &str = "env LC_ALL=C uptime 2>/dev/null";
+const CPU_MACOS_CMD: &str = "env LC_ALL=C top -l 1 -n 0 2>/dev/null | grep 'CPU usage'";
+// `ps` output reaches the user, so keep the host's LC_CTYPE: under a full
+// `LC_ALL=C` GNU ps replaces every non-ASCII byte of a process name with '?'.
+const PS_LOCALE: &str = "env LC_NUMERIC=C LC_MESSAGES=C";
+
 struct BackoffState {
     step: usize,
 }
@@ -255,10 +272,10 @@ async fn send_status(tx: &mpsc::Sender<CoreEvent>, name: &str, status: Connectio
 async fn collect_metrics(session: &SshSession, host_name: &str) -> anyhow::Result<Metrics> {
     // Run all commands concurrently for speed.
     let (cpu_out, mem_out, disk_out, uptime_out, loadavg_out) = tokio::join!(
-        session.run_command("top -bn1 2>/dev/null | head -5"),
-        session.run_command("free -b 2>/dev/null || vm_stat 2>/dev/null"),
-        session.run_command("df -k / 2>/dev/null"),
-        session.run_command("uptime 2>/dev/null"),
+        session.run_command(CPU_CMD),
+        session.run_command(MEM_CMD),
+        session.run_command(DISK_CMD),
+        session.run_command(UPTIME_CMD),
         session.run_command("cat /proc/loadavg 2>/dev/null"),
     );
 
@@ -369,8 +386,8 @@ async fn collect_top_processes(session: &SshSession) -> Option<Vec<ProcessInfo>>
 /// "process data unavailable".
 fn top_processes_command(ps_args: &str) -> String {
     format!(
-        "g=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' '); \
-         ps {ps_args} 2>/dev/null | \
+        "g=$({PS_LOCALE} ps -o ppid= -p $PPID 2>/dev/null | tr -d ' '); \
+         {PS_LOCALE} ps {ps_args} 2>/dev/null | \
          awk -v s=$$ -v p=$PPID -v g=\"$g\" \
          '$1!=s && $1!=p && $1!=g && $2!=s && $2!=p \
          {{$1=\"\";$2=\"\";sub(/^[ \\t]+/,\"\");print}}' | \
@@ -384,10 +401,7 @@ async fn parse_cpu_combined(top_out: &str, session: &SshSession) -> Option<f64> 
         return Some(v);
     }
     // Try macOS top format.
-    let macos_out = session
-        .run_command("top -l 1 -n 0 2>/dev/null | grep 'CPU usage'")
-        .await
-        .unwrap_or_default();
+    let macos_out = session.run_command(CPU_MACOS_CMD).await.unwrap_or_default();
     if let Some(v) = parse_cpu_top_macos(&macos_out) {
         return Some(v);
     }
@@ -454,11 +468,30 @@ mod tests {
     }
 
     #[test]
+    fn metric_commands_pin_the_locale() {
+        for cmd in [CPU_CMD, MEM_CMD, DISK_CMD, UPTIME_CMD, CPU_MACOS_CMD] {
+            assert!(cmd.starts_with("env LC_ALL=C "), "unpinned command: {cmd}");
+        }
+        // The `||` fallback needs the prefix on both sides.
+        assert_eq!(MEM_CMD.matches("env LC_ALL=C ").count(), 2);
+    }
+
+    #[test]
+    fn top_processes_command_pins_numbers_but_keeps_the_host_ctype() {
+        let cmd = top_processes_command("-eo pcpu=");
+
+        // Both `ps` invocations are pinned, so a comma-decimal host still parses.
+        assert_eq!(cmd.matches(PS_LOCALE).count(), 2);
+        // LC_CTYPE stays with the host: process names reach the user verbatim.
+        assert!(!cmd.contains("LC_ALL"));
+    }
+
+    #[test]
     fn top_processes_command_excludes_monitor_pid_chain() {
         let cmd = top_processes_command("-eo pid=,ppid=,pcpu=,pmem=,comm= --sort=-pcpu");
 
         // The grandparent PID is resolved before the pipeline runs.
-        assert!(cmd.contains("g=$(ps -o ppid= -p $PPID"));
+        assert!(cmd.contains("ps -o ppid= -p $PPID"));
         // The awk filter binds the shell, its parent sshd and the grandparent.
         assert!(cmd.contains("-v s=$$"));
         assert!(cmd.contains("-v p=$PPID"));

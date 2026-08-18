@@ -87,7 +87,33 @@ fn parse_cpu_busybox(line: &str) -> Option<f64> {
     None
 }
 
+/// Rewrites a decimal comma as a decimal point.
+///
+/// The commands are run under a pinned locale, but that is best-effort: a host
+/// without `env`, or a wrapper that re-exports a locale, still reaches the
+/// parsers with `99,1 id`. Only a comma between two digits is a radix point —
+/// every other comma separates fields and must survive.
+fn normalize_decimal_commas(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    chars
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let radix = c == ','
+                && i > 0
+                && chars[i - 1].is_ascii_digit()
+                && chars.get(i + 1).is_some_and(char::is_ascii_digit);
+            if radix {
+                '.'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 fn parse_cpu_linux_top_line(line: &str) -> Option<f64> {
+    let line = normalize_decimal_commas(line);
     // Strip leading label (everything up to and including the colon).
     let after_colon = line.split_once(':')?.1;
 
@@ -119,6 +145,7 @@ pub fn parse_cpu_top_macos(output: &str) -> Option<f64> {
     for line in output.lines() {
         let lower = line.trim().to_lowercase();
         if lower.starts_with("cpu usage:") {
+            let line = normalize_decimal_commas(line);
             // Find "idle" value
             for part in line.split(',') {
                 let part = part.trim();
