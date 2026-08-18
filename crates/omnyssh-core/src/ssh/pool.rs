@@ -226,9 +226,17 @@ async fn run_host_poller(
 
 /// Wait for `delay`, but return early if a refresh signal is received.
 async fn wait_or_refresh(delay: Duration, refresh_rx: &mut mpsc::Receiver<()>) {
+    let sleep = tokio::time::sleep(delay);
+    tokio::pin!(sleep);
     tokio::select! {
-        _ = tokio::time::sleep(delay) => {}
-        _ = refresh_rx.recv() => {}
+        () = &mut sleep => {}
+        signal = refresh_rx.recv() => {
+            // `None` means every sender is gone. Returning on it would make the
+            // caller's loop spin, so serve out the delay instead.
+            if signal.is_none() {
+                sleep.await;
+            }
+        }
     }
 }
 
@@ -468,6 +476,17 @@ mod tests {
 
         let start = tokio::time::Instant::now();
         wait_backoff(Duration::from_secs(300), &mut rx).await;
+
+        assert_eq!(start.elapsed(), Duration::from_secs(300));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_or_refresh_serves_out_its_delay_once_every_sender_is_gone() {
+        let (tx, mut rx) = mpsc::channel::<()>(4);
+        drop(tx);
+
+        let start = tokio::time::Instant::now();
+        wait_or_refresh(Duration::from_secs(300), &mut rx).await;
 
         assert_eq!(start.elapsed(), Duration::from_secs(300));
     }
