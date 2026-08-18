@@ -238,15 +238,20 @@ async fn wait_or_refresh(delay: Duration, refresh_rx: &mut mpsc::Receiver<()>) {
 /// `refresh_all` on its own timer, which is indistinguishable from a keypress
 /// here and would otherwise retry a failing host every few seconds.
 async fn wait_backoff(delay: Duration, refresh_rx: &mut mpsc::Receiver<()>) {
-    let deadline = Instant::now() + delay;
+    let sleep = tokio::time::sleep(delay);
+    tokio::pin!(sleep);
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return;
-        }
         tokio::select! {
-            _ = tokio::time::sleep(left) => return,
-            _ = refresh_rx.recv() => {}
+            () = &mut sleep => return,
+            signal = refresh_rx.recv() => {
+                // `None` means every sender is gone and `recv` will return it
+                // immediately from now on — stop selecting on it, or the task
+                // spins without ever yielding.
+                if signal.is_none() {
+                    sleep.await;
+                    return;
+                }
+            }
         }
     }
 }
@@ -449,6 +454,17 @@ mod tests {
         for _ in 0..4 {
             tx.try_send(()).expect("channel has room");
         }
+
+        let start = tokio::time::Instant::now();
+        wait_backoff(Duration::from_secs(300), &mut rx).await;
+
+        assert_eq!(start.elapsed(), Duration::from_secs(300));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_backoff_serves_out_its_delay_once_every_sender_is_gone() {
+        let (tx, mut rx) = mpsc::channel::<()>(4);
+        drop(tx);
 
         let start = tokio::time::Instant::now();
         wait_backoff(Duration::from_secs(300), &mut rx).await;
