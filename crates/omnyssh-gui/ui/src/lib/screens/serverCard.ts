@@ -30,12 +30,17 @@ export type MetricRow = { label: string; percent: number | null; status: Status 
 
 export type CardService = { kind: ServiceKindDto; name: string; detail: string };
 
+/** Reachability of a `tcpPort` host; `undefined` for an SSH-monitored one. */
+type Reachability = 'reachable' | 'unreachable' | 'checking';
+
 export interface ServerCard {
   host: HostDto;
   /** Header dot: connected health, `off` when failed, else neutral. */
   overall: Status;
   /** Down/unprobed with no live metrics — the card shows an offline state. */
   offline: boolean;
+  /** Set only for a reachability host, which has no metrics to show. */
+  reachability?: Reachability;
   metricRows: MetricRow[];
   uptime?: string;
   osInfo?: string;
@@ -92,6 +97,21 @@ export function deriveCard(
   m: MetricsDto | undefined,
   svc: HostServices | undefined
 ): ServerCard {
+  // A reachability host is probed by a TCP connect and never reports metrics, so
+  // the tiles would be a fiction — the card shows the probe result instead.
+  if (host.monitoring !== 'ssh') {
+    const kind = status?.kind;
+    return {
+      host,
+      overall: kind === 'connected' ? 'ok' : kind === 'failed' ? 'off' : 'unknown',
+      offline: kind === 'failed',
+      reachability: kind === 'connected' ? 'reachable' : kind === 'failed' ? 'unreachable' : 'checking',
+      metricRows: [],
+      topProcesses: [],
+      detectedServices: []
+    };
+  }
+
   const metricRows: MetricRow[] = [
     metricRow('CPU', m?.cpuPercent),
     metricRow('RAM', m?.ramPercent),

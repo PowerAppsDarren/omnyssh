@@ -281,8 +281,15 @@
             </div>
           </div>
 
-          <!-- Live metrics, or an offline state -->
-          {#if card.offline}
+          <!-- Reachability, live metrics, or an offline state -->
+          {#if card.reachability}
+            <div
+              class="rounded-lg bg-surface-inset px-3 py-3 text-center text-xs"
+              style="color: {statusToken(card.overall)};"
+            >
+              {card.reachability}{card.host.monitorPort ? ` · port ${card.host.monitorPort}` : ''}
+            </div>
+          {:else if card.offline}
             <div class="rounded-lg bg-surface-inset px-3 py-3 text-center text-xs text-faint">offline</div>
           {:else}
             <div class="space-y-2">

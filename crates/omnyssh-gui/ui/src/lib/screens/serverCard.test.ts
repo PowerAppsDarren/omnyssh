@@ -5,7 +5,11 @@ import type { HostServices } from '$lib/stores/services';
 import { deriveCard, metricStatus, QUICK_ACTIONS, filterHosts } from './serverCard';
 
 function host(name = 'web-1'): HostDto {
-  return { name, hostname: '10.0.0.1', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false };
+  return { name, hostname: '10.0.0.1', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false, monitoring: 'ssh' };
+}
+
+function tcpHost(name = 'fw-1'): HostDto {
+  return { ...host(name), monitoring: 'tcpPort', monitorPort: 8443 };
 }
 
 function metrics(partial: Partial<MetricsDto>): MetricsDto {
@@ -196,5 +200,39 @@ describe('quick actions', () => {
       expect(get(activeEntity)).toEqual({ kind: 'session', id: s.id });
     }
     expect(get(sessions).map((s) => s.kind)).toEqual(['terminal', 'sftp']);
+  });
+});
+
+describe('deriveCard — reachability hosts', () => {
+  it('shows the probe result instead of metric tiles', () => {
+    const card = deriveCard(tcpHost(), { kind: 'connected' }, undefined, undefined);
+    expect(card.reachability).toBe('reachable');
+    expect(card.metricRows).toEqual([]);
+    expect(card.overall).toBe('ok');
+    expect(card.offline).toBe(false);
+  });
+
+  it('reports a failed probe as unreachable and offline', () => {
+    const card = deriveCard(tcpHost(), { kind: 'failed', message: 'refused' }, undefined, undefined);
+    expect(card.reachability).toBe('unreachable');
+    expect(card.offline).toBe(true);
+    expect(card.overall).toBe('off');
+  });
+
+  it('is still checking before the first probe answers', () => {
+    expect(deriveCard(tcpHost(), { kind: 'connecting' }, undefined, undefined).reachability).toBe('checking');
+    expect(deriveCard(tcpHost(), undefined, undefined, undefined).reachability).toBe('checking');
+  });
+
+  it('never claims metrics an ssh host would have reported', () => {
+    const card = deriveCard(tcpHost(), { kind: 'connected' }, metrics({ cpuPercent: 90 }), undefined);
+    expect(card.metricRows).toEqual([]);
+    expect(card.uptime).toBeUndefined();
+  });
+
+  it('leaves an ssh host on the metric path', () => {
+    const card = deriveCard(host(), { kind: 'connected' }, metrics({ cpuPercent: 10 }), undefined);
+    expect(card.reachability).toBeUndefined();
+    expect(card.metricRows).toHaveLength(3);
   });
 });
