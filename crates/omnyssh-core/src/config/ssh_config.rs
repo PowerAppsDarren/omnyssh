@@ -13,10 +13,12 @@ use crate::ssh::client::{Host, HostSource};
 /// Parses the text of an SSH config file and returns all non-wildcard hosts.
 ///
 /// `Host *` entries are silently skipped.
-/// `Include` recursion is limited to 3 levels to prevent cycles.
+/// `Include` recursion is limited to 3 levels to prevent cycles; relative
+/// patterns resolve against `~/.ssh`, as `ssh_config(5)` specifies for a user
+/// configuration.
 pub fn parse_ssh_config(content: &str) -> Vec<Host> {
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    parse_content(content, 0, &mut visited)
+    parse_content(content, &default_include_base(), 0, &mut visited)
 }
 
 /// Loads and parses an SSH config file from disk.
@@ -26,20 +28,39 @@ pub fn parse_ssh_config(content: &str) -> Vec<Host> {
 pub fn load_from_file(path: &Path) -> anyhow::Result<Vec<Host>> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
-    Ok(parse_ssh_config(&content))
+    let base = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(default_include_base, Path::to_path_buf);
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    Ok(parse_content(&content, &base, 0, &mut visited))
+}
+
+/// `~/.ssh` — where `ssh_config(5)` resolves a relative `Include` in a user
+/// configuration. Never the process working directory.
+fn default_include_base() -> PathBuf {
+    dirs::home_dir().map(|h| h.join(".ssh")).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn parse_content(content: &str, depth: usize, visited: &mut HashSet<PathBuf>) -> Vec<Host> {
+fn parse_content(
+    content: &str,
+    base: &Path,
+    depth: usize,
+    visited: &mut HashSet<PathBuf>,
+) -> Vec<Host> {
     if depth > 3 {
         return Vec::new();
     }
 
     let mut hosts: Vec<Host> = Vec::new();
     let mut current: Option<Host> = None;
+    // Hosts pulled in by an Include that sat inside a Host block. Appended once
+    // the enclosing host is flushed, so the list keeps the config's own order.
+    let mut deferred: Vec<Host> = Vec::new();
     // True when we are inside a wildcard `Host *` block (skip directives).
     let mut in_wildcard = false;
 
@@ -59,6 +80,7 @@ fn parse_content(content: &str, depth: usize, visited: &mut HashSet<PathBuf>) ->
                 if let Some(h) = current.take() {
                     hosts.push(h);
                 }
+                hosts.append(&mut deferred);
                 in_wildcard = value.contains('*') || value.contains('?');
                 if !in_wildcard {
                     let h = Host {
@@ -98,30 +120,38 @@ fn parse_content(content: &str, depth: usize, visited: &mut HashSet<PathBuf>) ->
                     h.proxy_jump = Some(value.to_string());
                 }
             }
+            // An Include may sit inside a Host block; the enclosing host keeps
+            // collecting directives after it.
             "include" => {
-                // Flush the current host before processing Include.
-                if let Some(h) = current.take() {
-                    hosts.push(h);
-                }
-                in_wildcard = false;
-                let expanded = expand_tilde(value);
-                for path in expand_include_glob(&expanded) {
-                    // Canonicalise to catch cycles (symlinks, etc.).
-                    let canonical = path.canonicalize().unwrap_or_else(|e| {
-                        tracing::warn!(
-                            path = %path.display(),
-                            error = %e,
-                            "canonicalize failed; symlink-cycle detection disabled for this path"
-                        );
-                        path.clone()
-                    });
-                    if !visited.insert(canonical) {
-                        continue; // already visited — break cycle
+                let sink = if current.is_some() {
+                    &mut deferred
+                } else {
+                    &mut hosts
+                };
+                for pattern in split_include_patterns(value) {
+                    let resolved = resolve_include(&pattern, base);
+                    let matched = expand_include_glob(&resolved);
+                    if matched.is_empty() {
+                        tracing::warn!(pattern = %resolved.display(), "Include matched no files");
                     }
-                    match std::fs::read_to_string(&path) {
-                        Ok(sub) => hosts.extend(parse_content(&sub, depth + 1, visited)),
-                        Err(e) => {
-                            tracing::warn!(path = %path.display(), error = %e, "Include file unreadable")
+                    for path in matched {
+                        // Canonicalise to catch cycles (symlinks, etc.).
+                        let canonical = path.canonicalize().unwrap_or_else(|e| {
+                            tracing::warn!(
+                                path = %path.display(),
+                                error = %e,
+                                "canonicalize failed; symlink-cycle detection disabled for this path"
+                            );
+                            path.clone()
+                        });
+                        if !visited.insert(canonical) {
+                            continue; // already visited — break cycle
+                        }
+                        match std::fs::read_to_string(&path) {
+                            Ok(sub) => sink.extend(parse_content(&sub, base, depth + 1, visited)),
+                            Err(e) => {
+                                tracing::warn!(path = %path.display(), error = %e, "Include file unreadable")
+                            }
                         }
                     }
                 }
@@ -130,10 +160,11 @@ fn parse_content(content: &str, depth: usize, visited: &mut HashSet<PathBuf>) ->
         }
     }
 
-    // Flush the last pending host.
+    // Flush the last pending host, then anything its Include pulled in.
     if let Some(h) = current.take() {
         hosts.push(h);
     }
+    hosts.append(&mut deferred);
 
     // Fallback: if HostName was never set, use the alias as the address.
     for h in &mut hosts {
@@ -181,48 +212,59 @@ fn expand_tilde(s: &str) -> String {
     s.to_string()
 }
 
-/// Resolves an Include pattern to a list of file paths.
+/// Splits an `Include` value into its pathnames.
 ///
-/// Supports a single `*` wildcard in the file-name component only.
-/// The parent directory must exist; `*` in path segments other than the
-/// last one is not supported (matches OpenSSH behaviour).
-fn expand_include_glob(pattern: &str) -> Vec<PathBuf> {
-    let path = PathBuf::from(pattern);
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let file_name = match path.file_name().and_then(|f| f.to_str()) {
-        Some(n) => n.to_string(),
-        None => return Vec::new(),
-    };
+/// `ssh_config(5)` allows several pathnames on one line, and a path containing
+/// spaces may be double-quoted.
+fn split_include_patterns(value: &str) -> Vec<String> {
+    let mut patterns = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
 
-    if !file_name.contains('*') {
-        return if path.is_file() {
-            vec![path]
-        } else {
-            Vec::new()
-        };
-    }
-
-    // Simple single-`*` glob: match prefix and suffix.
-    let (prefix, suffix) = file_name.split_once('*').unwrap_or((&file_name, ""));
-    match std::fs::read_dir(&parent) {
-        Ok(entries) => {
-            let mut paths: Vec<PathBuf> = entries
-                .flatten()
-                .filter(|e| {
-                    let name = e.file_name();
-                    let name = name.to_string_lossy();
-                    name.starts_with(prefix) && name.ends_with(suffix)
-                })
-                .map(|e| e.path())
-                .filter(|p| p.is_file())
-                .collect();
-            paths.sort(); // deterministic order
-            paths
+    for c in value.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            c if c.is_whitespace() && !quoted => {
+                if !current.is_empty() {
+                    patterns.push(std::mem::take(&mut current));
+                }
+            }
+            c => current.push(c),
         }
-        Err(_) => Vec::new(),
+    }
+    if !current.is_empty() {
+        patterns.push(current);
+    }
+    patterns
+}
+
+/// Anchors an `Include` pattern: absolute and `~/` patterns stand alone, a
+/// relative one resolves against `base` — never the process working directory.
+fn resolve_include(pattern: &str, base: &Path) -> PathBuf {
+    let expanded = expand_tilde(pattern);
+    let path = PathBuf::from(&expanded);
+    if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    }
+}
+
+/// Resolves an Include pattern to the files it matches, in a stable order.
+///
+/// Full glob(7) syntax, as `ssh_config(5)` specifies. Directories that match
+/// are skipped.
+fn expand_include_glob(pattern: &Path) -> Vec<PathBuf> {
+    let Some(pattern) = pattern.to_str() else {
+        return Vec::new();
+    };
+    match glob::glob(pattern) {
+        // `glob` yields matches in sorted order, so the host list is stable.
+        Ok(paths) => paths.flatten().filter(|p| p.is_file()).collect(),
+        Err(e) => {
+            tracing::warn!(pattern, error = %e, "invalid Include pattern");
+            Vec::new()
+        }
     }
 }
 
