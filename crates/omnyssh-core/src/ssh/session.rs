@@ -309,7 +309,10 @@ pub(crate) async fn connect_budget(host: &Host) -> Duration {
 /// The shared russh client configuration (timeouts + keepalives).
 fn client_config() -> Arc<client::Config> {
     Arc::new(client::Config {
-        inactivity_timeout: Some(Duration::from_secs(30)),
+        // No inactivity timeout: russh skips resetting it on the iteration that
+        // sends a keepalive, so a peer that never answers `keepalive@openssh.com`
+        // (common in appliance SSH stacks) was torn down after 30 s even while
+        // its commands still ran. Liveness stays bounded by `keepalive_max`.
         keepalive_interval: Some(Duration::from_secs(15)),
         keepalive_max: 3,
         ..Default::default()

@@ -16,6 +16,28 @@ pub enum HostSource {
     Manual,
 }
 
+/// How a host is watched on the dashboard.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorMode {
+    /// A live SSH session with shell metrics — the default.
+    #[default]
+    Ssh,
+    /// A plain TCP connect, with no login. For devices that answer SSH but have
+    /// no POSIX shell to collect metrics from, such as network appliances.
+    // The wire and the TUI form spell this differently; accept both, because a
+    // rejected value fails the whole file and takes every manual host with it.
+    #[serde(alias = "tcp", alias = "tcpPort")]
+    TcpPort,
+}
+
+impl MonitorMode {
+    /// Lets the default stay out of `hosts.toml` entirely.
+    fn is_ssh(&self) -> bool {
+        matches!(self, Self::Ssh)
+    }
+}
+
 /// A single host entry used for SSH connections.
 ///
 /// Populated either from `~/.ssh/config` (via the parser) or from
@@ -54,6 +76,12 @@ pub struct Host {
     /// Used to prevent duplicate entries when a SSH-config host is renamed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub original_ssh_host: Option<String>,
+    /// How this host is watched.
+    #[serde(default, skip_serializing_if = "MonitorMode::is_ssh")]
+    pub monitoring: MonitorMode,
+    /// Port for the reachability probe. Falls back to `port` when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitor_port: Option<u16>,
 
     // -----------------------------------------------------------------------
     // Auto SSH Key Setup metadata
@@ -90,6 +118,8 @@ impl Default for Host {
             notes: None,
             source: HostSource::default(),
             original_ssh_host: None,
+            monitoring: MonitorMode::default(),
+            monitor_port: None,
             key_setup_date: None,
             password_auth_disabled: None,
         }
@@ -108,4 +138,55 @@ pub enum ConnectionStatus {
     Connected,
     /// The last connection attempt failed with the given message.
     Failed(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An existing `hosts.toml` predates the monitoring fields, and writing one
+    /// back must not add them — the file has to stay byte-identical for a host
+    /// nobody changed.
+    #[test]
+    fn the_monitoring_default_round_trips_without_touching_the_file() {
+        let host: Host = toml::from_str("name = \"web\"\nhostname = \"10.0.0.1\"\n")
+            .expect("a host without the monitoring fields still parses");
+        assert_eq!(host.monitoring, MonitorMode::Ssh);
+        assert_eq!(host.monitor_port, None);
+
+        let written = toml::to_string(&host).expect("serialize");
+        assert!(!written.contains("monitoring"), "{written}");
+        assert!(!written.contains("monitor_port"), "{written}");
+    }
+
+    /// The wire and the TUI form spell the mode differently, so a hand-edited
+    /// file is likely to carry either — and a rejected value fails the whole
+    /// file, taking every manual host with it.
+    #[test]
+    fn the_other_spellings_of_the_mode_are_accepted() {
+        for spelling in ["tcp_port", "tcp", "tcpPort"] {
+            let host: Host = toml::from_str(&format!(
+                "name = \"fw\"\nhostname = \"10.0.0.9\"\nmonitoring = \"{spelling}\"\n"
+            ))
+            .unwrap_or_else(|e| panic!("'{spelling}' should parse: {e}"));
+            assert_eq!(host.monitoring, MonitorMode::TcpPort);
+        }
+    }
+
+    #[test]
+    fn a_reachability_host_persists_its_mode_and_probe_port() {
+        let host = Host {
+            name: String::from("fw"),
+            hostname: String::from("10.0.0.9"),
+            monitoring: MonitorMode::TcpPort,
+            monitor_port: Some(8443),
+            ..Host::default()
+        };
+
+        let written = toml::to_string(&host).expect("serialize");
+        let read: Host = toml::from_str(&written).expect("deserialize");
+
+        assert_eq!(read.monitoring, MonitorMode::TcpPort);
+        assert_eq!(read.monitor_port, Some(8443));
+    }
 }

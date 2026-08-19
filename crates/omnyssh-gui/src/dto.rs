@@ -9,7 +9,7 @@ use omnyssh_core::config::snippets::{Snippet, SnippetScope};
 use omnyssh_core::event::{
     DetectedService, MetricValue, Metrics, ProcessInfo, ServiceKind, ServiceMetric,
 };
-use omnyssh_core::ssh::client::{ConnectionStatus, Host, HostSource};
+use omnyssh_core::ssh::client::{ConnectionStatus, Host, HostSource, MonitorMode};
 use omnyssh_core::ssh::key_setup::KeySetupStep;
 use omnyssh_core::ssh::sftp::FileEntry;
 use omnyssh_core::update::UpdateInfo;
@@ -20,6 +20,33 @@ use omnyssh_core::update::UpdateInfo;
 pub enum HostSourceDto {
     SshConfig,
     Manual,
+}
+
+/// How a host is watched, mirrors `omnyssh_core::ssh::client::MonitorMode`
+/// (tech-gui.md §4.1). `tcpPort` means reachability only — no login, no metrics.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MonitorModeDto {
+    Ssh,
+    TcpPort,
+}
+
+impl From<MonitorMode> for MonitorModeDto {
+    fn from(mode: MonitorMode) -> Self {
+        match mode {
+            MonitorMode::Ssh => Self::Ssh,
+            MonitorMode::TcpPort => Self::TcpPort,
+        }
+    }
+}
+
+impl From<MonitorModeDto> for MonitorMode {
+    fn from(mode: MonitorModeDto) -> Self {
+        match mode {
+            MonitorModeDto::Ssh => Self::Ssh,
+            MonitorModeDto::TcpPort => Self::TcpPort,
+        }
+    }
 }
 
 /// A host as the frontend sees it — password and private-key material omitted
@@ -39,6 +66,9 @@ pub struct HostDto {
     pub has_key: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_auth_disabled: Option<bool>,
+    pub monitoring: MonitorModeDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitor_port: Option<u16>,
 }
 
 /// Inbound host form payload for `save_host` (tech-gui.md §4.1, Stage 4.1). Builds a
@@ -64,6 +94,10 @@ pub struct HostInputDto {
     pub tags: Vec<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    #[serde(default)]
+    pub monitoring: Option<MonitorModeDto>,
+    #[serde(default)]
+    pub monitor_port: Option<u16>,
 }
 
 /// Live connection state for a host (tech-gui.md §4.1). Internally tagged so the
@@ -258,6 +292,8 @@ impl From<&Host> for HostDto {
             source: (&host.source).into(),
             has_key: host.identity_file.is_some(),
             password_auth_disabled: host.password_auth_disabled,
+            monitoring: host.monitoring.into(),
+            monitor_port: host.monitor_port,
         }
     }
 }
@@ -273,6 +309,7 @@ impl From<HostInputDto> for Host {
         // The frontend already trims; collapse an exact-empty string to `None` as a
         // last guard. Password is not trimmed — its bytes are preserved verbatim.
         let non_empty = |s: Option<String>| s.filter(|v| !v.is_empty());
+        let monitoring: MonitorMode = dto.monitoring.map(Into::into).unwrap_or_default();
         Host {
             name: dto.name,
             hostname: dto.hostname,
@@ -285,6 +322,12 @@ impl From<HostInputDto> for Host {
             notes: non_empty(dto.notes),
             source: HostSource::Manual,
             original_ssh_host: None,
+            monitoring,
+            // Port 0 is not dialable, and an SSH host has nothing to probe: drop
+            // both, so a later mode switch cannot inherit a stale target.
+            monitor_port: dto
+                .monitor_port
+                .filter(|&p| p != 0 && monitoring == MonitorMode::TcpPort),
             key_setup_date: None,
             password_auth_disabled: None,
         }
@@ -532,6 +575,8 @@ mod tests {
             proxy_jump: Some("bastion".to_string()),
             tags: vec!["prod".to_string()],
             notes: Some("primary".to_string()),
+            monitoring: None,
+            monitor_port: None,
         }
     }
 
@@ -583,6 +628,8 @@ mod tests {
             proxy_jump: Some(String::new()),
             tags: vec![],
             notes: Some(String::new()),
+            monitoring: None,
+            monitor_port: None,
         });
         assert!(host.identity_file.is_none());
         assert!(host.password.is_none());

@@ -13,11 +13,13 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time;
 
 use crate::event::{CoreEvent, Metrics, ProcessInfo};
-use crate::ssh::client::{ConnectionStatus, Host};
+use crate::ssh::client::{ConnectionStatus, Host, MonitorMode};
 use crate::ssh::metrics::{
     parse_cpu_proc_stat, parse_cpu_top, parse_cpu_top_macos, parse_disk_df, parse_loadavg,
     parse_ram_free, parse_ram_vmstat, parse_top_processes, parse_uptime,
@@ -29,6 +31,23 @@ use crate::ssh::session::SshSession;
 // ---------------------------------------------------------------------------
 
 const BACKOFF_SECS: [u64; 4] = [30, 60, 120, 300];
+
+// ---------------------------------------------------------------------------
+// Metric commands
+// ---------------------------------------------------------------------------
+
+// Metric output is machine-parsed, so the locale has to be pinned: a server set
+// to a comma-decimal language prints "99,1 id" and "Speicher:", which the parsers
+// read as garbage or not at all. `env` rather than a `VAR=value cmd` prefix, which
+// is not valid csh/tcsh syntax.
+const CPU_CMD: &str = "env LC_ALL=C top -bn1 2>/dev/null | head -5";
+const MEM_CMD: &str = "env LC_ALL=C free -b 2>/dev/null || env LC_ALL=C vm_stat 2>/dev/null";
+const DISK_CMD: &str = "env LC_ALL=C df -k / 2>/dev/null";
+const UPTIME_CMD: &str = "env LC_ALL=C uptime 2>/dev/null";
+const CPU_MACOS_CMD: &str = "env LC_ALL=C top -l 1 -n 0 2>/dev/null | grep 'CPU usage'";
+// `ps` output reaches the user, so keep the host's LC_CTYPE: under a full
+// `LC_ALL=C` GNU ps replaces every non-ASCII byte of a process name with '?'.
+const PS_LOCALE: &str = "env LC_ALL= LC_NUMERIC=C LC_MESSAGES=C";
 
 struct BackoffState {
     step: usize,
@@ -112,6 +131,97 @@ async fn run_host_poller(
     host: Host,
     tx: mpsc::Sender<CoreEvent>,
     poll_interval: Duration,
+    refresh_rx: mpsc::Receiver<()>,
+) {
+    match host.monitoring {
+        MonitorMode::Ssh => run_ssh_poller(host, tx, poll_interval, refresh_rx).await,
+        MonitorMode::TcpPort => run_tcp_poller(host, tx, poll_interval, refresh_rx).await,
+    }
+}
+
+/// How long a reachability probe waits for the port to answer.
+const TCP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Reachability-only poller: one TCP connect per cycle, no SSH session and no
+/// authentication, so a device that cannot serve metrics is never logged in to.
+/// Emits status only — a host in this mode reports no metrics.
+async fn run_tcp_poller(
+    host: Host,
+    tx: mpsc::Sender<CoreEvent>,
+    poll_interval: Duration,
+    mut refresh_rx: mpsc::Receiver<()>,
+) {
+    // A bare TCP dial cannot traverse a bastion, and probing the target address
+    // direct would silently report on whatever else answers it.
+    if host.proxy_jump.is_some() {
+        send_status(
+            &tx,
+            &host.name,
+            ConnectionStatus::Failed(String::from(
+                "a port check cannot reach a host behind ProxyJump - use SSH monitoring",
+            )),
+        )
+        .await;
+        return;
+    }
+
+    let port = host.monitor_port.filter(|&p| p != 0).unwrap_or(host.port);
+    let addr = format!("{}:{}", host.hostname, port);
+    let mut backoff = BackoffState::new();
+    let mut last: Option<ConnectionStatus> = None;
+
+    loop {
+        if last.is_none()
+            && tx
+                .send(CoreEvent::HostStatusChanged(
+                    host.name.clone(),
+                    ConnectionStatus::Connecting,
+                ))
+                .await
+                .is_err()
+        {
+            return; // App has shut down.
+        }
+
+        let status = match time::timeout(TCP_PROBE_TIMEOUT, TcpStream::connect(&addr)).await {
+            Ok(Ok(_)) => ConnectionStatus::Connected,
+            Ok(Err(e)) => ConnectionStatus::Failed(e.to_string()),
+            Err(_) => ConnectionStatus::Failed(format!("no answer from {addr}")),
+        };
+        let reachable = matches!(status, ConnectionStatus::Connected);
+
+        // Only on a change: re-announcing every cycle flickers the card between
+        // reachable and checking and re-buckets the host in the status bar.
+        if last.as_ref() != Some(&status) {
+            if tx
+                .send(CoreEvent::HostStatusChanged(
+                    host.name.clone(),
+                    status.clone(),
+                ))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            last = Some(status);
+        }
+
+        if reachable {
+            backoff.reset();
+            wait_or_refresh(poll_interval, &mut refresh_rx).await;
+        } else {
+            // Same restraint as the SSH poller: a device that is down should not
+            // be re-dialled on every refresh tick.
+            let delay = backoff.next_delay().max(poll_interval);
+            wait_backoff(delay, &mut refresh_rx).await;
+        }
+    }
+}
+
+async fn run_ssh_poller(
+    host: Host,
+    tx: mpsc::Sender<CoreEvent>,
+    poll_interval: Duration,
     mut refresh_rx: mpsc::Receiver<()>,
 ) {
     let mut backoff = BackoffState::new();
@@ -124,7 +234,6 @@ async fn run_host_poller(
             send_status(&tx, &host.name, ConnectionStatus::Connecting).await;
             match SshSession::connect(&host).await {
                 Ok(s) => {
-                    backoff.reset();
                     send_status(&tx, &host.name, ConnectionStatus::Connected).await;
                     session = Some(s);
                     discovery_done = false; // Reset discovery flag on new connection
@@ -134,7 +243,7 @@ async fn run_host_poller(
                     send_status(&tx, &host.name, ConnectionStatus::Failed(e.to_string())).await;
                     // Wait with backoff, allowing early refresh.
                     let delay = backoff.next_delay();
-                    wait_or_refresh(delay, &mut refresh_rx).await;
+                    wait_backoff(delay, &mut refresh_rx).await;
                     continue;
                 }
             }
@@ -180,6 +289,10 @@ async fn run_host_poller(
         let sess = session.as_ref().expect("session is Some here");
         match collect_metrics(sess, &host.name).await {
             Ok(metrics) => {
+                // A cycle that produced data proves the host is pollable. Resetting
+                // on connect instead pins a host that authenticates but cannot run
+                // commands (a network appliance) to the first backoff step forever.
+                backoff.reset();
                 if tx
                     .send(CoreEvent::MetricsUpdate(host.name.clone(), metrics))
                     .await
@@ -194,7 +307,7 @@ async fn run_host_poller(
                 session.take();
                 send_status(&tx, &host.name, ConnectionStatus::Failed(e.to_string())).await;
                 let delay = backoff.next_delay();
-                wait_or_refresh(delay, &mut refresh_rx).await;
+                wait_backoff(delay, &mut refresh_rx).await;
                 continue;
             }
         }
@@ -206,9 +319,41 @@ async fn run_host_poller(
 
 /// Wait for `delay`, but return early if a refresh signal is received.
 async fn wait_or_refresh(delay: Duration, refresh_rx: &mut mpsc::Receiver<()>) {
+    let sleep = tokio::time::sleep(delay);
+    tokio::pin!(sleep);
     tokio::select! {
-        _ = tokio::time::sleep(delay) => {}
-        _ = refresh_rx.recv() => {}
+        () = &mut sleep => {}
+        signal = refresh_rx.recv() => {
+            // `None` means every sender is gone. Returning on it would make the
+            // caller's loop spin, so serve out the delay instead.
+            if signal.is_none() {
+                sleep.await;
+            }
+        }
+    }
+}
+
+/// Sleep the whole `delay`, discarding refresh signals.
+///
+/// A reconnect must never dial faster than the backoff schedule: the GUI drives
+/// `refresh_all` on its own timer, which is indistinguishable from a keypress
+/// here and would otherwise retry a failing host every few seconds.
+async fn wait_backoff(delay: Duration, refresh_rx: &mut mpsc::Receiver<()>) {
+    let sleep = tokio::time::sleep(delay);
+    tokio::pin!(sleep);
+    loop {
+        tokio::select! {
+            () = &mut sleep => return,
+            signal = refresh_rx.recv() => {
+                // `None` means every sender is gone and `recv` will return it
+                // immediately from now on — stop selecting on it, or the task
+                // spins without ever yielding.
+                if signal.is_none() {
+                    sleep.await;
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -233,10 +378,10 @@ async fn send_status(tx: &mpsc::Sender<CoreEvent>, name: &str, status: Connectio
 async fn collect_metrics(session: &SshSession, host_name: &str) -> anyhow::Result<Metrics> {
     // Run all commands concurrently for speed.
     let (cpu_out, mem_out, disk_out, uptime_out, loadavg_out) = tokio::join!(
-        session.run_command("top -bn1 2>/dev/null | head -5"),
-        session.run_command("free -b 2>/dev/null || vm_stat 2>/dev/null"),
-        session.run_command("df -k / 2>/dev/null"),
-        session.run_command("uptime 2>/dev/null"),
+        session.run_command(CPU_CMD),
+        session.run_command(MEM_CMD),
+        session.run_command(DISK_CMD),
+        session.run_command(UPTIME_CMD),
         session.run_command("cat /proc/loadavg 2>/dev/null"),
     );
 
@@ -347,8 +492,8 @@ async fn collect_top_processes(session: &SshSession) -> Option<Vec<ProcessInfo>>
 /// "process data unavailable".
 fn top_processes_command(ps_args: &str) -> String {
     format!(
-        "g=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' '); \
-         ps {ps_args} 2>/dev/null | \
+        "g=$({PS_LOCALE} ps -o ppid= -p $PPID 2>/dev/null | tr -d ' '); \
+         {PS_LOCALE} ps {ps_args} 2>/dev/null | \
          awk -v s=$$ -v p=$PPID -v g=\"$g\" \
          '$1!=s && $1!=p && $1!=g && $2!=s && $2!=p \
          {{$1=\"\";$2=\"\";sub(/^[ \\t]+/,\"\");print}}' | \
@@ -362,10 +507,7 @@ async fn parse_cpu_combined(top_out: &str, session: &SshSession) -> Option<f64> 
         return Some(v);
     }
     // Try macOS top format.
-    let macos_out = session
-        .run_command("top -l 1 -n 0 2>/dev/null | grep 'CPU usage'")
-        .await
-        .unwrap_or_default();
+    let macos_out = session.run_command(CPU_MACOS_CMD).await.unwrap_or_default();
     if let Some(v) = parse_cpu_top_macos(&macos_out) {
         return Some(v);
     }
@@ -398,11 +540,92 @@ mod tests {
     use super::*;
 
     #[test]
+    fn backoff_escalates_and_only_a_reset_returns_it_to_the_first_step() {
+        let mut backoff = BackoffState::new();
+        let steps: Vec<u64> = (0..5).map(|_| backoff.next_delay().as_secs()).collect();
+        assert_eq!(steps, vec![30, 60, 120, 300, 300]);
+
+        backoff.reset();
+        assert_eq!(backoff.next_delay().as_secs(), 30);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_backoff_ignores_refresh_signals() {
+        let (tx, mut rx) = mpsc::channel::<()>(4);
+        for _ in 0..4 {
+            tx.try_send(()).expect("channel has room");
+        }
+
+        let start = tokio::time::Instant::now();
+        wait_backoff(Duration::from_secs(300), &mut rx).await;
+
+        assert_eq!(start.elapsed(), Duration::from_secs(300));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_backoff_serves_out_its_delay_once_every_sender_is_gone() {
+        let (tx, mut rx) = mpsc::channel::<()>(4);
+        drop(tx);
+
+        let start = tokio::time::Instant::now();
+        wait_backoff(Duration::from_secs(300), &mut rx).await;
+
+        assert_eq!(start.elapsed(), Duration::from_secs(300));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_or_refresh_serves_out_its_delay_once_every_sender_is_gone() {
+        let (tx, mut rx) = mpsc::channel::<()>(4);
+        drop(tx);
+
+        let start = tokio::time::Instant::now();
+        wait_or_refresh(Duration::from_secs(300), &mut rx).await;
+
+        assert_eq!(start.elapsed(), Duration::from_secs(300));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_or_refresh_still_returns_early() {
+        let (tx, mut rx) = mpsc::channel::<()>(4);
+        tx.try_send(()).expect("channel has room");
+
+        let start = tokio::time::Instant::now();
+        wait_or_refresh(Duration::from_secs(300), &mut rx).await;
+
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn metric_commands_pin_the_locale() {
+        for cmd in [CPU_CMD, MEM_CMD, DISK_CMD, UPTIME_CMD, CPU_MACOS_CMD] {
+            assert!(cmd.starts_with("env LC_ALL=C "), "unpinned command: {cmd}");
+        }
+        // The `||` fallback needs the prefix on both sides.
+        assert_eq!(MEM_CMD.matches("env LC_ALL=C ").count(), 2);
+    }
+
+    #[test]
+    fn top_processes_command_pins_numbers_but_keeps_the_host_ctype() {
+        let cmd = top_processes_command("-eo pcpu=");
+
+        // Both `ps` invocations are pinned, so a comma-decimal host still parses.
+        assert_eq!(cmd.matches(PS_LOCALE).count(), 2);
+        // LC_ALL is cleared rather than set: it outranks LC_NUMERIC, so leaving a
+        // host's own LC_ALL in place would defeat the pin. LC_CTYPE still falls
+        // through to the host, so process names reach the user verbatim.
+        assert!(cmd.contains("LC_ALL="));
+        assert!(!cmd.contains("LC_ALL=C"));
+        assert!(!cmd.contains("LC_CTYPE"));
+    }
+
+    #[test]
     fn top_processes_command_excludes_monitor_pid_chain() {
         let cmd = top_processes_command("-eo pid=,ppid=,pcpu=,pmem=,comm= --sort=-pcpu");
 
-        // The grandparent PID is resolved before the pipeline runs.
-        assert!(cmd.contains("g=$(ps -o ppid= -p $PPID"));
+        // The grandparent PID is resolved in a substitution that runs before
+        // the pipeline does.
+        assert!(cmd.starts_with("g=$("));
+        assert!(cmd.contains("ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')"));
         // The awk filter binds the shell, its parent sshd and the grandparent.
         assert!(cmd.contains("-v s=$$"));
         assert!(cmd.contains("-v p=$PPID"));

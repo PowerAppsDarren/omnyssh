@@ -14,7 +14,7 @@ use ratatui::{
 use crate::ui::theme::threshold_color;
 use crate::ui::theme::Theme;
 use omnyssh_core::event::{DetectedService, Metrics, ServiceKind};
-use omnyssh_core::ssh::client::ConnectionStatus;
+use omnyssh_core::ssh::client::{ConnectionStatus, MonitorMode};
 
 // ---------------------------------------------------------------------------
 // Card dimensions (kept in sync with dashboard.rs column calculation)
@@ -54,6 +54,25 @@ pub struct CardData<'a> {
     pub status: Option<&'a ConnectionStatus>,
     /// Detected services.
     pub services: Option<&'a [DetectedService]>,
+    /// How the host is watched. A reachability host has no metrics to show.
+    pub monitoring: MonitorMode,
+    /// Port the reachability probe dials, when it is not the host's own.
+    pub monitor_port: Option<u16>,
+}
+
+/// The reachability line shown in place of the metric rows. Naming the probed
+/// port matters: a green line for port 8443 says nothing about SSH on 22.
+fn reachability_line(status: Option<&ConnectionStatus>, port: Option<u16>) -> (String, Color) {
+    let (state, color) = match status {
+        Some(ConnectionStatus::Connected) => ("reachable", Color::Green),
+        Some(ConnectionStatus::Failed(_)) => ("unreachable", Color::Red),
+        _ => ("checking", Color::DarkGray),
+    };
+    let text = match port {
+        Some(p) => format!("─── {state} :{p} ───"),
+        None => format!("─── {state} ───"),
+    };
+    (text, color)
 }
 
 /// Render a single server card into `rect`.
@@ -162,7 +181,14 @@ pub fn render_card(
         Some(ConnectionStatus::Failed(_)) | Some(ConnectionStatus::Unknown) | None
     ) && metrics.is_none();
 
-    if is_offline {
+    if data.monitoring != MonitorMode::Ssh {
+        // Reachability host: no metrics exist, so the tiles would be a fiction.
+        let (text, color) = reachability_line(status, data.monitor_port);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color)))),
+            rows[1],
+        );
+    } else if is_offline {
         // Rows 1-2: offline message
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(

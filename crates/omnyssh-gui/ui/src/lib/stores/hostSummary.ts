@@ -39,7 +39,10 @@ export function deriveHostSummary(
   let offline = 0;
   for (const host of hostList) {
     if (statusMap.get(host.name)?.kind === 'connected') {
-      if (isBreaching(metricMap.get(host.name))) alert++;
+      // A reachability host never refreshes metrics; a sample left over from
+      // before the switch would pin it in `alert` until the app restarts.
+      const sample = host.monitoring === 'ssh' ? metricMap.get(host.name) : undefined;
+      if (isBreaching(sample)) alert++;
       else online++;
     } else {
       offline++;

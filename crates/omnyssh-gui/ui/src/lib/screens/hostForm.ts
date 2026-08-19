@@ -3,7 +3,7 @@
 // validation mirrors the TUI's `HostForm::to_host` (crates/omnyssh/src/app/host.rs)
 // so both frontends produce the same `hosts.toml` shape and error messages.
 
-import type { HostDto, HostInputDto } from '$lib/bindings';
+import type { HostDto, HostInputDto, MonitorModeDto } from '$lib/bindings';
 
 /** The editable form fields — all raw text (tags are comma-separated, port a string). */
 export interface HostFormFields {
@@ -15,12 +15,26 @@ export interface HostFormFields {
   password: string;
   tags: string;
   notes: string;
+  monitoring: MonitorModeDto;
+  /** Probe port; blank means "the host's SSH port". Only read for `tcpPort`. */
+  monitorPort: string;
 }
 
 export function emptyForm(): HostFormFields {
   // Port pre-seeded to the SSH default; user blank (placeholder shows `root`, the
   // default the validation applies when it is left empty).
-  return { name: '', hostname: '', user: '', port: '22', identityFile: '', password: '', tags: '', notes: '' };
+  return {
+    name: '',
+    hostname: '',
+    user: '',
+    port: '22',
+    identityFile: '',
+    password: '',
+    tags: '',
+    notes: '',
+    monitoring: 'ssh',
+    monitorPort: ''
+  };
 }
 
 /** Seed the edit form from a `HostDto`. `identityFile`/`password` are intentionally
@@ -35,7 +49,9 @@ export function formFromHost(h: HostDto): HostFormFields {
     identityFile: '',
     password: '',
     tags: h.tags.join(', '),
-    notes: h.notes ?? ''
+    notes: h.notes ?? '',
+    monitoring: h.monitoring,
+    monitorPort: h.monitorPort == null ? '' : String(h.monitorPort)
   };
 }
 
@@ -72,6 +88,19 @@ export function formToInput(f: HostFormFields): HostFormResult {
     port = Number(portRaw);
   }
 
+  // Only meaningful for a reachability host; an SSH host never carries a probe port.
+  let monitorPort: number | undefined;
+  const monitorPortRaw = f.monitorPort.trim();
+  if (f.monitoring === 'tcpPort' && monitorPortRaw !== '') {
+    if (!/^\+?\d+$/.test(monitorPortRaw) || Number(monitorPortRaw) < 1 || Number(monitorPortRaw) > 65535) {
+      return {
+        ok: false,
+        error: `Probe port must be a number between 1 and 65535, got '${monitorPortRaw}'`
+      };
+    }
+    monitorPort = Number(monitorPortRaw);
+  }
+
   const identityFile = f.identityFile.trim();
   const password = f.password.trim();
   const notes = f.notes.trim();
@@ -86,7 +115,9 @@ export function formToInput(f: HostFormFields): HostFormResult {
       identityFile: identityFile || undefined,
       password: password || undefined,
       tags,
-      notes: notes || undefined
+      notes: notes || undefined,
+      monitoring: f.monitoring,
+      monitorPort
     }
   };
 }

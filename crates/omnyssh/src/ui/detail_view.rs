@@ -16,7 +16,7 @@ use crate::app::{AppAction, AppState, SnippetPopup, ViewState};
 use crate::ui::theme::threshold_color;
 use crate::ui::theme::Theme;
 use omnyssh_core::event::{DetectedService, Metrics, ServiceKind};
-use omnyssh_core::ssh::client::ConnectionStatus;
+use omnyssh_core::ssh::client::{ConnectionStatus, MonitorMode};
 
 // ---------------------------------------------------------------------------
 // Render
@@ -111,7 +111,13 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewState)
     // Separator
     render_separator(frame, sections[2], inner.width, &view.theme);
 
-    // Metrics
+    // Metrics — a reachability host has none, and the last SSH sample it may still
+    // carry is not current.
+    let metrics = if host.monitoring == MonitorMode::Ssh {
+        metrics
+    } else {
+        None
+    };
     render_metrics_alerts(frame, sections[3], metrics, &view.theme);
 
     // Separator
@@ -215,6 +221,13 @@ fn render_metrics_column(frame: &mut Frame, area: Rect, metrics: Option<&Metrics
             .fg(theme.title)
             .add_modifier(Modifier::BOLD),
     ))];
+
+    if metrics.is_none() {
+        lines.push(Line::from(Span::styled(
+            " unavailable",
+            Style::default().fg(theme.text_secondary),
+        )));
+    }
 
     if let Some(m) = metrics {
         // CPU line with bar

@@ -34,6 +34,49 @@ fn cpu_alpine_busybox() {
     assert!((pct - 6.0).abs() < 0.2, "expected ~6.0, got {pct}");
 }
 
+// A server whose system language uses a comma decimal separator prints
+// "99,1 id"; splitting the line on ',' then read the tenths digit as the idle
+// value and reported 100 - that, i.e. ~91-100 % on an idle machine.
+#[test]
+fn cpu_comma_decimal_locale() {
+    let out = "%CPU(s):  0,0 us,  0,9 sy,  0,0 ni, 99,1 id,  0,0 wa,  0,0 hi,  0,0 si,  0,0 st";
+    let pct = parse_cpu_top(out).expect("parse comma-locale cpu");
+    assert!((pct - 0.9).abs() < 0.2, "expected ~0.9, got {pct}");
+}
+
+#[test]
+fn cpu_comma_decimal_reported_values() {
+    for (idle, expected) in [("99,9", 0.1), ("99,8", 0.2)] {
+        let out = format!("%Cpu(s):  0,1 us,  0,0 sy,  0,0 ni, {idle} id,  0,0 wa");
+        let pct = parse_cpu_top(&out).expect("parse comma-locale cpu");
+        assert!(
+            (pct - expected).abs() < 0.2,
+            "expected ~{expected}, got {pct}"
+        );
+    }
+}
+
+#[test]
+fn cpu_comma_decimal_fully_idle() {
+    let out = "%Cpu(s):  0,0 us,  0,0 sy,  0,0 ni,100,0 id,  0,0 wa,  0,0 hi,  0,0 si,  0,0 st";
+    let pct = parse_cpu_top(out).expect("parse comma-locale cpu");
+    assert!(pct.abs() < 0.2, "expected ~0.0, got {pct}");
+}
+
+#[test]
+fn cpu_comma_decimal_old_format() {
+    let out = "Cpu(s):  2,3%us,  0,7%sy,  0,0%ni, 96,7%id,  0,3%wa,  0,0%hi,  0,0%si,  0,0%st";
+    let pct = parse_cpu_top(out).expect("parse comma-locale centos7 cpu");
+    assert!((pct - 3.3).abs() < 0.2, "expected ~3.3, got {pct}");
+}
+
+#[test]
+fn cpu_macos_comma_decimal_locale() {
+    let out = "CPU usage: 3,17% user, 1,56% sys, 95,26% idle";
+    let pct = parse_cpu_top_macos(out).expect("parse comma-locale macos cpu");
+    assert!((pct - 4.74).abs() < 0.2, "expected ~4.74, got {pct}");
+}
+
 #[test]
 fn cpu_macos_top() {
     let out = "CPU usage: 3.17% user, 1.56% sys, 95.26% idle";
