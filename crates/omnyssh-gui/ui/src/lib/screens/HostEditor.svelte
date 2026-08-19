@@ -135,6 +135,30 @@
         <textarea bind:value={fields.notes} rows="2" class="{field} resize-y" placeholder="Optional"></textarea>
       </label>
 
+      <div class="grid grid-cols-2 gap-3">
+        <label class={label}>
+          <span>Monitoring</span>
+          <select bind:value={fields.monitoring} class={field}>
+            <option value="ssh">SSH metrics</option>
+            <option value="tcpPort">TCP port check</option>
+          </select>
+        </label>
+        {#if fields.monitoring === 'tcpPort'}
+          <label class={label}>
+            <span>Probe port</span>
+            <input
+              bind:value={fields.monitorPort}
+              inputmode="numeric"
+              class={field}
+              placeholder={fields.port || '22'}
+            />
+          </label>
+        {/if}
+      </div>
+      {#if fields.monitoring === 'tcpPort'}
+        <p class="text-xs text-faint">Checks the port only — no login, and no metrics on the card.</p>
+      {/if}
+
       {#if error}
         <p class="text-xs text-status-crit">{error}</p>
       {/if}

@@ -14,6 +14,7 @@ jobs:
   hygiene:
     name: Repo hygiene guard
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
@@ -27,6 +28,7 @@ jobs:
   build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -75,6 +77,7 @@ jobs:
   gui:
     name: GUI checks
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
@@ -108,7 +111,18 @@ jobs:
       # installs more, but those are the bundler's (icons, AppImage) and this job only
       # compiles.
       - name: Install GUI build dependencies
+        timeout-minutes: 6
         run: |
+          # The image's mirrorlist puts an Azure mirror first. When it black-holes
+          # connections apt still tries it for every index file before falling back,
+          # which cost one run 36 minutes and, even with retries capped, more than
+          # six. Point apt straight at the canonical archive: this installs two dev
+          # packages, so the mirror's proximity buys nothing worth that risk.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+          fi
+          printf 'Acquire::Retries "2";\nAcquire::http::Timeout "15";\nAcquire::https::Timeout "15";\n' \
+            | sudo tee /etc/apt/apt.conf.d/99-omnyssh-ci-timeouts > /dev/null
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
 
@@ -138,6 +152,7 @@ jobs:
   tui-build-independence:
     name: TUI builds without the GUI toolchain
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4

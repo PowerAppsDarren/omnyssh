@@ -3,7 +3,7 @@ import type { ConnectionStatusDto, HostDto, MetricsDto } from '$lib/bindings';
 import { deriveHostSummary } from './hostSummary';
 
 function host(name: string): HostDto {
-  return { name, hostname: '10.0.0.1', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false };
+  return { name, hostname: '10.0.0.1', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false, monitoring: 'ssh' };
 }
 
 function metrics(partial: Partial<MetricsDto>): MetricsDto {
@@ -116,5 +116,29 @@ describe('deriveHostSummary — partition invariant', () => {
       expect(s.alert).toBeGreaterThanOrEqual(0);
       expect(s.offline).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+describe('deriveHostSummary — reachability hosts', () => {
+  it('does not count a stale sample against a host that no longer reports metrics', () => {
+    const fw: HostDto = { ...host('fw'), monitoring: 'tcpPort' };
+    const summary = deriveHostSummary(
+      [fw],
+      new Map([['fw', { kind: 'connected' } as ConnectionStatusDto]]),
+      // Left over from before the host was switched to a port check.
+      new Map([['fw', metrics({ cpuPercent: 92 })]])
+    );
+
+    expect(summary).toEqual({ total: 1, online: 1, alert: 0, offline: 0 });
+  });
+
+  it('still counts a breaching ssh host as an alert', () => {
+    const summary = deriveHostSummary(
+      [host('web')],
+      new Map([['web', { kind: 'connected' } as ConnectionStatusDto]]),
+      new Map([['web', metrics({ cpuPercent: 92 })]])
+    );
+
+    expect(summary.alert).toBe(1);
   });
 });

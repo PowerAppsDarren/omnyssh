@@ -15,6 +15,7 @@ function host(partial: Partial<HostDto>): HostDto {
     tags: [],
     source: 'manual',
     hasKey: false,
+    monitoring: 'ssh',
     ...partial
   };
 }
@@ -124,7 +125,72 @@ describe('formFromHost', () => {
       identityFile: undefined,
       password: undefined,
       tags: ['ops'],
-      notes: 'x'
+      notes: 'x',
+      monitoring: 'ssh',
+      monitorPort: undefined
     });
+  });
+});
+
+describe('formToInput — monitoring mode', () => {
+  it('defaults to ssh and sends no probe port', () => {
+    const result = formToInput({ ...emptyForm(), name: 'web', hostname: '10.0.0.1' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.input.monitoring).toBe('ssh');
+      expect(result.input.monitorPort).toBeUndefined();
+    }
+  });
+
+  it('carries a probe port for a reachability host', () => {
+    const result = formToInput({
+      ...emptyForm(),
+      name: 'fw',
+      hostname: '10.0.0.9',
+      monitoring: 'tcpPort',
+      monitorPort: '8443'
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.input.monitoring).toBe('tcpPort');
+      expect(result.input.monitorPort).toBe(8443);
+    }
+  });
+
+  it('falls back to the host port when the probe port is blank', () => {
+    const result = formToInput({ ...emptyForm(), name: 'fw', hostname: '10.0.0.9', monitoring: 'tcpPort' });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.input.monitorPort).toBeUndefined();
+  });
+
+  it('rejects an out-of-range probe port', () => {
+    for (const monitorPort of ['0', '99999', 'ssh']) {
+      const result = formToInput({
+        ...emptyForm(),
+        name: 'fw',
+        hostname: '10.0.0.9',
+        monitoring: 'tcpPort',
+        monitorPort
+      });
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it('ignores a probe port left over from switching back to ssh', () => {
+    const result = formToInput({
+      ...emptyForm(),
+      name: 'web',
+      hostname: '10.0.0.1',
+      monitoring: 'ssh',
+      monitorPort: '8443'
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.input.monitorPort).toBeUndefined();
+  });
+
+  it('round-trips a reachability host through the edit form', () => {
+    const fields = formFromHost(host({ monitoring: 'tcpPort', monitorPort: 8443 }));
+    expect(fields.monitoring).toBe('tcpPort');
+    expect(fields.monitorPort).toBe('8443');
   });
 });

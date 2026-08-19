@@ -316,7 +316,15 @@ pub fn render_help(frame: &mut Frame, theme: &Theme) {
 /// `title` is either `"Add Host"` or `"Edit Host"`.
 pub fn render_host_form(frame: &mut Frame, form: &HostForm, title: &str, theme: &Theme) {
     // Taller popup to fit all fields.
-    let area = centred_rect(70, 80, frame.area());
+    // One row for each label and input, plus top padding, the hint and its spacer,
+    // and the border. Sizing to that rather than to a fixed share of the screen
+    // keeps the last field on screen when the terminal is short.
+    let frame_area = frame.area();
+    let needed = u32::from(FORM_FIELD_LABELS.len() as u16) * 2 + 5;
+    let percent = (needed * 100)
+        .div_ceil(u32::from(frame_area.height.max(1)))
+        .clamp(50, 100) as u16;
+    let area = centred_rect(70, percent, frame_area);
     frame.render_widget(Clear, area);
 
     let block = Block::default()

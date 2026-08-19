@@ -79,14 +79,22 @@ pub async fn delete_host(name: String) -> Result<(), CommandError> {
 /// Upsert `input` into the manual host list by name. A new name appends; an existing
 /// name is an in-place edit that **preserves every field the edit form cannot observe**
 /// — password, identity file, and proxy jump (the outbound `HostDto` omits all three,
-/// §3.4, so the form leaves them blank on edit), plus key-setup metadata and the
-/// SSH-config rename origin. Editing e.g. notes therefore never drops a stored secret
-/// or a recorded key setup. A provided secret still overwrites the old one.
+/// §3.4, so the form leaves them blank on edit), plus key-setup metadata, the
+/// SSH-config rename origin, and a monitoring mode the payload left out. Editing
+/// e.g. notes therefore never drops a stored secret or a recorded key setup. A
+/// provided secret still overwrites the old one.
 fn upsert(hosts: &mut Vec<Host>, input: HostInputDto) {
+    // An omitted monitoring mode means "unchanged", not "back to SSH" — losing it
+    // would silently start logging in to a device chosen for reachability only.
+    let monitoring_given = input.monitoring.is_some();
     let mut host = Host::from(input);
     match hosts.iter().position(|h| h.name == host.name) {
         Some(i) => {
             let existing = &hosts[i];
+            if !monitoring_given {
+                host.monitoring = existing.monitoring;
+                host.monitor_port = existing.monitor_port;
+            }
             host.password = host.password.or_else(|| existing.password.clone());
             host.identity_file = host
                 .identity_file
@@ -128,7 +136,8 @@ async fn persist(mutate: impl FnOnce(&mut Vec<Host>) + Send + 'static) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omnyssh_core::ssh::client::HostSource;
+    use crate::dto::MonitorModeDto;
+    use omnyssh_core::ssh::client::{HostSource, MonitorMode};
 
     fn input(name: &str) -> HostInputDto {
         HostInputDto {
@@ -141,6 +150,8 @@ mod tests {
             proxy_jump: None,
             tags: vec![],
             notes: None,
+            monitoring: None,
+            monitor_port: None,
         }
     }
 
@@ -194,6 +205,41 @@ mod tests {
         assert_eq!(h.key_setup_date.as_deref(), Some("2026-01-01"));
         assert_eq!(h.password_auth_disabled, Some(true));
         assert_eq!(h.original_ssh_host.as_deref(), Some("web-old"));
+    }
+
+    #[test]
+    fn upsert_keeps_a_monitoring_mode_the_payload_left_out() {
+        let mut hosts = vec![Host {
+            name: "fw".to_string(),
+            monitoring: MonitorMode::TcpPort,
+            monitor_port: Some(8443),
+            source: HostSource::Manual,
+            ..Host::default()
+        }];
+
+        upsert(&mut hosts, input("fw"));
+
+        // Silently reverting to SSH would start logging in to a device the user
+        // deliberately put on a reachability probe.
+        assert_eq!(hosts[0].monitoring, MonitorMode::TcpPort);
+        assert_eq!(hosts[0].monitor_port, Some(8443));
+    }
+
+    #[test]
+    fn upsert_applies_a_monitoring_mode_the_payload_carries() {
+        let mut hosts = vec![Host {
+            name: "fw".to_string(),
+            monitoring: MonitorMode::TcpPort,
+            monitor_port: Some(8443),
+            source: HostSource::Manual,
+            ..Host::default()
+        }];
+
+        let mut back_to_ssh = input("fw");
+        back_to_ssh.monitoring = Some(MonitorModeDto::Ssh);
+        upsert(&mut hosts, back_to_ssh);
+
+        assert_eq!(hosts[0].monitoring, MonitorMode::Ssh);
     }
 
     #[test]
