@@ -111,7 +111,9 @@
             >
               <button
                 type="button"
-                class="flex min-w-0 flex-1 items-center gap-2.5 rounded text-left {focusRing}"
+                class="flex min-w-0 items-center gap-2.5 rounded text-left {focusRing} {$sidebarCollapsed
+                  ? ''
+                  : 'flex-1'}"
                 title={sessionTitle(s)}
                 aria-label={sessionTitle(s)}
                 aria-current={active ? 'true' : undefined}

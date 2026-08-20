@@ -59,9 +59,15 @@
    app.html pre-paint script so there is no layout shift. */
 :root {
   --titlebar-h: 0px;
+  /* Collapsed sidebar width. The macOS traffic lights are anchored to the window, not
+     to the layout, and the cluster runs to x=69px — past a 3.5rem rail, whose right
+     border lands on the green button's left edge and leaves it over the content pane.
+     5rem holds the whole cluster; the other platforms have no lights to clear. */
+  --rail-w: 3.5rem;
 }
 :root[data-os='macos'] {
   --titlebar-h: 1.75rem;
+  --rail-w: 5rem;
 }
 
 html,

@@ -27,7 +27,7 @@
 
 <div
   class="relative grid h-screen grid-rows-[1fr_auto] overflow-hidden bg-bg text-fg transition-[grid-template-columns] duration-200 ease-out {$sidebarCollapsed
-    ? 'grid-cols-[3.5rem_1fr]'
+    ? 'grid-cols-[var(--rail-w)_1fr]'
     : 'grid-cols-[15rem_1fr]'}"
 >
   <!-- Draggable strip under the macOS overlay traffic lights; zero-height elsewhere
