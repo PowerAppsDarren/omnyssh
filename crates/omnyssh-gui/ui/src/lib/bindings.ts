@@ -30,11 +30,12 @@ async reloadHosts() : Promise<Result<null, CommandError>> {
 }
 },
 /**
- * Add or edit a **manual** host and persist to `hosts.toml` (tech-gui.md §4.2, Stage
- * 4.1). Upserts by name; SSH-config hosts are read-only imports and are never written
- * (this operates on the manual `hosts.toml` alone). The frontend calls `reload_hosts`
- * afterwards to refresh the merged cache + restart the pollers. Secrets stay
- * backend-side (§3.4): the payload's password/identity never left the backend.
+ * Add or edit a host and persist to `hosts.toml` (tech-gui.md §4.2, Stage 4.1).
+ * Upserts by name. Editing an SSH-config import adopts it: the saved copy is a manual
+ * entry that `merge_hosts` then prefers over the parsed one, so `~/.ssh/config` itself
+ * is still never written. The frontend calls `reload_hosts` afterwards to refresh the
+ * merged cache + restart the pollers. Secrets stay backend-side (§3.4): the payload's
+ * password/identity never left the backend.
  */
 async saveHost(input: HostInputDto) : Promise<Result<null, CommandError>> {
     try {
@@ -437,8 +438,9 @@ export type FilePreview = { sessionId: number; path: string; content: string }
  */
 export type HostDto = { name: string; hostname: string; user: string; port: number; tags: string[]; notes?: string | null; source: HostSourceDto; hasKey: boolean; passwordAuthDisabled?: boolean | null; monitoring: MonitorModeDto; monitorPort?: number | null }
 /**
- * Inbound host form payload for `save_host` (tech-gui.md §4.1, Stage 4.1). Builds a
- * **manual** `Host` — SSH-config hosts are read-only imports and are never saved.
+ * Inbound host form payload for `save_host` (tech-gui.md §4.1, Stage 4.1). Always
+ * builds a **manual** `Host`: editing an SSH-config import saves a copy that shadows
+ * it, and `~/.ssh/config` itself is never written.
  * `password`/`identityFile` arrive here (the create/edit form owns them) but never
  * travel back out: the outbound `HostDto` omits both (§3.4). Inbound only, so it
  * derives `Deserialize` (not `Serialize`).

@@ -32,7 +32,28 @@ export default {
     extend: {
       fontFamily: {
         sans: ['Helvetica Neue', 'Helvetica', 'Arial', 'sans-serif'],
-        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace']
+        // Same tail as the terminal's stack (screens/TerminalView.svelte), and for the
+        // same reason: the chrome's `font-mono` also renders raw remote output — snippet
+        // results and SFTP file previews, and any remote path or filename it lists. The
+        // patched families stay behind the generic `monospace` so they can never become
+        // the chrome's typeface.
+        mono: [
+          'ui-monospace',
+          'SFMono-Regular',
+          'Menlo',
+          'Monaco',
+          'Consolas',
+          'monospace',
+          'Symbols Nerd Font Mono',
+          'Symbols Nerd Font',
+          'MesloLGS NF',
+          'JetBrainsMono Nerd Font Mono',
+          'JetBrainsMono Nerd Font',
+          'Hack Nerd Font Mono',
+          'Hack Nerd Font',
+          'FiraCode Nerd Font Mono',
+          'FiraCode Nerd Font'
+        ]
       },
       // Border tokens live under borderColor only, so `border-default`/
       // `border-strong` work without polluting text-/bg-/ring- with a hairline

@@ -3,8 +3,9 @@
   // detected services. Colour is reserved for semantic state — the header dot and
   // the metric fills read from `statusToken`; everything else is ink-on-paper. The
   // per-card `sh`/`files` buttons are the host-first spawn path (§2). Host management
-  // (add/edit/delete of manual hosts, §4.1) lives here — there is no separate Hosts
-  // screen (§2) — with SSH-config hosts shown read-only.
+  // (add/edit/delete, §4.1) lives here — there is no separate Hosts screen (§2).
+  // Editing an SSH-config host adopts it into hosts.toml; the file itself is never
+  // written, so only Delete stays manual-only.
   import { get } from 'svelte/store';
   import type { HostDto, HostInputDto } from '$lib/bindings';
   import { Surface, Chip, StatusDot, Icon, Button, statusToken } from '$lib/theme';
@@ -204,7 +205,7 @@
                   {#if card.host.source === 'sshConfig'}
                     <span
                       class="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
-                      title="Imported from ~/.ssh/config — read-only"
+                      title="Imported from ~/.ssh/config — editing saves your own copy, which takes priority"
                     >
                       ssh config
                     </span>
@@ -247,6 +248,10 @@
                   {action.label}
                 </button>
               {/each}
+              <!-- Key setup stays manual-only even though edit no longer is: it records
+                   `key_setup_date`/`password_auth_disabled` through `save_hosts`, which
+                   keeps manual entries only — on an import that outcome would be dropped.
+                   Adopt the host first, then set up its key. -->
               {#if card.host.source === 'manual' && !card.host.hasKey}
                 <button
                   type="button"
@@ -258,16 +263,19 @@
                   <Icon name="key" size={14} />
                 </button>
               {/if}
+              <!-- Editing an import adopts it into hosts.toml (§4.2); ~/.ssh/config is
+                   never written, so the action is offered whatever the source. Delete
+                   stays manual-only: there is nothing of an import to remove here. -->
+              <button
+                type="button"
+                class={iconBtn}
+                title="Edit {card.host.name}"
+                aria-label="Edit {card.host.name}"
+                onclick={() => (dialog = { kind: 'edit', host: card.host })}
+              >
+                <Icon name="edit" size={14} />
+              </button>
               {#if card.host.source === 'manual'}
-                <button
-                  type="button"
-                  class={iconBtn}
-                  title="Edit {card.host.name}"
-                  aria-label="Edit {card.host.name}"
-                  onclick={() => (dialog = { kind: 'edit', host: card.host })}
-                >
-                  <Icon name="edit" size={14} />
-                </button>
                 <button
                   type="button"
                   class={iconBtn}
@@ -359,6 +367,7 @@
     mode="edit"
     initial={formFromHost(host)}
     previousName={host.name}
+    imported={host.source === 'sshConfig'}
     onSubmit={submit}
     onCancel={() => (dialog = null)}
   />
@@ -368,7 +377,8 @@
     <div class="space-y-3 px-5 py-4">
       <h2 class="text-sm font-semibold">Delete host</h2>
       <p class="text-sm text-muted">
-        Delete “{host.name}”? This removes it from <span class="font-mono">hosts.toml</span>.
+        Delete “{host.name}”? This removes it from <span class="font-mono">hosts.toml</span>. If
+        your SSH config defines the same name, it comes back as an import.
       </p>
       <div class="flex justify-end gap-2 pt-1">
         <Button variant="ghost" onclick={() => (dialog = null)}>Cancel</Button>

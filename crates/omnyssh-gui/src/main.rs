@@ -27,6 +27,7 @@ use omnyssh_core::ssh::pty::PtyManager;
 use state::GuiState;
 use tauri::webview::PageLoadEvent;
 use tauri::Manager;
+use tauri_plugin_window_state::StateFlags;
 use tauri_specta::{collect_commands, collect_events, Builder};
 
 // Absolute at build time, so the export target is independent of the run CWD.
@@ -56,6 +57,28 @@ const _: () = assert!(RENDER_HEAL_DEADLINE.as_secs() > REVEAL_FALLBACK.as_secs()
 /// Exporting it by hand disables the retry — the intended escape hatch.
 #[cfg(target_os = "linux")]
 const RETRY_MARKER: &str = "OMNYSSH_SOFTWARE_RENDER_RETRY";
+
+/// What the window-state plugin is allowed to restore. Geometry only: it applies every
+/// flag from `on_window_ready`, before the page exists, and only sizing and moving leave
+/// a hidden window hidden. `VISIBLE` shows it outright, undoing the reveal that keeps the
+/// blank webview off screen; `MAXIMIZED` reaches `ShowWindow(SW_MAXIMIZE)` on Windows,
+/// which carries no visibility guard of its own; `FULLSCREEN` touches the same hidden
+/// window; `DECORATIONS` re-derives the macOS style mask the overlay title bar needs.
+///
+/// Dropping `MAXIMIZED` costs a maximised window its position: the plugin records a move
+/// without checking for one, so the maximised origin becomes the saved position, and the
+/// pre-maximise origin it keeps alongside is read back only for a window it also restores
+/// maximised. Such a window reopens at its own size in the corner of the display.
+const WINDOW_STATE_FLAGS: StateFlags = StateFlags::SIZE.union(StateFlags::POSITION);
+
+// The reveal is the only path to a visible window — the app has no tray icon — so the
+// exclusions above are too load-bearing to live in prose alone.
+const _: () = assert!(!WINDOW_STATE_FLAGS.intersects(
+    StateFlags::VISIBLE
+        .union(StateFlags::MAXIMIZED)
+        .union(StateFlags::FULLSCREEN)
+        .union(StateFlags::DECORATIONS)
+));
 
 /// The single definition of the IPC surface. Shared by `main` (dev export +
 /// wiring) and the drift test so they can never disagree.
@@ -195,6 +218,13 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Opens the support dialog's GitHub/Telegram links in the default browser.
         .plugin(tauri_plugin_opener::init())
+        // Restores the window's size and position between launches; the flags keep it
+        // away from everything that would touch the window itself (WINDOW_STATE_FLAGS).
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(WINDOW_STATE_FLAGS)
+                .build(),
+        )
         .invoke_handler(builder.invoke_handler())
         // The window is created hidden (tauri.conf.json `visible: false`) so the
         // launch never shows the webview's blank base colour; reveal it once the

@@ -67,6 +67,20 @@ fn a_loaded_page_is_recorded_for_the_render_retry() {
     );
 }
 
+/// Window geometry is restored by a plugin whose default flag set includes `VISIBLE`,
+/// which it applies from `on_window_ready` — before the page exists. Fall back to those
+/// defaults and every launch shows the window over a blank webview again, undoing the
+/// reveal. `WINDOW_STATE_FLAGS` carries a compile-time guard of its own; this catches
+/// the other half, a call site that stops using it.
+#[test]
+fn window_state_restores_geometry_but_never_visibility() {
+    assert!(
+        MAIN_RS.contains(".with_state_flags(WINDOW_STATE_FLAGS)"),
+        "the window-state plugin no longer takes its flags from WINDOW_STATE_FLAGS — \
+         the default set includes VISIBLE and would reveal the window before it painted"
+    );
+}
+
 /// The rpm bundler writes `Requires:` from this list and nothing else — it never scans
 /// the binary — so an empty list ships a package that installs onto a system with no
 /// webview and then dies at launch. Sonames, not package names: the package providing
