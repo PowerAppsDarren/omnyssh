@@ -52,16 +52,16 @@ You add a server once. After that it sits on the dashboard as a card with live C
 Cards for every host with CPU, RAM and disk bars, uptime, OS version, top processes, and a Docker badge showing how many containers are up. Bars turn yellow, then red, so a sick server is obvious from across the room.
 
 ### Real terminals
-Full PTY sessions in tabs. Open several servers at once, split the view, keep them running while you work in the dashboard.
+Full PTY sessions in tabs. Open as many servers as you need, switch between them from the sidebar, and keep them running while you work in the dashboard.
 
 ### Two panel SFTP
-Local on the left, remote on the right. Drag files across, watch the progress bar, select many at once. Nobody remembers `scp -r` syntax anyway.
+Local on the left, remote on the right. Tick the files you want and move them across, watch the progress bar, select many at once. Nobody remembers `scp -r` syntax anyway.
 
 ### Snippets
-Save the commands you paste every week. Run one on a host with a keypress, or broadcast it to every server you have. Snippets take parameters, so `sudo systemctl restart {{service}}` asks you for the name.
+Save the commands you paste every week. Pick a snippet, tick the hosts to send it to, and it runs on all of them at once. Snippets take parameters, so `sudo systemctl restart {{service}}` asks you for the name.
 
 ### Search everything
-Hit ⌘K and start typing. Hosts, snippets, screens. It gets you there in three keystrokes.
+Hit ⌘K and start typing. Every host you have, plus every session already open. Enter drops you into a terminal on the host you picked, or back into the session you left.
 
 ### Streamer mode
 Swaps every real IP on screen for a fake one. Record a demo or share your screen without leaking client infrastructure.
@@ -78,7 +78,7 @@ Around 130 MB of RAM with several sessions open, on a 20 MB download. Termius on
 
 Password auth on a fresh VPS is the thing you always mean to fix and never do. OmnySSH does it in one click.
 
-Pick a password based host, hit **Set up SSH key**, and the app generates an Ed25519 key, appends the public half to `authorized_keys`, and switches the host over to key auth. It then opens a fresh connection with the new key to prove the key works. Only after that does it offer to turn off password login.
+Pick a host you added yourself that has no key configured, hit **Set up SSH key**, and the app generates an Ed25519 key, appends the public half to `authorized_keys`, and switches the host over to key auth. It then opens a fresh connection with the new key to prove the key works, and only after that does it turn password login off. There is no confirmation step in between: starting the flow means going through with it.
 
 Before touching `sshd_config` it saves a backup on the server. If any step fails, it restores the backup and leaves your access exactly as it was. Your private key never leaves your machine, and nothing gets sent anywhere except the server you chose.
 
