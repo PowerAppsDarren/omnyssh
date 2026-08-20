@@ -2,7 +2,7 @@ use tauri::{AppHandle, State};
 use tauri_specta::Event;
 
 use omnyssh_core::config::{load_hosts, save_hosts};
-use omnyssh_core::ssh::client::Host;
+use omnyssh_core::ssh::client::{Host, HostSource};
 
 use crate::dto::{HostDto, HostInputDto};
 use crate::error::CommandError;
@@ -56,15 +56,25 @@ pub async fn reload_hosts(app: AppHandle, state: State<'_, GuiState>) -> Result<
     Ok(())
 }
 
-/// Add or edit a **manual** host and persist to `hosts.toml` (tech-gui.md §4.2, Stage
-/// 4.1). Upserts by name; SSH-config hosts are read-only imports and are never written
-/// (this operates on the manual `hosts.toml` alone). The frontend calls `reload_hosts`
-/// afterwards to refresh the merged cache + restart the pollers. Secrets stay
-/// backend-side (§3.4): the payload's password/identity never left the backend.
+/// Add or edit a host and persist to `hosts.toml` (tech-gui.md §4.2, Stage 4.1).
+/// Upserts by name. Editing an SSH-config import adopts it: the saved copy is a manual
+/// entry that `merge_hosts` then prefers over the parsed one, so `~/.ssh/config` itself
+/// is still never written. The frontend calls `reload_hosts` afterwards to refresh the
+/// merged cache + restart the pollers. Secrets stay backend-side (§3.4): the payload's
+/// password/identity never left the backend.
 #[tauri::command]
 #[specta::specta]
-pub async fn save_host(input: HostInputDto) -> Result<(), CommandError> {
-    persist(move |hosts| upsert(hosts, input)).await
+pub async fn save_host(
+    input: HostInputDto,
+    state: State<'_, GuiState>,
+) -> Result<(), CommandError> {
+    // The parsed import is the only record of its bastion and key path, and neither
+    // crosses the boundary (§3.4), so read them off the cache before the write moves
+    // to a blocking task.
+    let imported = state
+        .host_by_name(&input.name)
+        .filter(|h| h.source == HostSource::SshConfig);
+    persist(move |hosts| upsert(hosts, input, imported)).await
 }
 
 /// Delete a manual host by name and persist (tech-gui.md §4.2, Stage 4.1). Only manual
@@ -83,7 +93,7 @@ pub async fn delete_host(name: String) -> Result<(), CommandError> {
 /// SSH-config rename origin, and a monitoring mode the payload left out. Editing
 /// e.g. notes therefore never drops a stored secret or a recorded key setup. A
 /// provided secret still overwrites the old one.
-fn upsert(hosts: &mut Vec<Host>, input: HostInputDto) {
+fn upsert(hosts: &mut Vec<Host>, input: HostInputDto, imported: Option<Host>) {
     // An omitted monitoring mode means "unchanged", not "back to SSH" — losing it
     // would silently start logging in to a device chosen for reachability only.
     let monitoring_given = input.monitoring.is_some();
@@ -105,7 +115,23 @@ fn upsert(hosts: &mut Vec<Host>, input: HostInputDto) {
             host.original_ssh_host = existing.original_ssh_host.clone();
             hosts[i] = host;
         }
-        None => hosts.push(host),
+        None => {
+            // A brand-new host, or the first save of an SSH-config import — only the
+            // import has anything to salvage. The form never saw its `ProxyJump` or
+            // identity file, and a copy without the bastion would dial the target
+            // address direct, which is exactly the hazard fixed in 1.1.1.
+            if let Some(imported) = imported {
+                host.proxy_jump = host.proxy_jump.or(imported.proxy_jump);
+                host.identity_file = host.identity_file.or(imported.identity_file);
+                // Which `~/.ssh/config` entry this copy stands in for. Inert while the
+                // names match — `merge_hosts` already drops the import on the name — but
+                // it is what keeps the import hidden once the copy is renamed in the TUI,
+                // and what another host's `ProxyJump` alias resolves through. The TUI
+                // records the same thing when it adopts (app/host.rs).
+                host.original_ssh_host = Some(host.name.clone());
+            }
+            hosts.push(host);
+        }
     }
 }
 
@@ -158,7 +184,7 @@ mod tests {
     #[test]
     fn upsert_appends_a_new_manual_host() {
         let mut hosts = vec![];
-        upsert(&mut hosts, input("web"));
+        upsert(&mut hosts, input("web"), None);
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].name, "web");
         assert_eq!(hosts[0].source, HostSource::Manual);
@@ -176,7 +202,7 @@ mod tests {
         let mut edit = input("web");
         edit.hostname = "new.example.com".to_string();
         edit.notes = Some("new".to_string());
-        upsert(&mut hosts, edit);
+        upsert(&mut hosts, edit, None);
         assert_eq!(hosts.len(), 1, "edit is in-place, not an append");
         assert_eq!(hosts[0].hostname, "new.example.com");
         assert_eq!(hosts[0].notes.as_deref(), Some("new"));
@@ -197,7 +223,7 @@ mod tests {
             source: HostSource::Manual,
             ..Host::default()
         }];
-        upsert(&mut hosts, input("web"));
+        upsert(&mut hosts, input("web"), None);
         let h = &hosts[0];
         assert_eq!(h.password.as_deref(), Some("keep-me"));
         assert_eq!(h.identity_file.as_deref(), Some("/keys/id"));
@@ -205,6 +231,59 @@ mod tests {
         assert_eq!(h.key_setup_date.as_deref(), Some("2026-01-01"));
         assert_eq!(h.password_auth_disabled, Some(true));
         assert_eq!(h.original_ssh_host.as_deref(), Some("web-old"));
+    }
+
+    #[test]
+    fn adopting_an_ssh_config_host_keeps_its_bastion_and_key() {
+        // Editing an import writes a manual copy. `HostDto` carries neither `proxyJump`
+        // nor the identity path (§3.4), so the form submits both blank — dropping them
+        // would leave the copy dialling the target address direct.
+        let imported = Host {
+            name: "internal".to_string(),
+            hostname: "10.0.0.9".to_string(),
+            proxy_jump: Some("public-proxy".to_string()),
+            identity_file: Some("/keys/id_ed25519".to_string()),
+            source: HostSource::SshConfig,
+            ..Host::default()
+        };
+        let mut hosts = vec![];
+        let mut edit = input("internal");
+        edit.notes = Some("adopted".to_string());
+        upsert(&mut hosts, edit, Some(imported));
+
+        assert_eq!(hosts.len(), 1);
+        let h = &hosts[0];
+        assert_eq!(
+            h.source,
+            HostSource::Manual,
+            "the copy is what hosts.toml holds"
+        );
+        assert_eq!(h.proxy_jump.as_deref(), Some("public-proxy"));
+        assert_eq!(h.identity_file.as_deref(), Some("/keys/id_ed25519"));
+        assert_eq!(h.notes.as_deref(), Some("adopted"));
+        assert_eq!(
+            h.original_ssh_host.as_deref(),
+            Some("internal"),
+            "the copy records which import it shadows, so a later rename still hides it"
+        );
+    }
+
+    #[test]
+    fn an_explicit_identity_wins_over_the_imported_one() {
+        let imported = Host {
+            name: "internal".to_string(),
+            identity_file: Some("/keys/from-ssh-config".to_string()),
+            source: HostSource::SshConfig,
+            ..Host::default()
+        };
+        let mut hosts = vec![];
+        let mut edit = input("internal");
+        edit.identity_file = Some("/keys/typed-by-hand".to_string());
+        upsert(&mut hosts, edit, Some(imported));
+        assert_eq!(
+            hosts[0].identity_file.as_deref(),
+            Some("/keys/typed-by-hand")
+        );
     }
 
     #[test]
@@ -217,7 +296,7 @@ mod tests {
             ..Host::default()
         }];
 
-        upsert(&mut hosts, input("fw"));
+        upsert(&mut hosts, input("fw"), None);
 
         // Silently reverting to SSH would start logging in to a device the user
         // deliberately put on a reachability probe.
@@ -237,7 +316,7 @@ mod tests {
 
         let mut back_to_ssh = input("fw");
         back_to_ssh.monitoring = Some(MonitorModeDto::Ssh);
-        upsert(&mut hosts, back_to_ssh);
+        upsert(&mut hosts, back_to_ssh, None);
 
         assert_eq!(hosts[0].monitoring, MonitorMode::Ssh);
     }
@@ -252,7 +331,7 @@ mod tests {
         }];
         let mut edit = input("web");
         edit.password = Some("rotated".to_string());
-        upsert(&mut hosts, edit);
+        upsert(&mut hosts, edit, None);
         assert_eq!(hosts[0].password.as_deref(), Some("rotated"));
     }
 

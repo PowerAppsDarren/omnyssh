@@ -126,13 +126,28 @@ test('deletes a manual host after confirmation', async ({ page }) => {
   await expect(page.getByText('web-1', { exact: true })).toHaveCount(0);
 });
 
-test('SSH-config hosts are read-only imports', async ({ page }) => {
+test('an SSH-config host is adopted by editing it', async ({ page }) => {
   await boot(page);
 
-  // The imported host is marked and offers no edit/delete affordances (§4.1).
+  // The import is marked, and there is nothing here to delete: it lives in
+  // ~/.ssh/config, which this app never writes.
   await expect(page.getByText('ssh config')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Edit imported' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Delete imported' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Edit imported' }).click();
+  const editor = page.getByRole('dialog', { name: 'Edit host' });
+  await expect(editor).toBeVisible();
+  // The form states what saving does, since the SSH config file itself does not change.
+  await expect(editor.getByText(/never written/)).toBeVisible();
+
+  await editor.getByLabel('Hostname / IP').fill('adopted.example.com');
+  await editor.getByRole('button', { name: 'Save' }).click();
+
+  // Saved as a manual copy: the import badge is gone and delete is now offered.
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByText('root@adopted.example.com:22')).toBeVisible();
+  await expect(page.getByText('ssh config')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Delete imported' })).toHaveCount(1);
 });
 
 test('rejects a new host whose name already exists', async ({ page }) => {

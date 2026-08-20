@@ -71,8 +71,9 @@ pub struct HostDto {
     pub monitor_port: Option<u16>,
 }
 
-/// Inbound host form payload for `save_host` (tech-gui.md §4.1, Stage 4.1). Builds a
-/// **manual** `Host` — SSH-config hosts are read-only imports and are never saved.
+/// Inbound host form payload for `save_host` (tech-gui.md §4.1, Stage 4.1). Always
+/// builds a **manual** `Host`: editing an SSH-config import saves a copy that shadows
+/// it, and `~/.ssh/config` itself is never written.
 /// `password`/`identityFile` arrive here (the create/edit form owns them) but never
 /// travel back out: the outbound `HostDto` omits both (§3.4). Inbound only, so it
 /// derives `Deserialize` (not `Serialize`).
@@ -582,8 +583,8 @@ mod tests {
 
     #[test]
     fn host_input_maps_to_a_manual_host() {
-        // The form only authors manual entries; SSH-config hosts are read-only imports
-        // (tech-gui.md §4.1, Stage 4.1) — so `source` is forced regardless of input.
+        // The form only ever authors manual entries — editing an import produces a
+        // manual copy (tech-gui.md §4.1) — so `source` is forced regardless of input.
         let host = Host::from(full_input());
         assert_eq!(host.name, "web-prod-1");
         assert_eq!(host.hostname, "10.0.0.1");
