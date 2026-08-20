@@ -22,7 +22,19 @@
 
   let { session, active }: { session: Session; active: boolean } = $props();
 
-  const MONO = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+  // The Nerd Font families come after the generic `monospace`, not merely after the
+  // named system ones: the named list is macOS/Windows-only, so on a Linux desktop a
+  // patched font ahead of the generic would become the terminal's Latin face and size
+  // its cell from itself. Per-character fallback continues past a generic family, so the
+  // Private Use Area glyphs (starship, powerlevel10k, eza --icons) still reach the tail.
+  // Within the tail, the single-width variants come first — Nerd Fonts v3 ships icons at
+  // double width in the bare family and one cell wide in its `Mono` twin.
+  const MONO =
+    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace, ' +
+    '"Symbols Nerd Font Mono", "Symbols Nerd Font", "MesloLGS NF", ' +
+    '"JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Font", ' +
+    '"Hack Nerd Font Mono", "Hack Nerd Font", ' +
+    '"FiraCode Nerd Font Mono", "FiraCode Nerd Font"';
   // One encoder for the keystroke hot path instead of one per input event.
   const ENCODER = new TextEncoder();
 
