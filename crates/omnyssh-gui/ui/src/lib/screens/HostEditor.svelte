@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Add/edit host form (tech-gui.md §4.1). Manual entries only — SSH-config hosts are
-  // read-only imports and never reach this form. Validation mirrors the TUI via
+  // Add/edit host form (tech-gui.md §4.1). Always writes a manual entry: editing an
+  // SSH-config import adopts it, leaving ~/.ssh/config untouched. Validation mirrors the TUI via
   // `formToInput`; on submit the parent persists + reloads, and a rejected save
   // surfaces inline without closing. Semantic tokens only.
   import { onMount } from 'svelte';
@@ -13,12 +13,15 @@
     mode,
     initial,
     previousName,
+    imported = false,
     onSubmit,
     onCancel
   }: {
     mode: 'add' | 'edit';
     initial: HostFormFields;
     previousName?: string;
+    /** Editing an `~/.ssh/config` import, so the save is an adoption — say so. */
+    imported?: boolean;
     onSubmit: (input: HostInputDto, previousName: string | undefined) => Promise<void>;
     onCancel: () => void;
   } = $props();
@@ -77,6 +80,13 @@
     </header>
 
     <div class="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-5 py-4">
+      {#if imported}
+        <p class="rounded-lg bg-surface-inset px-3 py-2 text-xs text-muted">
+          Imported from <span class="font-mono">~/.ssh/config</span>. Saving keeps your own copy in
+          <span class="font-mono">hosts.toml</span> and OmnySSH uses it from then on — your SSH config
+          file is never written, and later edits to it stop showing up for this host.
+        </p>
+      {/if}
       <label class={label}>
         <span>Name {mode === 'edit' ? '(fixed)' : ''}</span>
         <input
