@@ -394,6 +394,16 @@ install_gui_macos() {
     print_success "$APP_NAME installed. Launch it from Applications or Launchpad."
 }
 
+# Removes an AppImage install this script left behind. A native package brings its
+# own binary and menu entry under different names, so an earlier AppImage survives as
+# a second, older launcher — and $INSTALL_DIR precedes /usr/bin on the default PATH,
+# so `omnyssh` on the command line keeps running it.
+drop_appimage_install() {
+    sudo rm -f "$INSTALL_DIR/omnyssh" 2>/dev/null || true
+    rm -f "$HOME/.local/share/applications/omnyssh.desktop" 2>/dev/null || true
+    rm -f "$HOME/.local/share/icons/omnyssh.png" 2>/dev/null || true
+}
+
 install_gui_linux() {
     # Prefer a native package where one exists — it integrates into the app menu,
     # needs no FUSE, and links the distro's own WebKit instead of the runtime the
@@ -405,11 +415,7 @@ install_gui_linux() {
         if download_release_asset "OmnySSH-${ARCH}.rpm"; then
             print_info "Installing the .rpm package..."
             if sudo dnf install -y "$ASSET_PATH"; then
-                # The package brings its own binary and menu entry under different names
-                # than the AppImage this script installs, so an earlier AppImage would
-                # survive as a second launcher — the very build the user is escaping.
-                sudo rm -f "$INSTALL_DIR/omnyssh" || true
-                rm -f "$HOME/.local/share/applications/omnyssh.desktop" || true
+                drop_appimage_install
                 print_success "OmnySSH installed. Launch it from your application menu."
                 return 0
             fi
@@ -437,6 +443,7 @@ install_gui_linux() {
             _installed=$(dpkg-query -W -f='${db:Status-Status} ${Version}' \
                          "$_pkg" 2>/dev/null || true)
             if [ -n "$_pkg" ] && [ "$_installed" = "installed $_pkg_version" ]; then
+                drop_appimage_install
                 print_success "OmnySSH installed. Launch it from your application menu."
                 return 0
             fi
