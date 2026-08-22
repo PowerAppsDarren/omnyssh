@@ -349,8 +349,17 @@ install_gui_macos() {
     download_release_asset "$GUI_ASSET" || return 1
     DMG="$ASSET_PATH"
     print_info "Mounting disk image..."
-    MOUNT=$(hdiutil attach -nobrowse -readonly "$DMG" 2>/dev/null | grep -o '/Volumes/[^ ]*' | tail -n 1 || true)
+    # hdiutil prints tab-separated fields, and a volume name already taken is mounted
+    # as "OmnySSH 1" — so anything that stops at the first space picks up whatever the
+    # user left mounted and installs that instead. Take the last field of the last row.
+    _attach=$(hdiutil attach -nobrowse -readonly "$DMG" 2>/dev/null || true)
+    MOUNT=$(printf '%s\n' "$_attach" \
+            | awk -F'\t' '$NF ~ /^\/Volumes\//{m=$NF} END{print m}')
     if [ -z "$MOUNT" ]; then
+        # The image may be attached even when its mount point cannot be read, and an
+        # orphan left in /Volumes is what makes the next run pick the wrong volume.
+        _dev=$(printf '%s\n' "$_attach" | awk '/^\/dev\//{d=$1} END{print d}')
+        [ -z "$_dev" ] || hdiutil detach "$_dev" >/dev/null 2>&1 || true
         print_error "Failed to mount $GUI_ASSET"
         return 1
     fi
