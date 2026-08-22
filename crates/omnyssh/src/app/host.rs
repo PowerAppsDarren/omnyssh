@@ -23,6 +23,26 @@ pub const FORM_FIELD_LABELS: &[&str] = &[
     "Monitoring (ssh | tcp | tcp:PORT)",
 ];
 
+/// Whether an edit changed anything a running poller reads. Everything else on
+/// the form — tags, notes — is display-only, and restarting the pool for it drops
+/// and re-authenticates every host's live monitoring session.
+///
+/// `original_ssh_host` is in here because it is read for *other* hosts: a jump chain
+/// resolves a `ProxyJump` alias against it, so changing it changes where a different
+/// host connects.
+fn poller_inputs_changed(before: &Host, after: &Host) -> bool {
+    before.name != after.name
+        || before.hostname != after.hostname
+        || before.user != after.user
+        || before.port != after.port
+        || before.identity_file != after.identity_file
+        || before.password != after.password
+        || before.proxy_jump != after.proxy_jump
+        || before.original_ssh_host != after.original_ssh_host
+        || before.monitoring != after.monitoring
+        || before.monitor_port != after.monitor_port
+}
+
 /// Renders a host's monitoring mode back into its form field.
 fn monitoring_value(host: &Host) -> String {
     match (host.monitoring, host.monitor_port) {
@@ -473,10 +493,11 @@ impl App {
 
             Some(HostPopup::Edit { host_idx, form }) => match form.to_host(HostSource::Manual) {
                 Ok(mut host) => {
-                    let (old_name, _was_ssh_config) = {
+                    let (old_name, _was_ssh_config, before) = {
                         let mut state = self.state.write().await;
                         let old_host = state.hosts.get(host_idx);
                         let old_name = old_host.map(|h| h.name.clone());
+                        let before = old_host.cloned();
                         let was_ssh_config = old_host
                             .map(|h| h.source == HostSource::SshConfig)
                             .unwrap_or(false);
@@ -486,15 +507,20 @@ impl App {
                         // the saved copy would try to connect direct.
                         host.proxy_jump = old_host.and_then(|h| h.proxy_jump.clone());
 
-                        // If editing a SSH config host, preserve original name for duplicate prevention
-                        if was_ssh_config && old_name.is_some() {
-                            host.original_ssh_host = old_name.clone();
-                        }
+                        // An import is adopted under the name it was imported by; a copy
+                        // already adopted keeps the one it carries. Dropping it brings the
+                        // import back as a duplicate card, and takes with it the alias any
+                        // other host's `ProxyJump` resolves through.
+                        host.original_ssh_host = if was_ssh_config {
+                            old_name.clone()
+                        } else {
+                            old_host.and_then(|h| h.original_ssh_host.clone())
+                        };
 
                         if let Some(slot) = state.hosts.get_mut(host_idx) {
                             *slot = host.clone();
                         }
-                        (old_name, was_ssh_config)
+                        (old_name, was_ssh_config, before)
                     };
 
                     // If the host name changed, migrate all associated data
@@ -522,7 +548,12 @@ impl App {
                     self.save_manual_hosts().await;
 
                     // The edit can change the address, the port or the monitoring
-                    // mode, none of which a running poller picks up.
+                    // mode, none of which a running poller picks up. The pool has no
+                    // per-host restart, so this costs every other host its session —
+                    // only worth it when a poller input actually moved.
+                    if before
+                        .as_ref()
+                        .is_none_or(|b| poller_inputs_changed(b, &host))
                     {
                         let state = self.state.read().await;
                         if let Some(old) = self.poll_manager.take() {
@@ -618,6 +649,89 @@ mod tests {
                 ..Host::default()
             };
             assert_eq!(parse_monitoring(&monitoring_value(&host)), Ok((mode, port)));
+        }
+    }
+
+    #[test]
+    fn only_a_connection_field_edit_restarts_the_pool() {
+        let base = Host {
+            name: String::from("web"),
+            hostname: String::from("10.0.0.1"),
+            ..Host::default()
+        };
+
+        // Display-only edits: the running poller would produce the same session.
+        let mut described = base.clone();
+        described.tags = vec![String::from("prod")];
+        described.notes = Some(String::from("the billing box"));
+        assert!(!poller_inputs_changed(&base, &described));
+
+        // The guard holds only because the form round-trips every compared field
+        // untouched. Masking the password field — a plausible hardening — would make
+        // each of these hosts look edited and quietly restore the old behaviour.
+        let populated = Host {
+            user: String::from("deploy"),
+            port: 2222,
+            identity_file: Some(String::from("~/.ssh/id_ed25519")),
+            password: Some(String::from("hunter2")),
+            tags: vec![String::from("prod"), String::from("web")],
+            notes: Some(String::from("the billing box")),
+            monitoring: MonitorMode::TcpPort,
+            monitor_port: Some(8443),
+            ..base.clone()
+        };
+        let reopened = HostForm::from_host(&populated)
+            .to_host(HostSource::Manual)
+            .expect("the form round-trips a valid host");
+        assert!(
+            !poller_inputs_changed(&populated, &reopened),
+            "opening and confirming the form unchanged must not restart the pool"
+        );
+
+        // Everything a poller dials, authenticates or watches with.
+        let moved = [
+            Host {
+                name: String::from("web-1"),
+                ..base.clone()
+            },
+            Host {
+                hostname: String::from("10.0.0.2"),
+                ..base.clone()
+            },
+            Host {
+                user: String::from("deploy"),
+                ..base.clone()
+            },
+            Host {
+                port: 2222,
+                ..base.clone()
+            },
+            Host {
+                identity_file: Some(String::from("~/.ssh/id_ed25519")),
+                ..base.clone()
+            },
+            Host {
+                password: Some(String::from("hunter2")),
+                ..base.clone()
+            },
+            Host {
+                proxy_jump: Some(String::from("bastion")),
+                ..base.clone()
+            },
+            Host {
+                monitoring: MonitorMode::TcpPort,
+                ..base.clone()
+            },
+            Host {
+                monitor_port: Some(8443),
+                ..base.clone()
+            },
+        ];
+        for after in moved {
+            assert!(
+                poller_inputs_changed(&base, &after),
+                "a changed poller input went unnoticed"
+            );
         }
     }
 

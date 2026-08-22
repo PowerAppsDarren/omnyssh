@@ -326,6 +326,11 @@ download_release_asset() {
 
 # Install the GUI desktop app. Returns non-zero when unavailable for the platform.
 install_gui() {
+    # Set when no desktop build exists for this platform at all, as opposed to one
+    # that exists and failed to install. The caller falls back to the TUI on the
+    # first and reports failure on the second.
+    GUI_UNAVAILABLE=0
+
     # Public GUI asset names (match the release table): macOS keeps the full
     # target triple, Linux/Windows are x86_64-only so they use the short arch.
     case "$PLATFORM" in
@@ -333,7 +338,8 @@ install_gui() {
         unknown-linux-gnu) GUI_ASSET="OmnySSH-${ARCH}.AppImage" ;;
         pc-windows-msvc)   GUI_ASSET="OmnySSH-${ARCH}-setup.exe" ;;
         *)
-            print_warning "The desktop GUI is not available for $TARGET (TUI only)."
+            GUI_UNAVAILABLE=1
+            print_warning "The desktop GUI is not available for $TARGET."
             return 1
             ;;
     esac
@@ -349,8 +355,17 @@ install_gui_macos() {
     download_release_asset "$GUI_ASSET" || return 1
     DMG="$ASSET_PATH"
     print_info "Mounting disk image..."
-    MOUNT=$(hdiutil attach -nobrowse -readonly "$DMG" 2>/dev/null | grep -o '/Volumes/[^ ]*' | tail -n 1 || true)
+    # hdiutil prints tab-separated fields, and a volume name already taken is mounted
+    # as "OmnySSH 1" — so anything that stops at the first space picks up whatever the
+    # user left mounted and installs that instead. Take the last field of the last row.
+    _attach=$(hdiutil attach -nobrowse -readonly "$DMG" 2>/dev/null || true)
+    MOUNT=$(printf '%s\n' "$_attach" \
+            | awk -F'\t' '$NF ~ /^\/Volumes\//{m=$NF} END{print m}')
     if [ -z "$MOUNT" ]; then
+        # The image may be attached even when its mount point cannot be read, and an
+        # orphan left in /Volumes is what makes the next run pick the wrong volume.
+        _dev=$(printf '%s\n' "$_attach" | awk '/^\/dev\//{d=$1} END{print d}')
+        [ -z "$_dev" ] || hdiutil detach "$_dev" >/dev/null 2>&1 || true
         print_error "Failed to mount $GUI_ASSET"
         return 1
     fi
@@ -385,6 +400,16 @@ install_gui_macos() {
     print_success "$APP_NAME installed. Launch it from Applications or Launchpad."
 }
 
+# Removes an AppImage install this script left behind. A native package brings its
+# own binary and menu entry under different names, so an earlier AppImage survives as
+# a second, older launcher — and $INSTALL_DIR precedes /usr/bin on the default PATH,
+# so `omnyssh` on the command line keeps running it.
+drop_appimage_install() {
+    sudo rm -f "$INSTALL_DIR/omnyssh" 2>/dev/null || true
+    rm -f "$HOME/.local/share/applications/omnyssh.desktop" 2>/dev/null || true
+    rm -f "$HOME/.local/share/icons/omnyssh.png" 2>/dev/null || true
+}
+
 install_gui_linux() {
     # Prefer a native package where one exists — it integrates into the app menu,
     # needs no FUSE, and links the distro's own WebKit instead of the runtime the
@@ -396,11 +421,7 @@ install_gui_linux() {
         if download_release_asset "OmnySSH-${ARCH}.rpm"; then
             print_info "Installing the .rpm package..."
             if sudo dnf install -y "$ASSET_PATH"; then
-                # The package brings its own binary and menu entry under different names
-                # than the AppImage this script installs, so an earlier AppImage would
-                # survive as a second launcher — the very build the user is escaping.
-                sudo rm -f "$INSTALL_DIR/omnyssh" || true
-                rm -f "$HOME/.local/share/applications/omnyssh.desktop" || true
+                drop_appimage_install
                 print_success "OmnySSH installed. Launch it from your application menu."
                 return 0
             fi
@@ -415,21 +436,36 @@ install_gui_linux() {
     # Never on an RPM host, even one that happens to have dpkg: unpacking a .deb onto
     # an RPM-managed filesystem is worse than the portable AppImage.
     if [ "$_rpm_host" = 0 ] && command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-        download_release_asset "OmnySSH-${ARCH}.deb" || return 1
-        print_info "Installing the .deb package..."
-        sudo dpkg -i "$ASSET_PATH" || sudo apt-get install -f -y || {
-            print_error "Failed to install the .deb package"
-            return 1
-        }
-        print_success "OmnySSH installed. Launch it from your application menu."
-        return 0
+        if download_release_asset "OmnySSH-${ARCH}.deb"; then
+            print_info "Installing the .deb package..."
+            sudo dpkg -i "$ASSET_PATH" || sudo apt-get install -f -y || true
+            # `apt-get install -f` resolves an unsatisfiable dependency by removing the
+            # package dpkg just unpacked, and exits 0 having done it — so the exit status
+            # is no answer. Neither is `dpkg -s`, which succeeds for a package left
+            # half-configured, removed-but-not-purged, or still at its previous version.
+            # Ask the file what it is, then ask dpkg whether exactly that is installed.
+            _pkg=$(dpkg-deb -f "$ASSET_PATH" Package 2>/dev/null || true)
+            _pkg_version=$(dpkg-deb -f "$ASSET_PATH" Version 2>/dev/null || true)
+            _installed=$(dpkg-query -W -f='${db:Status-Status} ${Version}' \
+                         "$_pkg" 2>/dev/null || true)
+            if [ -n "$_pkg" ] && [ "$_installed" = "installed $_pkg_version" ]; then
+                drop_appimage_install
+                print_success "OmnySSH installed. Launch it from your application menu."
+                return 0
+            fi
+        fi
+        # Same hedge as the rpm branch above: a host too old for the package still
+        # gets a shot at the portable AppImage rather than a failed install.
+        print_warning "The .deb could not be installed — trying the AppImage instead"
     fi
 
     download_release_asset "$GUI_ASSET" || return 1
     APPIMAGE="$ASSET_PATH"
     TARGET_BIN="$INSTALL_DIR/omnyssh"
     print_info "Installing the AppImage to $TARGET_BIN..."
-    chmod +x "$APPIMAGE"
+    # Guarded rather than left to `set -e`: the caller runs this inside an `if`, which
+    # suspends errexit, and an AppImage that is not executable installs to silence.
+    chmod +x "$APPIMAGE" || { print_error "Failed to make the AppImage executable"; return 1; }
     if [ -w "$INSTALL_DIR" ]; then
         mv "$APPIMAGE" "$TARGET_BIN" || { print_error "Failed to install AppImage to $TARGET_BIN"; return 1; }
     else
@@ -536,7 +572,18 @@ main() {
 
     case "$COMPONENTS" in
         gui)
-            install_gui
+            # aarch64 Linux and Termux run the TUI but have no desktop build, and a
+            # piped run defaults to the GUI — so the command the README prints would
+            # otherwise install nothing at all there. A GUI that exists and fails
+            # still fails: only the unsupported platform falls back.
+            if ! install_gui; then
+                [ "$GUI_UNAVAILABLE" = "1" ] || exit 1
+                print_info "Installing the terminal app instead."
+                COMPONENTS="tui"
+                download_and_install
+                install_man_page
+                verify_installation
+            fi
             ;;
         both)
             download_and_install

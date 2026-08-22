@@ -102,7 +102,10 @@ async fn an_unreachable_host_keeps_retrying_on_its_own_schedule() {
     assert!(retried, "the poller stopped retrying an unreachable host");
 }
 
-#[tokio::test(start_paused = true)]
+// Real clock, unlike its neighbours: a paused clock auto-advances whenever the
+// runtime idles, which it does while the loopback connect sits in the IO driver —
+// so `TCP_PROBE_TIMEOUT` elapses in virtual time and the open port reads as dead.
+#[tokio::test]
 async fn a_reachability_host_is_probed_without_an_ssh_session() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("local addr").port();
@@ -119,8 +122,10 @@ async fn a_reachability_host_is_probed_without_an_ssh_session() {
     let manager = PollManager::start(vec![host], tx, Duration::from_secs(30));
 
     // Bounded: the poller never closes the channel, so an unbounded wait would
-    // hang instead of failing when the expected status stops arriving.
-    let reachable = tokio::time::timeout(Duration::from_secs(60), async {
+    // hang instead of failing when the expected status stops arriving. Real seconds
+    // now, and comfortably clear of `TCP_PROBE_TIMEOUT`: a budget equal to it would
+    // expire on the same dial it is meant to watch retry.
+    let reachable = tokio::time::timeout(Duration::from_secs(20), async {
         while let Some(event) = rx.recv().await {
             if let CoreEvent::HostStatusChanged(_, ConnectionStatus::Connected) = event {
                 return true;
@@ -134,6 +139,12 @@ async fn a_reachability_host_is_probed_without_an_ssh_session() {
         Ok(true),
         "the probe never reported the port as reachable"
     );
+
+    // The probe has settled, so the clock can be paused for the rest: waiting out
+    // the cycles below in real seconds would be a two-minute test. A dial that now
+    // times out against the virtual clock only reports a status, which is what this
+    // half tolerates anyway.
+    tokio::time::pause();
 
     // And over the cycles that follow, it reports status only — metrics would be
     // invented. Elapsing without a metrics event is the pass.

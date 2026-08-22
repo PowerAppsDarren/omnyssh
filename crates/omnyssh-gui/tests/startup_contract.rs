@@ -54,16 +54,45 @@ fn a_hidden_window_is_always_revealed() {
     );
 }
 
-/// The reveal doubles as the signal that the page rendered, and the AppImage render
-/// retry reads it. Drop this one store and every AppImage launch looks like a failed
-/// one, so the app would restart itself into software rendering every single time —
-/// with every other test still green.
+/// The reveal doubles as the signal that the page loaded, and the render retry reads
+/// it. Drop this one store and every Linux launch looks like a failed one, so the app
+/// would restart itself into software rendering every single time — with every other
+/// test still green.
 #[test]
 fn a_loaded_page_is_recorded_for_the_render_retry() {
     assert!(
         MAIN_RS.contains("PAGE_LOADED.store("),
-        "the page-load flag is no longer set — the AppImage would restart itself on \
-         every launch"
+        "the page-load flag is no longer set — the app would restart itself on every \
+         Linux launch"
+    );
+}
+
+/// A debug build waits on the dev server, so a slow one starting must never look like
+/// a broken renderer and re-exec the app out from under a contributor.
+#[test]
+fn the_render_retry_is_a_release_only_behaviour() {
+    assert!(
+        MAIN_RS.contains(r#"#[cfg(all(target_os = "linux", not(debug_assertions)))]"#),
+        "the render retry is no longer gated to release builds — `tauri dev` would \
+         restart itself whenever the dev server is slow"
+    );
+}
+
+/// The retry re-execs the app, so the one thing standing between it and an endless
+/// restart loop is the child inheriting the marker the parent tested for. The two are
+/// three lines apart and nothing else connects them: rename the string in `cmd.env`
+/// alone and the loop is silent, unbounded, and only reproducible on Linux.
+#[test]
+fn the_render_retry_marks_the_child_it_starts() {
+    assert!(
+        MAIN_RS.contains(".env(RETRY_MARKER, \"1\")"),
+        "the render retry no longer marks its child with RETRY_MARKER — the restart \
+         would repeat for as long as the page fails to load"
+    );
+    assert!(
+        MAIN_RS.contains("std::env::var_os(RETRY_MARKER)"),
+        "the render retry no longer reads RETRY_MARKER — a marked child would restart \
+         itself again"
     );
 }
 
