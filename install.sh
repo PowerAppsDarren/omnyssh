@@ -424,14 +424,26 @@ install_gui_linux() {
     # Never on an RPM host, even one that happens to have dpkg: unpacking a .deb onto
     # an RPM-managed filesystem is worse than the portable AppImage.
     if [ "$_rpm_host" = 0 ] && command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-        download_release_asset "OmnySSH-${ARCH}.deb" || return 1
-        print_info "Installing the .deb package..."
-        sudo dpkg -i "$ASSET_PATH" || sudo apt-get install -f -y || {
-            print_error "Failed to install the .deb package"
-            return 1
-        }
-        print_success "OmnySSH installed. Launch it from your application menu."
-        return 0
+        if download_release_asset "OmnySSH-${ARCH}.deb"; then
+            print_info "Installing the .deb package..."
+            sudo dpkg -i "$ASSET_PATH" || sudo apt-get install -f -y || true
+            # `apt-get install -f` resolves an unsatisfiable dependency by removing the
+            # package dpkg just unpacked, and exits 0 having done it — so the exit status
+            # is no answer. Neither is `dpkg -s`, which succeeds for a package left
+            # half-configured, removed-but-not-purged, or still at its previous version.
+            # Ask the file what it is, then ask dpkg whether exactly that is installed.
+            _pkg=$(dpkg-deb -f "$ASSET_PATH" Package 2>/dev/null || true)
+            _pkg_version=$(dpkg-deb -f "$ASSET_PATH" Version 2>/dev/null || true)
+            _installed=$(dpkg-query -W -f='${db:Status-Status} ${Version}' \
+                         "$_pkg" 2>/dev/null || true)
+            if [ -n "$_pkg" ] && [ "$_installed" = "installed $_pkg_version" ]; then
+                print_success "OmnySSH installed. Launch it from your application menu."
+                return 0
+            fi
+        fi
+        # Same hedge as the rpm branch above: a host too old for the package still
+        # gets a shot at the portable AppImage rather than a failed install.
+        print_warning "The .deb could not be installed — trying the AppImage instead"
     fi
 
     download_release_asset "$GUI_ASSET" || return 1
