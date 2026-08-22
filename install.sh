@@ -326,6 +326,11 @@ download_release_asset() {
 
 # Install the GUI desktop app. Returns non-zero when unavailable for the platform.
 install_gui() {
+    # Set when no desktop build exists for this platform at all, as opposed to one
+    # that exists and failed to install. The caller falls back to the TUI on the
+    # first and reports failure on the second.
+    GUI_UNAVAILABLE=0
+
     # Public GUI asset names (match the release table): macOS keeps the full
     # target triple, Linux/Windows are x86_64-only so they use the short arch.
     case "$PLATFORM" in
@@ -333,7 +338,8 @@ install_gui() {
         unknown-linux-gnu) GUI_ASSET="OmnySSH-${ARCH}.AppImage" ;;
         pc-windows-msvc)   GUI_ASSET="OmnySSH-${ARCH}-setup.exe" ;;
         *)
-            print_warning "The desktop GUI is not available for $TARGET (TUI only)."
+            GUI_UNAVAILABLE=1
+            print_warning "The desktop GUI is not available for $TARGET."
             return 1
             ;;
     esac
@@ -457,7 +463,9 @@ install_gui_linux() {
     APPIMAGE="$ASSET_PATH"
     TARGET_BIN="$INSTALL_DIR/omnyssh"
     print_info "Installing the AppImage to $TARGET_BIN..."
-    chmod +x "$APPIMAGE"
+    # Guarded rather than left to `set -e`: the caller runs this inside an `if`, which
+    # suspends errexit, and an AppImage that is not executable installs to silence.
+    chmod +x "$APPIMAGE" || { print_error "Failed to make the AppImage executable"; return 1; }
     if [ -w "$INSTALL_DIR" ]; then
         mv "$APPIMAGE" "$TARGET_BIN" || { print_error "Failed to install AppImage to $TARGET_BIN"; return 1; }
     else
@@ -564,7 +572,18 @@ main() {
 
     case "$COMPONENTS" in
         gui)
-            install_gui
+            # aarch64 Linux and Termux run the TUI but have no desktop build, and a
+            # piped run defaults to the GUI — so the command the README prints would
+            # otherwise install nothing at all there. A GUI that exists and fails
+            # still fails: only the unsupported platform falls back.
+            if ! install_gui; then
+                [ "$GUI_UNAVAILABLE" = "1" ] || exit 1
+                print_info "Installing the terminal app instead."
+                COMPONENTS="tui"
+                download_and_install
+                install_man_page
+                verify_installation
+            fi
             ;;
         both)
             download_and_install
