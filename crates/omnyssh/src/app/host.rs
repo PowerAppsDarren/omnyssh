@@ -486,10 +486,15 @@ impl App {
                         // the saved copy would try to connect direct.
                         host.proxy_jump = old_host.and_then(|h| h.proxy_jump.clone());
 
-                        // If editing a SSH config host, preserve original name for duplicate prevention
-                        if was_ssh_config && old_name.is_some() {
-                            host.original_ssh_host = old_name.clone();
-                        }
+                        // An import is adopted under the name it was imported by; a copy
+                        // already adopted keeps the one it carries. Dropping it brings the
+                        // import back as a duplicate card, and takes with it the alias any
+                        // other host's `ProxyJump` resolves through.
+                        host.original_ssh_host = if was_ssh_config {
+                            old_name.clone()
+                        } else {
+                            old_host.and_then(|h| h.original_ssh_host.clone())
+                        };
 
                         if let Some(slot) = state.hosts.get_mut(host_idx) {
                             *slot = host.clone();
