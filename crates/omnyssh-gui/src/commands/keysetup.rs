@@ -74,6 +74,14 @@ async fn run_key_setup(app: AppHandle, host: Host, engine_tx: mpsc::Sender<CoreE
     let session = match SshSession::connect(&host).await {
         Ok(session) => session,
         Err(e) => {
+            if let Some((_, key_path)) = omnyssh_core::ssh::session::passphrase_required(&e) {
+                let _ = engine_tx
+                    .send(CoreEvent::KeyPassphraseRequired {
+                        host_name: host.name.clone(),
+                        key_path,
+                    })
+                    .await;
+            }
             let _ = engine_tx
                 .send(CoreEvent::KeySetupFailed(
                     host.name.clone(),

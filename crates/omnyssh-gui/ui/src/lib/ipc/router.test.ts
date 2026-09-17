@@ -9,10 +9,12 @@ import { snippetRun, beginRun, clearRun } from '$lib/stores/snippets';
 import { sessions } from '$lib/stores/sessions';
 import { lastError } from '$lib/stores/notifications';
 import { keySetup, dismissKeySetup, beginKeySetup } from '$lib/stores/keySetup';
+import { passphrasePrompt, dismissPassphrasePrompt } from '$lib/stores/passphrase';
 import {
   applyError,
   applyHostStatusChanged,
   applyHostsLoaded,
+  applyKeyPassphraseRequiredEvent,
   applyKeySetupComplete,
   applyKeySetupFailed,
   applyKeySetupProgress,
@@ -32,6 +34,7 @@ describe('ipc event router', () => {
     metrics.set(new Map());
     services.set(new Map());
     lastError.set(null);
+    dismissPassphrasePrompt();
   });
 
   it('routes a hosts-loaded payload into the hosts store', () => {
@@ -200,5 +203,22 @@ describe('ipc event router', () => {
     applyKeySetupRollback({ hostName: 'db-1', result: 'Restored.' });
     expect(get(keySetup)).toEqual({ hostName: 'db-1', phase: { kind: 'rolledBack', result: 'Restored.' } });
     dismissKeySetup();
+  });
+
+  it('routes a key-passphrase-required payload into the passphrase prompt', () => {
+    applyKeyPassphraseRequiredEvent({
+      hostName: 'web-1',
+      keyPath: '/home/me/.ssh/id_ed25519'
+    });
+    expect(get(passphrasePrompt)).toEqual({
+      hostName: 'web-1',
+      keyPath: '/home/me/.ssh/id_ed25519'
+    });
+
+    applyKeyPassphraseRequiredEvent({
+      hostName: 'db-1',
+      keyPath: '/home/me/.ssh/other'
+    });
+    expect(get(passphrasePrompt)?.hostName).toBe('web-1');
   });
 });

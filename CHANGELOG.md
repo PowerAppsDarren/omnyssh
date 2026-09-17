@@ -7,6 +7,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## Unreleased
+
+### Bug Fixes
+- **Passphrase-protected SSH keys can be unlocked.** Connecting with an encrypted identity file failed with a generic authentication error because the key was loaded with no passphrase. OmnySSH now prompts for the passphrase (desktop and terminal apps), caches it in memory for the rest of the process — never on disk — and retries. Keys already loaded in an SSH agent still work without a prompt, including the Windows OpenSSH agent (`\\.\pipe\openssh-ssh-agent`). The host password field remains the server login password, not the key passphrase.
+
+---
+
 ## 1.1.2 — 2026-08-22
 
 ### Features

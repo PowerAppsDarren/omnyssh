@@ -143,6 +143,10 @@ pub enum CoreEvent {
     /// Emergency rollback was triggered (host_id, rollback_result).
     KeySetupRollback(HostId, String),
 
+    /// A private key is encrypted and no passphrase is cached for it yet.
+    /// Frontends prompt once per key path and call [`crate::ssh::identity::unlock`].
+    KeyPassphraseRequired { host_name: HostId, key_path: String },
+
     // -----------------------------------------------------------------------
     // Update checker events
     // -----------------------------------------------------------------------

@@ -151,6 +151,8 @@ pub struct ViewState {
     pub tick_count: u64,
     /// Startup update-notification popup, shown when a newer release exists.
     pub update_popup: Option<UpdatePopup>,
+    /// Prompt for the passphrase of an encrypted identity file.
+    pub passphrase_prompt: Option<PassphrasePrompt>,
 }
 
 impl ViewState {
@@ -169,6 +171,7 @@ impl ViewState {
             keybindings: ParsedKeybindings::default(),
             tick_count: 0,
             update_popup: None,
+            passphrase_prompt: None,
         }
     }
 }
@@ -177,6 +180,14 @@ impl Default for ViewState {
     fn default() -> Self {
         Self::default_inner()
     }
+}
+
+/// In-memory prompt for an encrypted SSH identity file.
+pub struct PassphrasePrompt {
+    pub host_name: String,
+    pub key_path: String,
+    pub field: FormField,
+    pub error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -744,6 +755,20 @@ impl App {
                     "⚠ Key setup rolled back for '{}': {}",
                     host_name, result
                 ));
+            }
+
+            CoreEvent::KeyPassphraseRequired {
+                host_name,
+                key_path,
+            } => {
+                if self.view.passphrase_prompt.is_none() {
+                    self.view.passphrase_prompt = Some(PassphrasePrompt {
+                        host_name,
+                        key_path,
+                        field: FormField::default(),
+                        error: None,
+                    });
+                }
             }
 
             // ----------------------------------------------------------------

@@ -192,7 +192,16 @@ async fn session_task(
     let (_handle, mut channel) = match result {
         Ok(pair) => pair,
         Err(e) => {
-            let _ = tx.send(CoreEvent::Error(format!("Terminal: {e}"))).await;
+            if let Some((_, key_path)) = crate::ssh::session::passphrase_required(&e) {
+                let _ = tx
+                    .send(CoreEvent::KeyPassphraseRequired {
+                        host_name: host.name.clone(),
+                        key_path,
+                    })
+                    .await;
+            } else {
+                let _ = tx.send(CoreEvent::Error(format!("Terminal: {e}"))).await;
+            }
             let _ = tx.send(CoreEvent::PtyExited(id)).await;
             return;
         }

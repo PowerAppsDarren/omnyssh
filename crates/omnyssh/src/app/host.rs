@@ -17,7 +17,7 @@ pub const FORM_FIELD_LABELS: &[&str] = &[
     "User",
     "Port",
     "Identity File",
-    "Password (optional)",
+    "Password (login, optional)",
     "Tags (comma-sep)",
     "Notes",
     "Monitoring (ssh | tcp | tcp:PORT)",

@@ -1,9 +1,11 @@
 //! The central action dispatcher: `process_action` applies an [`AppAction`] to
 //! shared state, spawns background tasks, and delegates to feature methods.
 
-use super::*;
+use anyhow::Context;
 use omnyssh_core::config::snippets::SnippetScope;
 use omnyssh_core::ssh::session::SshSession;
+
+use super::*;
 
 impl App {
     /// Executes an [`AppAction`] that requires access to shared state or the
@@ -254,6 +256,37 @@ impl App {
 
             AppAction::CancelKeySetup => {
                 self.view.host_list.popup = None;
+            }
+
+            AppAction::SubmitPassphrase => {
+                let Some(mut prompt) = self.view.passphrase_prompt.take() else {
+                    return Ok(());
+                };
+                let path = prompt.key_path.clone();
+                let passphrase = prompt.field.value.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    omnyssh_core::ssh::identity::unlock(&path, &passphrase)
+                })
+                .await
+                .context("passphrase unlock task panicked")?;
+                match result {
+                    Ok(()) => {
+                        if let Some(mgr) = &self.poll_manager {
+                            mgr.retry_now();
+                        }
+                        self.view.status_message =
+                            Some(format!("Unlocked {}. Reconnecting…", prompt.key_path));
+                    }
+                    Err(e) => {
+                        prompt.error = Some(e.to_string());
+                        prompt.field = FormField::default();
+                        self.view.passphrase_prompt = Some(prompt);
+                    }
+                }
+            }
+
+            AppAction::DismissPassphrase => {
+                self.view.passphrase_prompt = None;
             }
 
             // ---------------------------------------------------------------

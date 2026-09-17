@@ -169,6 +169,15 @@ pub struct UpdateAvailable {
     pub info: UpdateInfoDto,
 }
 
+/// A private key is encrypted and no passphrase is cached yet. Frontends prompt
+/// once per key path; the passphrase never crosses back out of the backend.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyPassphraseRequired {
+    pub host_name: String,
+    pub key_path: String,
+}
+
 /// A background error surfaced to the user.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
 pub struct Error {

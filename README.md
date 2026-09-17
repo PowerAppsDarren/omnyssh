@@ -84,6 +84,8 @@ Before touching `sshd_config` it saves a backup on the server. If any step fails
 
 The code lives in [`crates/omnyssh-core/src/ssh/key_setup.rs`](crates/omnyssh-core/src/ssh/key_setup.rs). Read it before you point this at production. That is the whole point of shipping it open source.
 
+Passphrase-protected keys work too. If a key is encrypted, OmnySSH asks for the passphrase once and keeps it in memory for the rest of the session — it is never written to `hosts.toml`. Keys already loaded in `ssh-agent` (including Windows OpenSSH's agent) are used first, so a key you `ssh-add` does not need a prompt. The host **Password** field is the server login password for first-time key setup, not the key passphrase.
+
 ---
 
 ## Comparison

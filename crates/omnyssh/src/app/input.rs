@@ -19,6 +19,13 @@ impl App {
             return Ok(None);
         }
 
+        if self.view.passphrase_prompt.is_some() {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                return Ok(Some(AppAction::Quit));
+            }
+            return Ok(self.handle_passphrase_prompt_key(key));
+        }
+
         let screen = self.state.read().await.screen.clone();
 
         // ----------------------------------------------------------------
@@ -198,6 +205,23 @@ impl App {
         }
 
         Ok(None)
+    }
+
+    fn handle_passphrase_prompt_key(&mut self, key: KeyEvent) -> Option<AppAction> {
+        let prompt = self.view.passphrase_prompt.as_mut()?;
+        match key.code {
+            KeyCode::Esc => Some(AppAction::DismissPassphrase),
+            KeyCode::Enter => Some(AppAction::SubmitPassphrase),
+            KeyCode::Backspace => {
+                prompt.field.backspace();
+                None
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                prompt.field.insert_char(c);
+                None
+            }
+            _ => None,
+        }
     }
 
     /// Handles key events when the Terminal screen is active.

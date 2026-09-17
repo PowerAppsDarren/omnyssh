@@ -35,6 +35,7 @@ import {
   reduceProgress,
   reduceRollback
 } from '$lib/stores/keySetup';
+import { applyKeyPassphraseRequired } from '$lib/stores/passphrase';
 import { offerUpdate } from '$lib/stores/update';
 import type { UpdateAvailable } from '$lib/bindings';
 
@@ -151,4 +152,11 @@ export function applyUpdateAvailable(payload: UpdateAvailable): void {
 
 export function applyError(message: string): void {
   lastError.set(message);
+}
+
+export function applyKeyPassphraseRequiredEvent(payload: {
+  hostName: string;
+  keyPath: string;
+}): void {
+  applyKeyPassphraseRequired(payload);
 }

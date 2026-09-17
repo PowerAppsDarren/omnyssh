@@ -7,8 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    FormField, HostForm, SnippetForm, SnippetResultEntry, UpdateButton, UpdatePopup,
-    UpdatePopupPhase, FORM_FIELD_LABELS, SNIPPET_FORM_FIELD_LABELS, UPDATE_BUTTONS,
+    FormField, HostForm, PassphrasePrompt, SnippetForm, SnippetResultEntry, UpdateButton,
+    UpdatePopup, UpdatePopupPhase, FORM_FIELD_LABELS, SNIPPET_FORM_FIELD_LABELS, UPDATE_BUTTONS,
 };
 use crate::ui::theme::Theme;
 use omnyssh_core::ssh::client::Host;
@@ -1006,6 +1006,97 @@ pub fn render_broadcast_picker(
             Span::styled(":cancel", Style::default().fg(theme.text_muted)),
         ])),
         hint_area,
+    );
+}
+
+/// Renders the passphrase prompt for an encrypted identity file.
+pub fn render_passphrase_prompt(frame: &mut Frame, prompt: &PassphrasePrompt, theme: &Theme) {
+    let area = centred_rect(62, 28, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!(" Unlock key — {} ", prompt.host_name))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 5 {
+        return;
+    }
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {}", prompt.key_path),
+            Style::default().fg(theme.text_secondary),
+        ))),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "  Enter passphrase (cached until OmnySSH exits):",
+            Style::default().fg(theme.text_primary),
+        ))),
+        rows[1],
+    );
+
+    let masked: String = "*".repeat(prompt.field.value.chars().count());
+    let cursor = prompt.field.value.chars().count().min(masked.len());
+    let display = format!("  {}| ", &masked[..cursor]);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            display,
+            Style::default()
+                .fg(theme.form_focused_fg)
+                .bg(theme.success_border)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        rows[2],
+    );
+
+    if let Some(error) = &prompt.error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  {error}"),
+                Style::default().fg(theme.text_error),
+            ))),
+            rows[3],
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(theme.text_success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":unlock  ", Style::default().fg(theme.text_muted)),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(theme.text_warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":cancel", Style::default().fg(theme.text_muted)),
+        ])),
+        rows[5],
     );
 }
 

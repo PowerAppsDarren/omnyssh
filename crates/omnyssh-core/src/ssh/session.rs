@@ -2,7 +2,7 @@
 //!
 //! Provides [`SshSession`] — a thin wrapper around a russh client handle that
 //! supports connecting, executing commands, and graceful disconnect.
-//! Authentication order: identity file → SSH agent → failure.
+//! Authentication order: SSH agent → identity file → default keys → password.
 //!
 //! Hosts with a `ProxyJump` are reached through their bastions: each hop is
 //! connected and authenticated in turn, and the next hop rides a
@@ -22,6 +22,7 @@ use russh::ChannelMsg;
 use tokio::time;
 
 use crate::ssh::client::Host;
+use crate::ssh::identity::{self, IdentityError};
 
 // ---------------------------------------------------------------------------
 // russh Handler implementation
@@ -413,38 +414,68 @@ fn known_hosts_handler(host: &Host) -> KnownHostsHandler {
     }
 }
 
+/// A private key for `host` is encrypted and has not been unlocked yet.
+#[derive(Debug, thiserror::Error)]
+#[error("SSH key {path} requires a passphrase")]
+pub struct PassphraseRequired {
+    /// Host that needed the key.
+    pub host: String,
+    /// Canonical path of the encrypted private key.
+    pub path: String,
+}
+
+/// If `err` is a [`PassphraseRequired`], return the host name and key path.
+pub fn passphrase_required(err: &anyhow::Error) -> Option<(String, String)> {
+    err.downcast_ref::<PassphraseRequired>()
+        .map(|e| (e.host.clone(), e.path.clone()))
+}
+
 /// Authenticates `handle` as `host`, converting a refusal into an error.
 async fn finish_auth(
     mut handle: Handle<KnownHostsHandler>,
     host: &Host,
 ) -> anyhow::Result<Handle<KnownHostsHandler>> {
-    if !authenticate(&mut handle, host).await? {
-        return Err(anyhow!("SSH authentication failed for {}", host.name));
+    match authenticate(&mut handle, host).await? {
+        AuthOutcome::Ok => Ok(handle),
+        AuthOutcome::Failed => Err(anyhow!("SSH authentication failed for {}", host.name)),
+        AuthOutcome::PassphraseRequired { path } => Err(PassphraseRequired {
+            host: host.name.clone(),
+            path,
+        }
+        .into()),
     }
-    Ok(handle)
 }
 
 // ---------------------------------------------------------------------------
 // Authentication helpers
 // ---------------------------------------------------------------------------
 
-async fn authenticate(handle: &mut Handle<KnownHostsHandler>, host: &Host) -> anyhow::Result<bool> {
-    let user = host.user.clone();
+enum AuthOutcome {
+    Ok,
+    Failed,
+    PassphraseRequired { path: String },
+}
 
-    // 1. Try SSH agent first — it handles passphrase-protected keys and is the
-    //    most common auth method for non-interactive clients.
-    #[cfg(unix)]
-    {
-        if try_agent_auth(handle, &user).await.unwrap_or(false) {
-            return Ok(true);
-        }
+async fn authenticate(
+    handle: &mut Handle<KnownHostsHandler>,
+    host: &Host,
+) -> anyhow::Result<AuthOutcome> {
+    let user = host.user.clone();
+    let mut encrypted_key: Option<String> = None;
+
+    // 1. Try SSH agent first — it handles passphrase-protected keys already
+    //    unlocked in the agent (including Windows OpenSSH's named pipe).
+    if try_agent_auth(handle, &user).await.unwrap_or(false) {
+        return Ok(AuthOutcome::Ok);
     }
 
     // 2. Try explicit identity_file from host config.
     if let Some(key_path) = &host.identity_file {
-        let path = expand_tilde(key_path);
-        if try_key_auth(handle, &user, &path).await.unwrap_or(false) {
-            return Ok(true);
+        let path = identity::expand_tilde(key_path);
+        match try_key_auth(handle, &user, &path).await {
+            Ok(true) => return Ok(AuthOutcome::Ok),
+            Ok(false) => {}
+            Err(e) => note_encrypted(&mut encrypted_key, e),
         }
     }
 
@@ -453,18 +484,18 @@ async fn authenticate(handle: &mut Handle<KnownHostsHandler>, host: &Host) -> an
     for key_path in default_key_paths() {
         if key_path.exists() {
             let path_str = key_path.to_string_lossy().into_owned();
-            if try_key_auth(handle, &user, &path_str)
-                .await
-                .unwrap_or(false)
-            {
-                return Ok(true);
+            match try_key_auth(handle, &user, &path_str).await {
+                Ok(true) => return Ok(AuthOutcome::Ok),
+                Ok(false) => {}
+                Err(e) => note_encrypted(&mut encrypted_key, e),
             }
         }
     }
 
     // 4. Try password authentication if provided.
     //    Password auth is NOT recommended for production use but is required for
-    //    the initial connection before setting up key-based auth.
+    //    the initial connection before setting up key-based auth. This is the
+    //    server login password, never the private-key passphrase.
     if let Some(password) = &host.password {
         if try_password_auth(handle, &user, password)
             .await
@@ -474,11 +505,25 @@ async fn authenticate(handle: &mut Handle<KnownHostsHandler>, host: &Host) -> an
                 host = %host.name,
                 "Connected via password authentication — consider setting up SSH key"
             );
-            return Ok(true);
+            return Ok(AuthOutcome::Ok);
         }
     }
 
-    Ok(false)
+    if let Some(path) = encrypted_key {
+        return Ok(AuthOutcome::PassphraseRequired { path });
+    }
+    Ok(AuthOutcome::Failed)
+}
+
+fn note_encrypted(encrypted_key: &mut Option<String>, err: anyhow::Error) {
+    match err.downcast_ref::<IdentityError>() {
+        Some(IdentityError::Encrypted(path)) if encrypted_key.is_none() => {
+            *encrypted_key = Some(path.clone());
+        }
+        _ => {
+            tracing::debug!(error = %err, "public-key authentication attempt failed");
+        }
+    }
 }
 
 /// Returns the standard default SSH private key paths in priority order.
@@ -506,11 +551,9 @@ async fn try_key_auth(
 ) -> anyhow::Result<bool> {
     // load_secret_key is synchronous (file I/O) — offload to blocking pool.
     let path = key_path.to_string();
-    let key_pair = tokio::task::spawn_blocking(move || {
-        russh::keys::load_secret_key(&path, None).with_context(|| format!("load key from {path}"))
-    })
-    .await
-    .context("spawn_blocking panicked")??;
+    let key_pair = tokio::task::spawn_blocking(move || identity::load_key_pair(&path))
+        .await
+        .context("spawn_blocking panicked")??;
 
     let ok = handle
         .authenticate_publickey(user, Arc::new(key_pair))
@@ -519,8 +562,15 @@ async fn try_key_auth(
     Ok(ok)
 }
 
-#[cfg(unix)]
 async fn try_agent_auth(
+    handle: &mut Handle<KnownHostsHandler>,
+    user: &str,
+) -> anyhow::Result<bool> {
+    try_agent_auth_inner(handle, user).await
+}
+
+#[cfg(unix)]
+async fn try_agent_auth_inner(
     handle: &mut Handle<KnownHostsHandler>,
     user: &str,
 ) -> anyhow::Result<bool> {
@@ -529,7 +579,38 @@ async fn try_agent_auth(
     let mut agent = AgentClient::connect_env()
         .await
         .context("connect to SSH agent")?;
+    offer_agent_identities(handle, user, agent).await
+}
 
+#[cfg(windows)]
+async fn try_agent_auth_inner(
+    handle: &mut Handle<KnownHostsHandler>,
+    user: &str,
+) -> anyhow::Result<bool> {
+    use russh::keys::agent::client::AgentClient;
+
+    let agent = AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent")
+        .await
+        .context("connect to Windows OpenSSH agent")?;
+    offer_agent_identities(handle, user, agent).await
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn try_agent_auth_inner(
+    _handle: &mut Handle<KnownHostsHandler>,
+    _user: &str,
+) -> anyhow::Result<bool> {
+    Ok(false)
+}
+
+async fn offer_agent_identities<S>(
+    handle: &mut Handle<KnownHostsHandler>,
+    user: &str,
+    mut agent: russh::keys::agent::client::AgentClient<S>,
+) -> anyhow::Result<bool>
+where
+    S: russh::keys::agent::client::AgentStream + Unpin + Send + 'static,
+{
     let identities = agent
         .request_identities()
         .await
@@ -596,17 +677,4 @@ async fn collect_output(
     let raw = String::from_utf8_lossy(&buf);
     let normalised: String = raw.lines().flat_map(|l| [l, "\n"]).collect();
     Ok((normalised, exit_status))
-}
-
-// ---------------------------------------------------------------------------
-// Path helpers
-// ---------------------------------------------------------------------------
-
-fn expand_tilde(path: &str) -> String {
-    if path.starts_with("~/") || path == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return path.replacen('~', &home.to_string_lossy(), 1);
-        }
-    }
-    path.to_string()
 }

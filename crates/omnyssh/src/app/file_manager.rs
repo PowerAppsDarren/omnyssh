@@ -342,6 +342,16 @@ impl App {
                                 .await;
                         }
                         Err(e) => {
+                            if let Some((host_name, key_path)) =
+                                omnyssh_core::ssh::session::passphrase_required(&e)
+                            {
+                                let _ = tx
+                                    .send(CoreEvent::KeyPassphraseRequired {
+                                        host_name,
+                                        key_path,
+                                    })
+                                    .await;
+                            }
                             let _ = tx
                                 .send(CoreEvent::SftpDisconnected {
                                     reason: e.to_string(),
