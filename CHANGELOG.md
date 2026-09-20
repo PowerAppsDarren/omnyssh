@@ -7,6 +7,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## Unreleased
+
+### Bug Fixes
+- **The Linux AppImage opens on current graphics drivers.** On distributions with a recent Mesa — Arch and CachyOS, Bazzite, Nobara — it aborted at launch with `Could not create default EGL display: EGL_BAD_PARAMETER` and never showed a window, and the software-rendering restart added in 1.1.2 ran into the same abort: the failure happens while the graphics driver is being loaded, before WebKit picks a renderer, so no WebKit setting can reach it. The cause was the bundle itself. It carried the build machine's own Wayland and X client libraries and put them ahead of yours on the library path, so your Mesa was loaded against a libwayland older than the one it is built against and a symbol it needs was missing. Those ten libraries are no longer packed into the AppImage; your system's copies are used, as they already were for libX11. The `.deb`, `.rpm`, macOS and Windows builds were never affected.
+
+---
+
 ## 1.1.2 — 2026-08-22
 
 ### Features
