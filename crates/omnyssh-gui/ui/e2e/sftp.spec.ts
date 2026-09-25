@@ -8,8 +8,8 @@ import { expect, test, type Page } from '@playwright/test';
 // the live progress bar is deterministically observable. Both spawn paths (a card's
 // `files`, and the SFTP spawner via the host picker) are load-bearing for the stage.
 const HOSTS = [
-  { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: ['prod'], source: 'manual', hasKey: true },
-  { name: 'db-1', hostname: 'db-1.example.com', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false }
+  { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: ['prod'], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false },
+  { name: 'db-1', hostname: 'db-1.example.com', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false, localForwards: [], tunnelAutostart: false }
 ];
 
 async function boot(page: Page): Promise<void> {

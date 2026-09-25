@@ -178,6 +178,19 @@ export async function startKeySetup(hostName: string): Promise<void> {
   if (res.status === 'error') throw new Error(res.error.message);
 }
 
+/** Start (or restart) a host's tunnel; its progress arrives as `tunnel-status-changed`
+ *  (tech-gui.md §4.2). Rejects an unknown host or one without port forwards. */
+export async function tunnelStart(hostName: string): Promise<void> {
+  const res = await commands.tunnelStart(hostName);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Stop a host's tunnel; a no-op when none runs. */
+export async function tunnelStop(hostName: string): Promise<void> {
+  const res = await commands.tunnelStop(hostName);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
 /** Force an immediate metric poll of every host (tech-gui.md §4.2). */
 export async function refreshMetrics(): Promise<void> {
   const res = await commands.refreshMetrics();

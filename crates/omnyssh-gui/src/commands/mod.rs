@@ -6,4 +6,5 @@ pub mod keysetup;
 pub mod sftp;
 pub mod snippets;
 pub mod terminal;
+pub mod tunnels;
 pub mod update;

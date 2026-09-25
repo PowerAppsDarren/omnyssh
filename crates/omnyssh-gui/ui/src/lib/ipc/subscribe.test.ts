@@ -21,6 +21,7 @@ vi.mock('$lib/bindings', () => {
       metricsUpdated: channel('metricsUpdated'),
       servicesDetected: channel('servicesDetected'),
       servicesFailed: channel('servicesFailed'),
+      tunnelStatusChanged: channel('tunnelStatusChanged'),
       snippetResult: channel('snippetResult'),
       terminalExited: channel('terminalExited'),
       sftpConnected: channel('sftpConnected'),

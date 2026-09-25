@@ -18,8 +18,10 @@ async listHosts() : Promise<Result<HostDto[], CommandError>> {
 },
 /**
  * Reload hosts from the shared config, refresh the cache, restart the pollers,
- * and broadcast the new list via `hosts-loaded` (tech-gui.md §4.2). Also the
- * startup entry point: the frontend calls it once its event bridge is up.
+ * bring running tunnels in line with the edit, and broadcast the new list via
+ * `hosts-loaded` followed by every live tunnel's status (tech-gui.md §4.2). Also
+ * the startup entry point: the frontend calls it once its event bridge is up,
+ * which is when tunnels autostart.
  */
 async reloadHosts() : Promise<Result<null, CommandError>> {
     try {
@@ -298,6 +300,29 @@ async startKeySetup(hostName: string) : Promise<Result<null, CommandError>> {
 }
 },
 /**
+ * Start `hostName`'s tunnel, or restart it if one is running. Async because the
+ * tunnel is spawned onto the Tauri runtime.
+ */
+async tunnelStart(hostName: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("tunnel_start", { hostName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Stop `hostName`'s tunnel. A no-op when none runs.
+ */
+async tunnelStop(hostName: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("tunnel_stop", { hostName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Trigger an immediate metric poll of every host (tech-gui.md §4.2). Used by the
  * settings-driven refresh cadence (§4.3); a no-op before the pollers start.
  */
@@ -382,6 +407,7 @@ sftpOpDone: SftpOpDone,
 snippetResult: SnippetResult,
 terminalExited: TerminalExited,
 transferProgress: TransferProgress,
+tunnelStatusChanged: TunnelStatusChanged,
 updateAvailable: UpdateAvailable
 }>({
 error: "error",
@@ -402,6 +428,7 @@ sftpOpDone: "sftp-op-done",
 snippetResult: "snippet-result",
 terminalExited: "terminal-exited",
 transferProgress: "transfer-progress",
+tunnelStatusChanged: "tunnel-status-changed",
 updateAvailable: "update-available"
 })
 
@@ -436,7 +463,7 @@ export type FilePreview = { sessionId: number; path: string; content: string }
  * (tech-gui.md §3.4). `hasKey` reports whether an identity file is configured;
  * the key path itself never crosses the boundary.
  */
-export type HostDto = { name: string; hostname: string; user: string; port: number; tags: string[]; notes?: string | null; source: HostSourceDto; hasKey: boolean; passwordAuthDisabled?: boolean | null; monitoring: MonitorModeDto; monitorPort?: number | null }
+export type HostDto = { name: string; hostname: string; user: string; port: number; tags: string[]; notes?: string | null; source: HostSourceDto; hasKey: boolean; passwordAuthDisabled?: boolean | null; monitoring: MonitorModeDto; monitorPort?: number | null; localForwards: LocalForwardDto[]; tunnelAutostart: boolean }
 /**
  * Inbound host form payload for `save_host` (tech-gui.md §4.1, Stage 4.1). Always
  * builds a **manual** `Host`: editing an SSH-config import saves a copy that shadows
@@ -445,7 +472,7 @@ export type HostDto = { name: string; hostname: string; user: string; port: numb
  * travel back out: the outbound `HostDto` omits both (§3.4). Inbound only, so it
  * derives `Deserialize` (not `Serialize`).
  */
-export type HostInputDto = { name: string; hostname: string; user: string; port: number; identityFile?: string | null; password?: string | null; proxyJump?: string | null; tags: string[]; notes?: string | null; monitoring?: MonitorModeDto | null; monitorPort?: number | null }
+export type HostInputDto = { name: string; hostname: string; user: string; port: number; identityFile?: string | null; password?: string | null; proxyJump?: string | null; tags: string[]; notes?: string | null; monitoring?: MonitorModeDto | null; monitorPort?: number | null; localForwards: LocalForwardDto[]; tunnelAutostart: boolean }
 /**
  * Host origin, mirrors `omnyssh_core::ssh::client::HostSource`.
  */
@@ -485,6 +512,12 @@ export type KeySetupRollback = { hostName: string; result: string }
  * Maps from the core `KeySetupStep`.
  */
 export type KeySetupStepDto = { index: number; total: number; description: string }
+/**
+ * One `ssh -L` rule (tech-gui.md §4.1): listen on `bindAddress:bindPort` here and
+ * reach `remoteHost:remotePort` as the host resolves it. No `bindAddress` means the
+ * loopback, as with ssh.
+ */
+export type LocalForwardDto = { bindAddress?: string | null; bindPort: number; remoteHost: string; remotePort: number }
 /**
  * A metrics snapshot for a host (tech-gui.md §4.1). The core's `Instant` is
  * flattened to `ageSeconds` (seconds since the sample) so it can serialise.
@@ -594,6 +627,15 @@ export type TransferProgress = TransferProgressDto
  * remote size could not be determined).
  */
 export type TransferProgressDto = { sessionId: number; transferId: number; done: number; total: number }
+/**
+ * A host's port-forwarding tunnel changed state (tech-gui.md §4.3).
+ */
+export type TunnelStatusChanged = { hostName: string; status: TunnelStatusDto }
+/**
+ * Where a host's tunnel stands (tech-gui.md §4.1). Internally tagged on `kind`,
+ * like `ConnectionStatusDto`.
+ */
+export type TunnelStatusDto = { kind: "connecting" } | { kind: "up" } | { kind: "retrying"; message: string } | { kind: "failed"; message: string } | { kind: "stopped" }
 /**
  * A newer release was found by the startup check (tech-gui.md §4.3). Mapped by the
  * shared engine bridge from `CoreEvent::UpdateAvailable`; drives the update banner.

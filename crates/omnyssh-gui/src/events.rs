@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dto::{
     ConnectionStatusDto, FileEntryDto, HostDto, KeySetupStepDto, MetricsDto, ServiceDto,
-    TransferProgressDto, UpdateInfoDto,
+    TransferProgressDto, TunnelStatusDto, UpdateInfoDto,
 };
 
 /// Full host list broadcast. Emitted by `reload_hosts` after refreshing the
@@ -45,6 +45,14 @@ pub struct ServicesDetected {
 pub struct ServicesFailed {
     pub host_name: String,
     pub message: String,
+}
+
+/// A host's port-forwarding tunnel changed state (tech-gui.md §4.3).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct TunnelStatusChanged {
+    pub host_name: String,
+    pub status: TunnelStatusDto,
 }
 
 /// Result of running a snippet on one host (tech-gui.md §4.3). Emitted directly by

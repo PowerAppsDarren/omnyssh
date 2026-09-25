@@ -8,7 +8,7 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use tokio::sync::mpsc;
 
-use crate::dto::{FileEntryDto, TransferProgressDto};
+use crate::dto::{FileEntryDto, TransferProgressDto, TunnelStatusDto};
 use crate::events;
 use crate::state::GuiState;
 
@@ -39,6 +39,17 @@ pub async fn forward_core_events(app: AppHandle, mut rx: mpsc::Receiver<CoreEven
             }
             CoreEvent::DiscoveryFailed(host_name, message) => {
                 let _ = events::ServicesFailed { host_name, message }.emit(&app);
+            }
+            CoreEvent::TunnelStatusChanged(host_name, status) => {
+                let status = TunnelStatusDto::from(&status);
+                app.state::<GuiState>()
+                    .tunnel_status_changed(&host_name, &status, || {
+                        let _ = events::TunnelStatusChanged {
+                            host_name: host_name.clone(),
+                            status: status.clone(),
+                        }
+                        .emit(&app);
+                    });
             }
             CoreEvent::Error(message) => {
                 let _ = events::Error { message }.emit(&app);

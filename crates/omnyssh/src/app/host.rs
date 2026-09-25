@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use super::*;
 use omnyssh_core::ssh::client::{HostSource, MonitorMode};
+use omnyssh_core::ssh::tunnel::LocalForward;
 
 // ---------------------------------------------------------------------------
 // Host form (used in Add / Edit popups)
@@ -21,6 +22,8 @@ pub const FORM_FIELD_LABELS: &[&str] = &[
     "Tags (comma-sep)",
     "Notes",
     "Monitoring (ssh | tcp | tcp:PORT)",
+    "Port forwards (port:host:hostport, ...)",
+    "Start tunnel on launch (y/n)",
 ];
 
 /// Whether an edit changed anything a running poller reads. Everything else on
@@ -64,6 +67,58 @@ fn parse_monitoring(value: &str) -> Result<(MonitorMode, Option<u16>), String> {
             .filter(|&p| p != 0)
             .map(|p| (MonitorMode::TcpPort, Some(p)))
             .ok_or_else(|| format!("Monitoring must be 'ssh', 'tcp' or 'tcp:PORT', got '{other}'")),
+    }
+}
+
+/// Renders a host's port forwards the way their form field holds them.
+pub fn forwards_value(host: &Host) -> String {
+    host.local_forwards
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Parses the port forwards field: comma-separated `ssh -L` rules.
+fn parse_forwards(value: &str) -> Result<Vec<LocalForward>, String> {
+    let forwards: Vec<LocalForward> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|rule| !rule.is_empty())
+        .map(|rule| rule.parse().map_err(|e| format!("Port forward: {e}")))
+        .collect::<Result<_, _>>()?;
+    // Two rules on one local port would fail the whole tunnel when it binds.
+    let mut listening = std::collections::HashSet::new();
+    for forward in &forwards {
+        let address = forward.bind_address.as_deref().unwrap_or("localhost");
+        if !listening.insert((address, forward.bind_port)) {
+            return Err(format!(
+                "Port forward: two rules listen on port {}",
+                forward.bind_port
+            ));
+        }
+    }
+    Ok(forwards)
+}
+
+/// Renders the autostart flag into its form field; off stays blank like the
+/// other optional fields.
+fn autostart_value(host: &Host) -> &'static str {
+    if host.tunnel_autostart {
+        "y"
+    } else {
+        ""
+    }
+}
+
+fn parse_autostart(value: &str) -> Result<bool, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "n" | "no" => Ok(false),
+        "y" | "yes" => Ok(true),
+        _ => Err(format!(
+            "Start tunnel on launch must be y or n, got '{}'",
+            value.trim()
+        )),
     }
 }
 
@@ -137,6 +192,8 @@ impl HostForm {
         form.fields[6] = FormField::with_value(host.tags.join(", "));
         form.fields[7] = FormField::with_value(host.notes.as_deref().unwrap_or(""));
         form.fields[8] = FormField::with_value(monitoring_value(host));
+        form.fields[9] = FormField::with_value(forwards_value(host));
+        form.fields[10] = FormField::with_value(autostart_value(host));
         form
     }
 
@@ -210,6 +267,8 @@ impl HostForm {
         };
 
         let (monitoring, monitor_port) = parse_monitoring(self.fields[8].value.trim())?;
+        let local_forwards = parse_forwards(&self.fields[9].value)?;
+        let tunnel_autostart = parse_autostart(&self.fields[10].value)?;
 
         Ok(Host {
             name,
@@ -225,6 +284,8 @@ impl HostForm {
             original_ssh_host: None,
             monitoring,
             monitor_port,
+            local_forwards,
+            tunnel_autostart,
             key_setup_date: None,
             password_auth_disabled: None,
         })
@@ -546,6 +607,7 @@ impl App {
                     }
 
                     self.save_manual_hosts().await;
+                    self.sync_tunnels().await;
 
                     // The edit can change the address, the port or the monitoring
                     // mode, none of which a running poller picks up. The pool has no
@@ -599,6 +661,7 @@ impl App {
                 }
             }
             self.save_manual_hosts().await;
+            self.sync_tunnels().await;
             let state = self.state.read().await;
             self.view.host_list.rebuild_filter(
                 &state.hosts,
@@ -615,6 +678,22 @@ impl App {
         if let Err(e) = config::save_hosts(&hosts) {
             self.view.status_message = Some(format!("Save failed: {e}"));
         }
+    }
+
+    /// Brings the running tunnels in line with the host list. A failed tunnel
+    /// reports nothing more, so its status is dropped here once its host is
+    /// gone — a later host of that name must not inherit it.
+    pub(crate) async fn sync_tunnels(&mut self) {
+        let mut state = self.state.write().await;
+        if let Some(tunnels) = &mut self.tunnel_manager {
+            tunnels.sync(&state.hosts);
+        }
+        let AppState {
+            hosts,
+            tunnel_statuses,
+            ..
+        } = &mut *state;
+        tunnel_statuses.retain(|name, _| hosts.iter().any(|h| &h.name == name));
     }
 }
 
@@ -733,6 +812,115 @@ mod tests {
                 "a changed poller input went unnoticed"
             );
         }
+    }
+
+    fn forwarded_host() -> Host {
+        Host {
+            name: String::from("web"),
+            hostname: String::from("10.0.0.1"),
+            local_forwards: [
+                "9443:127.0.0.1:9443",
+                "0.0.0.0:5432:db.internal:5432",
+                "[::1]:8080:[fe80::1]:80",
+            ]
+            .iter()
+            .map(|rule| rule.parse().expect("valid rule"))
+            .collect(),
+            tunnel_autostart: true,
+            ..Host::default()
+        }
+    }
+
+    #[test]
+    fn the_forwards_field_round_trips_through_the_form() {
+        let host = forwarded_host();
+        assert_eq!(
+            forwards_value(&host),
+            "9443:127.0.0.1:9443, 0.0.0.0:5432:db.internal:5432, [::1]:8080:[fe80::1]:80"
+        );
+        assert_eq!(
+            parse_forwards(&forwards_value(&host)),
+            Ok(host.local_forwards)
+        );
+        assert_eq!(
+            parse_forwards(" 9443:localhost:9443 , ,"),
+            Ok(vec!["9443:localhost:9443".parse().unwrap()])
+        );
+        assert_eq!(parse_forwards(""), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn two_rules_on_one_local_port_are_rejected() {
+        for text in ["8080:a:80, 8080:b:80", "8080:a:80, localhost:8080:b:80"] {
+            assert_eq!(
+                parse_forwards(text),
+                Err(String::from("Port forward: two rules listen on port 8080"))
+            );
+        }
+        // The same port on two separate addresses is two sockets.
+        assert!(parse_forwards("10.0.0.5:8080:a:80, 10.0.0.6:8080:b:80").is_ok());
+    }
+
+    #[test]
+    fn a_bad_forward_is_rejected_as_one() {
+        for text in ["9443", "9443:localhost:0", "9443:localhost:9443, nonsense"] {
+            let err = parse_forwards(text).expect_err(text);
+            assert!(err.starts_with("Port forward: "), "'{text}' gave '{err}'");
+        }
+    }
+
+    #[test]
+    fn the_autostart_field_round_trips_through_the_form() {
+        for (text, on) in [
+            ("", false),
+            ("n", false),
+            (" No ", false),
+            ("y", true),
+            ("YES", true),
+        ] {
+            assert_eq!(parse_autostart(text), Ok(on), "parsing '{text}'");
+        }
+        for on in [false, true] {
+            let host = Host {
+                tunnel_autostart: on,
+                ..Host::default()
+            };
+            assert_eq!(parse_autostart(autostart_value(&host)), Ok(on));
+        }
+        for text in ["maybe", "1", "true"] {
+            assert_eq!(
+                parse_autostart(text),
+                Err(format!(
+                    "Start tunnel on launch must be y or n, got '{text}'"
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn an_edit_keeps_the_forwards_and_autostart() {
+        // Forwards set in the GUI or read from ~/.ssh/config have to survive an
+        // edit that never touches them.
+        let host = forwarded_host();
+        let edited = HostForm::from_host(&host)
+            .to_host(HostSource::Manual)
+            .expect("the form round-trips a valid host");
+        assert_eq!(edited.local_forwards, host.local_forwards);
+        assert!(edited.tunnel_autostart);
+
+        let mut form = HostForm::from_host(&host);
+        form.fields[9] = FormField::with_value("9443:localhost:9443, 99999:localhost:1");
+        assert!(form.to_host(HostSource::Manual).is_err());
+    }
+
+    #[test]
+    fn a_tunnel_edit_does_not_restart_the_pool() {
+        let base = Host {
+            name: String::from("web"),
+            hostname: String::from("10.0.0.1"),
+            ..Host::default()
+        };
+        assert!(!poller_inputs_changed(&base, &forwarded_host()));
     }
 
     #[test]

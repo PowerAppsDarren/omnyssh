@@ -256,6 +256,33 @@ impl App {
                 self.view.host_list.popup = None;
             }
 
+            AppAction::ToggleTunnel => {
+                let host = {
+                    let state = self.state.read().await;
+                    self.view
+                        .host_list
+                        .selected_host_idx()
+                        .and_then(|i| state.hosts.get(i))
+                        .cloned()
+                };
+                let (Some(host), Some(tunnels)) = (host, &mut self.tunnel_manager) else {
+                    return Ok(());
+                };
+                if host.local_forwards.is_empty() {
+                    self.view.status_message = Some(format!(
+                        "No port forwards set for '{}' — add them with e",
+                        host.name
+                    ));
+                } else if tunnels.is_running(&host.name) {
+                    tunnels.stop(&host.name);
+                    self.view.status_message = Some(format!("Tunnel for '{}' stopped", host.name));
+                } else {
+                    self.view.status_message =
+                        Some(format!("Starting tunnel for '{}'…", host.name));
+                    tunnels.start(host);
+                }
+            }
+
             // ---------------------------------------------------------------
             // Detail View actions
             // ---------------------------------------------------------------
