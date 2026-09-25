@@ -9,12 +9,20 @@
   import { get } from 'svelte/store';
   import type { HostDto, HostInputDto } from '$lib/bindings';
   import { Surface, Chip, StatusDot, Icon, Button, statusToken } from '$lib/theme';
-  import { serverCards, filterHosts, QUICK_ACTIONS } from './serverCard';
+  import { serverCards, filterHosts, forwardListen, forwardTarget, QUICK_ACTIONS } from './serverCard';
   import { spawnSession } from '$lib/stores/navigation';
   import { streamerMode, displayHostname } from '$lib/stores/streamer';
   import { hosts } from '$lib/stores/hosts';
   import { lastError } from '$lib/stores/notifications';
-  import { saveHost, deleteHost, reloadHosts, startKeySetup, refreshMetrics } from '$lib/ipc/commands';
+  import {
+    saveHost,
+    deleteHost,
+    reloadHosts,
+    startKeySetup,
+    refreshMetrics,
+    tunnelStart,
+    tunnelStop
+  } from '$lib/ipc/commands';
   import { isRefreshHotkey } from '$lib/stores/ui';
   import { beginKeySetup, dismissKeySetup } from '$lib/stores/keySetup';
   import { emptyForm, formFromHost } from './hostForm';
@@ -90,6 +98,15 @@
       await startKeySetup(host.name);
     } catch (e) {
       dismissKeySetup();
+      lastError.set(message(e));
+    }
+  }
+
+  // The outcome arrives as `tunnel-status-changed`; only a rejected command lands here.
+  async function toggleTunnel(name: string, running: boolean): Promise<void> {
+    try {
+      await (running ? tunnelStop(name) : tunnelStart(name));
+    } catch (e) {
       lastError.set(message(e));
     }
   }
@@ -352,6 +369,51 @@
             </div>
           {:else if card.servicesError}
             <div class="text-xs text-faint">Service scan unavailable</div>
+          {/if}
+
+          <!-- Port forwarding: one tunnel per host carries every forward. -->
+          {#if card.tunnel}
+            {@const tunnel = card.tunnel}
+            <div class="space-y-2 border-t border-default pt-3">
+              <div class="flex items-center gap-2">
+                <span class="text-faint"><Icon name="tunnel" size={13} /></span>
+                <StatusDot status={tunnel.dot} size={7} label="{card.host.name} tunnel {tunnel.label}" />
+                <span class="text-xs text-muted">{tunnel.label}</span>
+                {#if tunnel.autostart}
+                  <span
+                    class="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+                    title="Starts when OmnySSH opens"
+                  >
+                    auto
+                  </span>
+                {/if}
+                <button
+                  type="button"
+                  class="{pill} ml-auto"
+                  title="{tunnel.running ? 'Stop' : 'Start'} the tunnel to {card.host.name}"
+                  aria-label="{tunnel.running ? 'Stop' : 'Start'} the tunnel to {card.host.name}"
+                  onclick={() => toggleTunnel(card.host.name, tunnel.running)}
+                >
+                  <Icon name={tunnel.running ? 'close' : 'play'} size={12} />
+                  {tunnel.running ? 'Stop' : 'Start'}
+                </button>
+              </div>
+              <ul class="space-y-1">
+                {#each tunnel.forwards as forward, f (f)}
+                  <li class="flex min-w-0 items-center gap-1.5 font-mono text-xs text-muted">
+                    <span class="truncate">{forwardListen(forward, $streamerMode)}</span>
+                    <span class="shrink-0 text-faint">→</span>
+                    <span class="truncate">{forwardTarget(forward, $streamerMode)}</span>
+                  </li>
+                {/each}
+              </ul>
+              <!-- The reason names hosts and addresses, so streamer mode keeps it off screen. -->
+              {#if tunnel.message}
+                <p class="break-words text-xs {tunnel.running ? 'text-faint' : 'text-status-crit'}">
+                  {$streamerMode ? 'Details hidden in streamer mode' : tunnel.message}
+                </p>
+              {/if}
+            </div>
           {/if}
         </Surface>
       {/each}

@@ -1,7 +1,8 @@
 //! Parser for `~/.ssh/config`.
 //!
 //! Supported directives: `Host`, `HostName`, `User`, `Port`,
-//! `IdentityFile`, `ProxyJump`, `Include`.
+//! `IdentityFile`, `ProxyJump`, `LocalForward`, `Include`. `Match` blocks are
+//! skipped.
 //!
 //! The original file is **never modified**.
 
@@ -9,6 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::ssh::client::{Host, HostSource};
+use crate::ssh::tunnel::LocalForward;
 
 /// Parses the text of an SSH config file and returns all non-wildcard hosts.
 ///
@@ -120,6 +122,26 @@ fn parse_content(
                     h.proxy_jump = Some(value.to_string());
                 }
             }
+            "localforward" if !in_wildcard => {
+                if let Some(ref mut h) = current {
+                    match parse_local_forward(value) {
+                        Ok(forward) => h.local_forwards.push(forward),
+                        Err(e) => {
+                            tracing::warn!(host = %h.name, error = %e, "LocalForward skipped")
+                        }
+                    }
+                }
+            }
+            // A Match block's directives apply by condition, not to the host
+            // above it; skip them like a wildcard block — a `LocalForward` there
+            // must not open a port for a host that never asked for it.
+            "match" => {
+                if let Some(h) = current.take() {
+                    hosts.push(h);
+                }
+                hosts.append(&mut deferred);
+                in_wildcard = true;
+            }
             // An Include may sit inside a Host block; the enclosing host keeps
             // collecting directives after it.
             "include" => {
@@ -177,6 +199,17 @@ fn parse_content(
     }
 
     hosts
+}
+
+/// Parses a `LocalForward` value: `[bind_address:]port host:hostport`, the two
+/// arguments `ssh_config(5)` takes, joined into the `ssh -L` notation.
+fn parse_local_forward(value: &str) -> Result<LocalForward, String> {
+    match value.split_whitespace().collect::<Vec<_>>().as_slice() {
+        [listen, target] => format!("{listen}:{target}").parse(),
+        _ => Err(format!(
+            "expected '[bind_address:]port host:hostport', got '{value}'"
+        )),
+    }
 }
 
 /// Removes everything from the first `#` onwards (inline comments).
@@ -441,6 +474,85 @@ host server1
         let cfg = "Host test\n    HostName 1.2.3.4\n";
         let hosts = parse_ssh_config(cfg);
         assert_eq!(hosts[0].source, crate::ssh::client::HostSource::SshConfig);
+    }
+
+    #[test]
+    fn test_local_forwards() {
+        let cfg = "\
+Host nas
+    HostName 10.0.0.5
+    LocalForward 9443 127.0.0.1:9443
+    LocalForward localhost:5432 db.internal:5432
+    LocalForward [::1]:8080 [fe80::1]:80
+";
+        let hosts = parse_ssh_config(cfg);
+        let specs: Vec<String> = hosts[0]
+            .local_forwards
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            specs,
+            [
+                "9443:127.0.0.1:9443",
+                "localhost:5432:db.internal:5432",
+                "[::1]:8080:[fe80::1]:80",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_unusable_local_forward_skipped() {
+        // A Unix-socket forward, a missing target and a bad port are dropped
+        // one by one; the host and its good forward survive.
+        let cfg = "\
+Host nas
+    LocalForward /tmp/local.sock /run/remote.sock
+    LocalForward 9443
+    LocalForward 99999 localhost:80
+    LocalForward 3000 localhost:3000
+";
+        let hosts = parse_ssh_config(cfg);
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].local_forwards.len(), 1);
+        assert_eq!(
+            hosts[0].local_forwards[0].to_string(),
+            "3000:localhost:3000"
+        );
+    }
+
+    #[test]
+    fn test_match_block_not_attached_to_previous_host() {
+        let cfg = "\
+Host web
+    HostName 10.0.0.1
+
+Match host db*
+    User postgres
+    LocalForward 0.0.0.0:3306 db:3306
+
+Host api
+    HostName 10.0.0.2
+";
+        let hosts = parse_ssh_config(cfg);
+        assert_eq!(hosts.len(), 2);
+        assert!(hosts[0].local_forwards.is_empty());
+        assert_ne!(hosts[0].user, "postgres");
+        assert_eq!(hosts[1].name, "api");
+        assert_eq!(hosts[1].hostname, "10.0.0.2");
+    }
+
+    #[test]
+    fn test_wildcard_local_forward_ignored() {
+        let cfg = "\
+Host *
+    LocalForward 8080 localhost:80
+
+Host web
+    HostName 10.0.0.1
+";
+        let hosts = parse_ssh_config(cfg);
+        assert!(hosts[0].local_forwards.is_empty());
     }
 
     #[test]
