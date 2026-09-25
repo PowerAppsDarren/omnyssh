@@ -11,7 +11,9 @@ const HOSTS = [
     port: 22,
     tags: ['prod'],
     source: 'manual',
-    hasKey: true
+    hasKey: true,
+    localForwards: [],
+    tunnelAutostart: false
   },
   {
     name: 'db-1',
@@ -20,7 +22,9 @@ const HOSTS = [
     port: 22,
     tags: [],
     source: 'manual',
-    hasKey: false
+    hasKey: false,
+    localForwards: [],
+    tunnelAutostart: false
   }
 ];
 
