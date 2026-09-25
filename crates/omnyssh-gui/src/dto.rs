@@ -329,6 +329,8 @@ impl From<HostInputDto> for Host {
             monitor_port: dto
                 .monitor_port
                 .filter(|&p| p != 0 && monitoring == MonitorMode::TcpPort),
+            local_forwards: Vec::new(),
+            tunnel_autostart: false,
             key_setup_date: None,
             password_auth_disabled: None,
         }

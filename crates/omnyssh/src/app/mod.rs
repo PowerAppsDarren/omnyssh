@@ -677,6 +677,9 @@ impl App {
                 ));
             }
 
+            // No tunnels are started yet.
+            CoreEvent::TunnelStatusChanged(..) => {}
+
             // ----------------------------------------------------------------
             // Auto SSH Key Setup events
             // ----------------------------------------------------------------

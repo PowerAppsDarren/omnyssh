@@ -225,6 +225,8 @@ impl HostForm {
             original_ssh_host: None,
             monitoring,
             monitor_port,
+            local_forwards: Vec::new(),
+            tunnel_autostart: false,
             key_setup_date: None,
             password_auth_disabled: None,
         })

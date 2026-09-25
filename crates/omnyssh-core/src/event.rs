@@ -11,6 +11,7 @@ use crate::config::snippets::Snippet;
 use crate::ssh::client::{ConnectionStatus, Host};
 use crate::ssh::key_setup::KeySetupStep;
 use crate::ssh::sftp::FileEntry;
+use crate::ssh::tunnel::TunnelStatus;
 
 /// Placeholder type aliases for future stages.
 /// `HostId` is the host's `name` field — stable, human-readable key.
@@ -130,6 +131,12 @@ pub enum CoreEvent {
     DiscoveryQuickScanDone(HostId, Vec<DetectedService>),
     /// Discovery failed for a host with an error message.
     DiscoveryFailed(HostId, String),
+
+    // -----------------------------------------------------------------------
+    // Port forwarding
+    // -----------------------------------------------------------------------
+    /// A host's tunnel changed state.
+    TunnelStatusChanged(HostId, TunnelStatus),
 
     // -----------------------------------------------------------------------
     // Auto SSH Key Setup events

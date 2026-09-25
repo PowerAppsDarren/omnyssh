@@ -9,7 +9,8 @@ keywords = ["ssh", "devops"]
 categories = ["network-programming"]
 
 [dependencies]
-tokio = { workspace = true }
+# `net`: the local listeners of port forwarding.
+tokio = { workspace = true, features = ["net"] }
 
 # SSH
 russh = "0.46"
