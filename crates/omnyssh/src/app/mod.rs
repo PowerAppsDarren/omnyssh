@@ -27,6 +27,7 @@ use omnyssh_core::ssh::client::{ConnectionStatus, Host};
 use omnyssh_core::ssh::pool::PollManager;
 use omnyssh_core::ssh::pty::PtyManager;
 use omnyssh_core::ssh::sftp::{SftpCommand, SftpManager};
+use omnyssh_core::ssh::tunnel::{TunnelManager, TunnelStatus};
 
 mod action;
 mod actions;
@@ -121,6 +122,9 @@ pub struct AppState {
     pub snippets: Vec<Snippet>,
     /// Detected services per host.
     pub services: HashMap<String, Vec<omnyssh_core::event::DetectedService>>,
+    /// Status of each host's tunnel, keyed by `host.name`. No entry means none
+    /// is running.
+    pub tunnel_statuses: HashMap<String, TunnelStatus>,
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +213,11 @@ pub struct App {
     poll_manager: Option<PollManager>,
     /// PTY session manager for the Terminal multi-session screen.
     pty_manager: Option<PtyManager>,
+    /// Runs the hosts' port-forwarding tunnels. Taken on quit to stop them.
+    tunnel_manager: Option<TunnelManager>,
+    /// Set by the first `HostsLoaded`: autostart belongs to launch, not to a
+    /// reload.
+    hosts_loaded: bool,
     /// One heavyweight event (Key, etc.) that was pulled from the channel
     /// during a lightweight-event drain but could not be handled inline.
     /// Consumed at the top of the next main-loop iteration before blocking
@@ -228,6 +237,7 @@ impl App {
         let (core_tx, core_rx) = mpsc::channel(256);
         let theme = Theme::from_name(&config.ui.theme);
         let keybindings = ParsedKeybindings::from_config(&config.keybindings);
+        let tunnel_manager = TunnelManager::new(core_tx.clone());
         Self {
             state: Arc::new(RwLock::new(AppState::default())),
             view: ViewState {
@@ -243,6 +253,8 @@ impl App {
             next_transfer_id: 0,
             poll_manager: None,
             pty_manager: None,
+            tunnel_manager: Some(tunnel_manager),
+            hosts_loaded: false,
             pending_event: None,
             config,
         }
@@ -340,6 +352,10 @@ impl App {
         }
         // Gracefully shut down all PTY sessions.
         if let Some(mgr) = self.pty_manager.take() {
+            mgr.shutdown();
+        }
+        // Stop every tunnel, releasing its local ports.
+        if let Some(mgr) = self.tunnel_manager.take() {
             mgr.shutdown();
         }
 
@@ -585,6 +601,12 @@ impl App {
                         Duration::from_secs(30),
                     ));
                 }
+                // A reload only brings running tunnels in line with the new list.
+                if std::mem::replace(&mut self.hosts_loaded, true) {
+                    self.sync_tunnels().await;
+                } else if let Some(tunnels) = &mut self.tunnel_manager {
+                    tunnels.autostart(&self.state.read().await.hosts);
+                }
                 tracing::info!("Loaded {} host(s)", n);
             }
 
@@ -677,8 +699,24 @@ impl App {
                 ));
             }
 
-            // No tunnels are started yet.
-            CoreEvent::TunnelStatusChanged(..) => {}
+            CoreEvent::TunnelStatusChanged(host_name, status) => {
+                match &status {
+                    TunnelStatus::Up => {
+                        self.view.status_message = Some(format!("Tunnel for '{host_name}' is up"));
+                    }
+                    TunnelStatus::Failed(reason) => {
+                        self.view.status_message =
+                            Some(format!("Tunnel for '{host_name}' failed: {reason}"));
+                    }
+                    _ => {}
+                }
+                let mut state = self.state.write().await;
+                if status == TunnelStatus::Stopped {
+                    state.tunnel_statuses.remove(&host_name);
+                } else {
+                    state.tunnel_statuses.insert(host_name, status);
+                }
+            }
 
             // ----------------------------------------------------------------
             // Auto SSH Key Setup events
@@ -721,6 +759,9 @@ impl App {
                         tracing::warn!("Failed to save hosts after key setup: {}", e);
                     }
                 }
+                // The server now refuses the password a running tunnel would
+                // redial with.
+                self.sync_tunnels().await;
 
                 // Close popup and show success.
                 self.view.host_list.popup = None;
