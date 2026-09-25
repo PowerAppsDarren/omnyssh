@@ -6,8 +6,8 @@ import { expect, test, type Page } from '@playwright/test';
 // `hosts-loaded` event through the same listener the app registers — so a save/delete
 // round-trips into the dashboard grid exactly as the real backend would drive it.
 const HOSTS = [
-  { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: ['prod'], source: 'manual', hasKey: true },
-  { name: 'imported', hostname: 'imported.example.com', user: 'root', port: 22, tags: [], source: 'sshConfig', hasKey: false }
+  { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: ['prod'], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false },
+  { name: 'imported', hostname: 'imported.example.com', user: 'root', port: 22, tags: [], source: 'sshConfig', hasKey: false, localForwards: [], tunnelAutostart: false }
 ];
 
 async function boot(page: Page): Promise<void> {
@@ -46,7 +46,9 @@ async function boot(page: Page): Promise<void> {
                 tags: (h.tags as string[]) ?? [],
                 notes: h.notes,
                 source: 'manual',
-                hasKey: !!h.identityFile
+                hasKey: !!h.identityFile,
+                localForwards: h.localForwards,
+                tunnelAutostart: h.tunnelAutostart
               };
               const i = state.hosts.findIndex((x) => (x as { name: string }).name === view.name);
               if (i >= 0) state.hosts[i] = { ...state.hosts[i], ...view };

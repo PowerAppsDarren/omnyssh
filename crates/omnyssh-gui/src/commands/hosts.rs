@@ -4,7 +4,7 @@ use tauri_specta::Event;
 use omnyssh_core::config::{load_hosts, save_hosts};
 use omnyssh_core::ssh::client::{Host, HostSource};
 
-use crate::dto::{HostDto, HostInputDto};
+use crate::dto::{check_forwards, HostDto, HostInputDto};
 use crate::error::CommandError;
 use crate::events;
 use crate::state::GuiState;
@@ -26,8 +26,10 @@ pub fn refresh_metrics(state: State<'_, GuiState>) -> Result<(), CommandError> {
 }
 
 /// Reload hosts from the shared config, refresh the cache, restart the pollers,
-/// and broadcast the new list via `hosts-loaded` (tech-gui.md §4.2). Also the
-/// startup entry point: the frontend calls it once its event bridge is up.
+/// bring running tunnels in line with the edit, and broadcast the new list via
+/// `hosts-loaded` followed by every live tunnel's status (tech-gui.md §4.2). Also
+/// the startup entry point: the frontend calls it once its event bridge is up,
+/// which is when tunnels autostart.
 #[tauri::command]
 #[specta::specta]
 pub async fn reload_hosts(app: AppHandle, state: State<'_, GuiState>) -> Result<(), CommandError> {
@@ -52,7 +54,16 @@ pub async fn reload_hosts(app: AppHandle, state: State<'_, GuiState>) -> Result<
         })?;
     state.set_hosts(hosts);
     state.restart_pollers();
+    state.sync_tunnels();
+    state.autostart_tunnels();
     let _ = events::HostsLoaded(state.host_dtos()).emit(&app);
+    state.replay_tunnel_statuses(|host_name, status| {
+        let _ = events::TunnelStatusChanged {
+            host_name: host_name.to_string(),
+            status: status.clone(),
+        }
+        .emit(&app);
+    });
     Ok(())
 }
 
@@ -68,6 +79,7 @@ pub async fn save_host(
     input: HostInputDto,
     state: State<'_, GuiState>,
 ) -> Result<(), CommandError> {
+    check_forwards(&input.local_forwards).map_err(|message| CommandError { message })?;
     // The parsed import is the only record of its bastion and key path, and neither
     // crosses the boundary (§3.4), so read them off the cache before the write moves
     // to a blocking task.
@@ -178,6 +190,8 @@ mod tests {
             notes: None,
             monitoring: None,
             monitor_port: None,
+            local_forwards: vec![],
+            tunnel_autostart: false,
         }
     }
 
@@ -363,5 +377,20 @@ mod tests {
         remove(&mut hosts, "ghost");
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].name, "a");
+    }
+
+    #[test]
+    fn upsert_takes_forwards_and_autostart_from_the_form() {
+        // Both are on the form, so an edit replaces them outright — clearing the list
+        // must clear it, not fall back to the stored rules.
+        let mut hosts = vec![Host {
+            name: "nas".to_string(),
+            local_forwards: vec!["9443:localhost:9443".parse().expect("rule")],
+            tunnel_autostart: true,
+            ..Host::default()
+        }];
+        upsert(&mut hosts, input("nas"), None);
+        assert!(hosts[0].local_forwards.is_empty());
+        assert!(!hosts[0].tunnel_autostart);
     }
 }

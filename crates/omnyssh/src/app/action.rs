@@ -41,6 +41,8 @@ pub enum AppAction {
     ConfirmKeySetup(usize),
     /// User cancelled the key setup prompt.
     CancelKeySetup,
+    /// Start or stop the selected host's port-forwarding tunnel.
+    ToggleTunnel,
 
     // -----------------------------------------------------------------------
     // Detail View actions
