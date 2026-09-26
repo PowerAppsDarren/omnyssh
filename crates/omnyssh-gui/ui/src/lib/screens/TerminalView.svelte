@@ -161,7 +161,7 @@
       resizeObserver.observe(container);
 
       ready = true;
-      if (active) term.focus();
+      if (active && !dialogOpen()) term.focus();
     })().catch((err) => {
       // `terminal_open` itself failed (e.g. the session could not be spawned): no
       // PtyExited follows, so mark the tab failed here instead of leaving it hung.
@@ -169,6 +169,12 @@
       sessions.setStatus(session.id, 'failed');
     });
   });
+
+  // An open dialog keeps the keyboard: a terminal finishing its open underneath
+  // must not pull in keystrokes meant for it, such as a key passphrase.
+  function dialogOpen(): boolean {
+    return document.querySelector('[aria-modal="true"]') !== null;
+  }
 
   onDestroy(() => {
     destroyed = true;
@@ -187,7 +193,7 @@
     if (active && ready) {
       requestAnimationFrame(() => {
         safeFit();
-        term?.focus();
+        if (!dialogOpen()) term?.focus();
         syncScrolled();
       });
     }

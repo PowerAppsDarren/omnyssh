@@ -1,46 +1,55 @@
 <script lang="ts">
-  // Prompt for the passphrase of an encrypted identity file. The value is sent
-  // to the backend and cached in process memory only — never written to disk.
+  // Asks for the passphrase of an encrypted identity file (tech-gui.md §4.2). The
+  // backend keeps it in memory only; here it is dropped as soon as it is sent.
   import Modal from '$lib/components/Modal.svelte';
-  import { Button } from '$lib/theme';
-  import { passphrasePrompt, dismissPassphrasePrompt } from '$lib/stores/passphrase';
+  import { Button, Icon } from '$lib/theme';
+  import { passphrasePrompt, settlePassphrase } from '$lib/stores/passphrase';
   import { unlockIdentity } from '$lib/ipc/commands';
-  import { lastError } from '$lib/stores/notifications';
 
   const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
   let passphrase = $state('');
   let submitting = $state(false);
-  let localError = $state<string | null>(null);
+  let error = $state<string | null>(null);
 
+  // A fresh form per key. Keyed on the path, not the prompt object, so a repeat
+  // event for the key on screen does not wipe what is being typed.
+  const keyPath = $derived($passphrasePrompt?.keyPath);
   $effect(() => {
-    if ($passphrasePrompt) {
-      passphrase = '';
-      localError = null;
-      submitting = false;
-    }
+    void keyPath;
+    passphrase = '';
+    error = null;
+    submitting = false;
   });
 
   async function submit(): Promise<void> {
-    const prompt = $passphrasePrompt;
-    if (!prompt || submitting) return;
+    if (!keyPath || submitting || !passphrase) return;
+    const secret = passphrase;
+    passphrase = '';
     submitting = true;
-    localError = null;
+    error = null;
     try {
-      await unlockIdentity(prompt.keyPath, passphrase);
-      dismissPassphrasePrompt();
+      await unlockIdentity(keyPath, secret);
+      settlePassphrase(keyPath);
     } catch (e) {
-      localError = message(e);
-      lastError.set(message(e));
+      error = message(e);
     } finally {
       submitting = false;
     }
   }
+
+  function cancel(): void {
+    if (keyPath) settlePassphrase(keyPath);
+  }
+
+  const field =
+    'w-full rounded-lg bg-surface-inset px-3 py-2 text-sm text-fg outline-none ' +
+    'focus-visible:ring-2 focus-visible:ring-focus placeholder:text-faint';
 </script>
 
 {#if $passphrasePrompt}
   {@const prompt = $passphrasePrompt}
-  <Modal label="Unlock SSH key" onClose={dismissPassphrasePrompt}>
+  <Modal label="Unlock SSH key" onClose={cancel}>
     <form
       class="space-y-4 px-5 py-4"
       onsubmit={(e) => {
@@ -49,29 +58,34 @@
       }}
     >
       <div class="space-y-1">
-        <h2 class="text-sm font-semibold">Unlock SSH key — {prompt.hostName}</h2>
+        <div class="flex items-center gap-2.5">
+          <Icon name="key" size={16} />
+          <h2 class="min-w-0 truncate text-sm font-semibold">Unlock SSH key — {prompt.hostName}</h2>
+        </div>
         <p class="break-all font-mono text-xs text-muted">{prompt.keyPath}</p>
-        <p class="text-xs text-faint">
-          The passphrase is kept in memory until you quit OmnySSH. It is never written to disk.
-        </p>
       </div>
-      <label class="block space-y-1">
-        <span class="text-xs text-muted">Passphrase</span>
+      <label class="block space-y-1 text-xs font-medium text-muted">
+        <span>Passphrase</span>
+        <!-- svelte-ignore a11y_autofocus -->
         <input
           type="password"
           bind:value={passphrase}
-          class="w-full rounded-lg border border-default bg-surface-inset px-3 py-2 text-sm text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
+          class={field}
           autocomplete="off"
           autofocus
         />
       </label>
-      {#if localError}
-        <p class="text-xs text-muted">{localError}</p>
+      <p class="text-xs text-faint">
+        Kept in memory until you quit OmnySSH, never written to disk. A terminal or file
+        session that stopped on this key has to be opened again.
+      </p>
+      {#if error}
+        <p class="text-xs text-status-crit">{error}</p>
       {/if}
       <div class="flex justify-end gap-2">
-        <Button variant="ghost" type="button" onclick={dismissPassphrasePrompt}>Cancel</Button>
+        <Button variant="ghost" type="button" onclick={cancel}>Cancel</Button>
         <Button variant="primary" type="submit" disabled={submitting || !passphrase}>
-          Unlock
+          {submitting ? 'Unlocking…' : 'Unlock'}
         </Button>
       </div>
     </form>

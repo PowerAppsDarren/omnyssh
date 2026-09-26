@@ -1,31 +1,21 @@
-import { writable } from 'svelte/store';
+import { derived, writable } from 'svelte/store';
+import type { KeyPassphraseRequired } from '$lib/bindings';
 
-// One in-memory passphrase prompt at a time. A second host that shares the same
-// key is ignored until this one is dismissed; unlocking caches the passphrase
-// for every host that uses the file.
+// Encrypted keys waiting for a passphrase, oldest first, one entry per key: every
+// host sharing a key is served by one unlock. The dialog shows the first.
+export const passphraseQueue = writable<KeyPassphraseRequired[]>([]);
 
-export interface PassphrasePrompt {
-  hostName: string;
-  keyPath: string;
+export const passphrasePrompt = derived(passphraseQueue, (queue) => queue[0] ?? null);
+
+/** Queue a prompt unless its key is already waiting. Pure so the router can test it. */
+export function enqueuePassphrase(
+  queue: KeyPassphraseRequired[],
+  next: KeyPassphraseRequired
+): KeyPassphraseRequired[] {
+  return queue.some((p) => p.keyPath === next.keyPath) ? queue : [...queue, next];
 }
 
-export const passphrasePrompt = writable<PassphrasePrompt | null>(null);
-
-/** Open the prompt unless one is already showing. Pure so the router can test it. */
-export function reducePassphraseRequired(
-  current: PassphrasePrompt | null,
-  hostName: string,
-  keyPath: string
-): PassphrasePrompt | null {
-  return current ?? { hostName, keyPath };
-}
-
-export function applyKeyPassphraseRequired(payload: PassphrasePrompt): void {
-  passphrasePrompt.update((current) =>
-    reducePassphraseRequired(current, payload.hostName, payload.keyPath)
-  );
-}
-
-export function dismissPassphrasePrompt(): void {
-  passphrasePrompt.set(null);
+/** Drop the prompt for `keyPath`, whether it was unlocked or dismissed. */
+export function settlePassphrase(keyPath: string): void {
+  passphraseQueue.update((queue) => queue.filter((p) => p.keyPath !== keyPath));
 }

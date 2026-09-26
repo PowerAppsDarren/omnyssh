@@ -6,6 +6,7 @@ import type {
   ConnectionStatusDto,
   FilePreview,
   HostDto,
+  KeyPassphraseRequired,
   KeySetupComplete,
   KeySetupFailed,
   KeySetupProgress,
@@ -37,7 +38,7 @@ import {
   reduceProgress,
   reduceRollback
 } from '$lib/stores/keySetup';
-import { applyKeyPassphraseRequired } from '$lib/stores/passphrase';
+import { enqueuePassphrase, passphraseQueue } from '$lib/stores/passphrase';
 import { offerUpdate } from '$lib/stores/update';
 import type { UpdateAvailable } from '$lib/bindings';
 
@@ -168,9 +169,8 @@ export function applyError(message: string): void {
   lastError.set(message);
 }
 
-export function applyKeyPassphraseRequiredEvent(payload: {
-  hostName: string;
-  keyPath: string;
-}): void {
-  applyKeyPassphraseRequired(payload);
+// An encrypted key the core could not use (tech-gui.md §4.3). Queued per key, so
+// the hosts sharing it wait on one dialog.
+export function applyKeyPassphraseRequired(payload: KeyPassphraseRequired): void {
+  passphraseQueue.update((queue) => enqueuePassphrase(queue, payload));
 }

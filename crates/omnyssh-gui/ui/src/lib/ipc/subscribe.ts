@@ -25,7 +25,7 @@ import {
   applyTerminalExited,
   applyTransferProgress,
   applyTunnelStatusChanged,
-  applyKeyPassphraseRequiredEvent
+  applyKeyPassphraseRequired
 } from './router';
 
 export async function startEventBridge(): Promise<() => void> {
@@ -50,9 +50,7 @@ export async function startEventBridge(): Promise<() => void> {
     offs.push(await events.keySetupFailed.listen((e) => applyKeySetupFailed(e.payload)));
     offs.push(await events.keySetupRollback.listen((e) => applyKeySetupRollback(e.payload)));
     offs.push(await events.updateAvailable.listen((e) => applyUpdateAvailable(e.payload)));
-    offs.push(
-      await events.keyPassphraseRequired.listen((e) => applyKeyPassphraseRequiredEvent(e.payload))
-    );
+    offs.push(await events.keyPassphraseRequired.listen((e) => applyKeyPassphraseRequired(e.payload)));
     offs.push(await events.error.listen((e) => applyError(e.payload.message)));
   } catch (err) {
     offs.forEach((off) => off());

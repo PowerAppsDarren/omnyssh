@@ -1,29 +1,34 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
 import {
-  dismissPassphrasePrompt,
+  enqueuePassphrase,
   passphrasePrompt,
-  reducePassphraseRequired
+  passphraseQueue,
+  settlePassphrase
 } from './passphrase';
 
-describe('passphrase prompt store', () => {
-  beforeEach(() => {
-    passphrasePrompt.set(null);
+const web = { hostName: 'web-1', keyPath: '/home/me/.ssh/id_ed25519' };
+const db = { hostName: 'db-1', keyPath: '/home/me/.ssh/other' };
+
+describe('passphrase prompt queue', () => {
+  beforeEach(() => passphraseQueue.set([]));
+
+  it('queues one prompt per key, oldest first', () => {
+    let queue = enqueuePassphrase([], web);
+    queue = enqueuePassphrase(queue, db);
+    // Another host on the same key is served by the same unlock.
+    queue = enqueuePassphrase(queue, { hostName: 'web-2', keyPath: web.keyPath });
+    expect(queue).toEqual([web, db]);
   });
 
-  it('opens a prompt when none is showing', () => {
-    const next = reducePassphraseRequired(null, 'web-1', '/home/me/.ssh/id_ed25519');
-    expect(next).toEqual({ hostName: 'web-1', keyPath: '/home/me/.ssh/id_ed25519' });
-  });
+  it('shows the first waiting key, then the next once it is settled', () => {
+    passphraseQueue.set([web, db]);
+    expect(get(passphrasePrompt)).toEqual(web);
 
-  it('keeps the first prompt when another host needs a key', () => {
-    const open = { hostName: 'web-1', keyPath: '/home/me/.ssh/id_ed25519' };
-    expect(reducePassphraseRequired(open, 'db-1', '/home/me/.ssh/other')).toEqual(open);
-  });
+    settlePassphrase(web.keyPath);
+    expect(get(passphrasePrompt)).toEqual(db);
 
-  it('dismisses the prompt', () => {
-    passphrasePrompt.set({ hostName: 'web-1', keyPath: '/tmp/key' });
-    dismissPassphrasePrompt();
+    settlePassphrase(db.keyPath);
     expect(get(passphrasePrompt)).toBeNull();
   });
 });
