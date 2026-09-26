@@ -158,6 +158,20 @@ async terminalClose(sessionId: number) : Promise<Result<null, CommandError>> {
 }
 },
 /**
+ * Paste into the focused terminal the way the webview's own Ctrl+Shift+V does.
+ * WebKitGTK binds that chord by its key symbol, so under a non-Latin layout it never
+ * fires and the frontend asks here instead. The other webviews bind it by the
+ * physical key and never need this.
+ */
+async terminalPaste() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("terminal_paste") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Open an SFTP session for `host_name` (tech-gui.md §4.2). Awaits the core connect,
  * registers the manager under a fresh public id, and spawns the per-session
  * forwarder; the `sftp-connected` ack then arrives stamped with that id (§3.4).

@@ -3238,6 +3238,7 @@ dependencies = [
  "tauri-plugin-window-state",
  "tauri-specta",
  "tokio",
+ "webkit2gtk",
  "x11-dl",
  "zbus",
 ]

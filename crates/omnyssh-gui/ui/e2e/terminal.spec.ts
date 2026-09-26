@@ -68,6 +68,9 @@ async function boot(page: Page): Promise<void> {
               }
               return Promise.resolve(null);
             }
+            case 'terminal_paste':
+              win.__pasted = ((win.__pasted as number | undefined) ?? 0) + 1;
+              return Promise.resolve(null);
             case 'terminal_resize':
             case 'terminal_close':
               return Promise.resolve(null);
@@ -227,6 +230,36 @@ test('Ctrl+Shift+C with nothing selected copies nothing', async ({ page }) => {
   await page.keyboard.press('Control+Shift+C');
   expect(await copied(page)).toEqual([]);
   expect(await writes(page)).toEqual([]);
+});
+
+// WebKitGTK under a Russian layout reports keyCode 0 for letter keys, which is also
+// what a synthetic keydown carries unless told otherwise — so this is the key event
+// xterm gets there: without the fallback, Ctrl+C would send nothing at all.
+test('under a non-Latin layout Ctrl+C still interrupts and Ctrl+Shift+V still pastes', async ({
+  page
+}) => {
+  await bootWithClipboard(page);
+  const press = (code: string, shiftKey: boolean, keyCode = 0) =>
+    page.locator('.xterm-helper-textarea').evaluate(
+      (el, init) => {
+        el.dispatchEvent(new KeyboardEvent('keydown', { ...init, ctrlKey: true, bubbles: true }));
+      },
+      { key: '\u0441', code, shiftKey, keyCode }
+    );
+
+  await press('KeyC', false);
+  await expect.poll(() => writes(page)).toEqual([[3]]);
+
+  // Where the webview does report the key (WebView2 under the same layout), xterm
+  // sends ^C itself and the fallback stays out: one ^C, not two.
+  await press('KeyC', false, 67);
+  await expect.poll(() => writes(page)).toEqual([[3], [3]]);
+
+  await press('KeyV', true);
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __pasted?: number }).__pasted))
+    .toBe(1);
+  expect(await writes(page)).toEqual([[3], [3]]);
 });
 
 test.describe('on macOS', () => {

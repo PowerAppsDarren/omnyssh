@@ -192,6 +192,13 @@ export async function tunnelStop(hostName: string): Promise<void> {
   if (res.status === 'error') throw new Error(res.error.message);
 }
 
+/** Paste into the focused terminal through the webview's own paste, for the Ctrl+Shift+V
+ *  WebKitGTK misses under a non-Latin layout. */
+export async function terminalPaste(): Promise<void> {
+  const res = await commands.terminalPaste();
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
 /** Minimize and close to the tray, or not; resolves to what this desktop allows. */
 export async function setTrayBehavior(
   minimizeToTray: boolean,

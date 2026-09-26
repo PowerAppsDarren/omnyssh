@@ -65,6 +65,8 @@ zbus = "5"
 x11-dl = "2"
 # Whether the window is native Wayland, which never reports being minimized.
 gtk = "0.18"
+# The webview's own paste, for the chord WebKitGTK cannot see under a non-Latin layout.
+webkit2gtk = "2"
 
 [dev-dependencies]
 # Property-based coverage of snippet param substitution (tech-gui.md §6.4, §7 Stage 2.2).

@@ -22,7 +22,9 @@ use commands::sftp::{
     sftp_mkdir, sftp_open, sftp_preview, sftp_rename, sftp_upload,
 };
 use commands::snippets::{delete_snippet, execute_snippet, list_snippets, save_snippet};
-use commands::terminal::{terminal_close, terminal_open, terminal_resize, terminal_write};
+use commands::terminal::{
+    terminal_close, terminal_open, terminal_paste, terminal_resize, terminal_write,
+};
 use commands::tray::set_tray_behavior;
 use commands::tunnels::{tunnel_start, tunnel_stop};
 use commands::update::{check_update, install_update, load_update_config, save_update_config};
@@ -101,6 +103,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             terminal_write,
             terminal_resize,
             terminal_close,
+            terminal_paste,
             sftp_open,
             sftp_list,
             sftp_upload,
