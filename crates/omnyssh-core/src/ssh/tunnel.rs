@@ -31,8 +31,10 @@ use tokio::time;
 use crate::event::CoreEvent;
 use crate::ssh::client::Host;
 use crate::ssh::identity;
+use crate::ssh::password;
 use crate::ssh::session::{
-    connect_and_auth, connect_budget, is_refused, passphrase_required, SshConnection,
+    connect_and_auth, connect_budget, is_refused, passphrase_required, waiting_login, Passwords,
+    SshConnection,
 };
 
 // ---------------------------------------------------------------------------
@@ -190,9 +192,11 @@ const RETRY_DELAYS: [Duration; 5] = [
 /// alone would redial every second a server that accepts and then drops us.
 const STABLE_AFTER: Duration = Duration::from_secs(60);
 
-/// Head room over [`connect_budget`] for authentication, which has no timeout
-/// of its own.
+/// Head room over [`connect_budget`] for the password steps of a login.
 const AUTH_BUDGET: Duration = Duration::from_secs(20);
+
+/// How often a tunnel with no key that gets in and no password tries again.
+const NO_PASSWORD_RETRY: Duration = Duration::from_secs(60);
 
 /// How often a live tunnel checks that its connection still is. A dead peer
 /// is noticed by the keepalives first; this only picks that up.
@@ -356,34 +360,50 @@ async fn serve(host: &Host, tx: &mpsc::Sender<CoreEvent>) -> TunnelStatus {
     loop {
         let budget = connect_budget(host).await + AUTH_BUDGET;
         let mut locked = None;
-        let reason = match time::timeout(budget, connect_and_auth(host)).await {
-            Ok(Ok(conn)) => {
-                send_status(tx, &host.name, TunnelStatus::Up).await;
-                let since = Instant::now();
-                let reason = forward(Arc::new(conn), &listeners, tx, &host.name).await;
-                if since.elapsed() >= STABLE_AFTER {
-                    retry = 0;
+        let mut waiting = None;
+        let reason =
+            match time::timeout(budget, connect_and_auth(host, Passwords::Remembered)).await {
+                Ok(Ok(conn)) => {
+                    send_status(tx, &host.name, TunnelStatus::Up).await;
+                    let since = Instant::now();
+                    let reason = forward(Arc::new(conn), &listeners, tx, &host.name).await;
+                    if since.elapsed() >= STABLE_AFTER {
+                        retry = 0;
+                    }
+                    reason
                 }
-                reason
-            }
-            Ok(Err(e)) if is_refused(&e) => return TunnelStatus::Failed(format!("{e:#}")),
-            Ok(Err(e)) => {
-                locked = passphrase_required(&e).map(str::to_owned);
-                format!("{e:#}")
-            }
-            Err(_) => format!(
-                "no answer from {} within {}s",
-                host.hostname,
-                budget.as_secs()
-            ),
-        };
+                Ok(Err(e)) if is_refused(&e) => return TunnelStatus::Failed(format!("{e:#}")),
+                Ok(Err(e)) => {
+                    locked = passphrase_required(&e).map(str::to_owned);
+                    waiting = waiting_login(&e).map(str::to_owned);
+                    format!("{e:#}")
+                }
+                Err(_) => format!(
+                    "no answer from {} within {}s",
+                    host.hostname,
+                    budget.as_secs()
+                ),
+            };
         tracing::debug!(host = %host.name, %reason, "tunnel down");
         send_status(tx, &host.name, TunnelStatus::Retrying(reason)).await;
-        if let Some(path) = locked {
-            // Redialling cannot help until the key is unlocked, and every try is
-            // a failed login on the server: hold the ports and wait for it.
-            identity::ask_passphrase_once(tx, &host.name, &path).await;
-            identity::unlocked(&path).await;
+        if let Some(login) = waiting {
+            // Redialling cannot help until the key is unlocked or a password is
+            // typed for the login (in a terminal, say), and every try is a failed
+            // login on the server: hold the ports and wait for either.
+            if let Some(path) = locked {
+                identity::ask_passphrase_once(tx, &host.name, &path).await;
+                tokio::select! {
+                    () = identity::unlocked(&path) => {}
+                    () = password::remembered(&login) => {}
+                }
+            } else {
+                // No key got in, which an agent unlocked meanwhile could change:
+                // look again now and then.
+                tokio::select! {
+                    () = password::remembered(&login) => {}
+                    () = time::sleep(NO_PASSWORD_RETRY) => {}
+                }
+            }
             continue;
         }
         time::sleep(RETRY_DELAYS[retry]).await;

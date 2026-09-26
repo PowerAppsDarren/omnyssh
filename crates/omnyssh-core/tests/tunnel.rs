@@ -454,8 +454,7 @@ async fn a_rejected_password_fails_without_a_retry() {
         other => panic!("expected Failed, got {other:?}"),
     }
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    assert_eq!(link.dials(), 1, "a refused login must not be retried");
+    assert_no_redial(&link).await;
     assert!(!tunnels.is_running("typo"));
     assert!(
         !is_bound(local).await,
@@ -511,8 +510,16 @@ async fn a_server_that_hangs_up_after_a_rejection_is_not_redialled() {
     assert_eq!(statuses.next("maxed").await, TunnelStatus::Connecting);
     let status = statuses.next("maxed").await;
     assert!(matches!(status, TunnelStatus::Failed(_)), "{status:?}");
+    assert_no_redial(&link).await;
+}
+
+/// One login is at most two connections — the refused one, and one that finds
+/// out whether keyboard-interactive takes the password — and nothing follows.
+async fn assert_no_redial(link: &Link) {
+    let dials = link.dials();
+    assert!(dials <= 2, "{dials} connections for one login");
     tokio::time::sleep(Duration::from_secs(3)).await;
-    assert_eq!(link.dials(), 1, "a refused login must not be retried");
+    assert_eq!(link.dials(), dials, "a refused login must not be retried");
 }
 
 /// A locked key is not a refusal: the tunnel asks for the passphrase once and
@@ -544,8 +551,10 @@ async fn a_locked_key_waits_for_its_passphrase() {
         }
         other => panic!("expected Retrying, got {other:?}"),
     }
+    let dials = link.dials();
+    assert!(dials <= 2, "{dials} connections for one login");
     tokio::time::sleep(Duration::from_secs(3)).await;
-    assert_eq!(link.dials(), 1, "a locked key must not be redialled");
+    assert_eq!(link.dials(), dials, "a locked key must not be redialled");
     assert!(
         is_bound(local).await,
         "the tunnel keeps its ports while it waits"
@@ -567,11 +576,16 @@ async fn a_locked_key_waits_for_its_passphrase() {
     assert!(statuses.rx.try_recv().is_err(), "the prompt is sent once");
 
     omnyssh_core::ssh::identity::unlock(&key_path, "sesame").expect("unlock");
-    // The server turns every key down and hangs up, so this dial is refused.
+    // The server turns every key down and hangs up, so this dial is refused —
+    // after one more connection for the saved password, which the hang-up cut off.
     statuses
         .until("locked", |s| matches!(s, TunnelStatus::Failed(_)))
         .await;
-    assert_eq!(link.dials(), 2, "the unlock redials at once");
+    let redials = link.dials() - dials;
+    assert!(
+        (1..=2).contains(&redials),
+        "the unlock redials at once: {redials}"
+    );
 }
 
 /// A host key that no longer matches `known_hosts` is refused for good.

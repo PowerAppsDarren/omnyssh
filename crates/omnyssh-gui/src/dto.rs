@@ -72,6 +72,7 @@ pub struct HostDto {
     pub monitor_port: Option<u16>,
     pub local_forwards: Vec<LocalForwardDto>,
     pub tunnel_autostart: bool,
+    pub forward_agent: bool,
 }
 
 /// One `ssh -L` rule (tech-gui.md §4.1): listen on `bindAddress:bindPort` here and
@@ -129,6 +130,16 @@ pub struct HostInputDto {
     pub monitor_port: Option<u16>,
     pub local_forwards: Vec<LocalForwardDto>,
     pub tunnel_autostart: bool,
+    pub forward_agent: bool,
+}
+
+/// What this desktop allows the tray (tech-gui.md §4.2 `set_tray_behavior`): an icon
+/// at all, and hiding a minimized window into it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TraySupportDto {
+    pub available: bool,
+    pub minimize: bool,
 }
 
 /// Live connection state for a host (tech-gui.md §4.1). Internally tagged so the
@@ -327,6 +338,7 @@ impl From<&Host> for HostDto {
             monitor_port: host.monitor_port,
             local_forwards: host.local_forwards.iter().map(Into::into).collect(),
             tunnel_autostart: host.tunnel_autostart,
+            forward_agent: host.forward_agent,
         }
     }
 }
@@ -414,6 +426,7 @@ impl From<HostInputDto> for Host {
                 .filter(|&p| p != 0 && monitoring == MonitorMode::TcpPort),
             local_forwards: dto.local_forwards.into_iter().map(Into::into).collect(),
             tunnel_autostart: dto.tunnel_autostart,
+            forward_agent: dto.forward_agent,
             key_setup_date: None,
             password_auth_disabled: None,
         }
@@ -665,6 +678,7 @@ mod tests {
             monitor_port: None,
             local_forwards: vec![],
             tunnel_autostart: false,
+            forward_agent: false,
         }
     }
 
@@ -720,6 +734,7 @@ mod tests {
             monitor_port: None,
             local_forwards: vec![],
             tunnel_autostart: false,
+            forward_agent: false,
         });
         assert!(host.identity_file.is_none());
         assert!(host.password.is_none());
@@ -1086,6 +1101,16 @@ mod tests {
         let host = Host::from(input);
         assert_eq!(host.local_forwards[0].to_string(), "5432:localhost:5432");
         assert!(host.tunnel_autostart);
+    }
+
+    #[test]
+    fn forward_agent_crosses_both_ways() {
+        let mut input = full_input();
+        input.forward_agent = true;
+        let host = Host::from(input);
+        assert!(host.forward_agent);
+        let json = serde_json::to_value(HostDto::from(&host)).expect("serialise HostDto");
+        assert_eq!(json["forwardAgent"], true);
     }
 
     #[test]

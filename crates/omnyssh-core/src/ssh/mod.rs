@@ -9,6 +9,7 @@ pub mod identity;
 pub mod jump;
 pub mod key_setup;
 pub mod metrics;
+pub mod password;
 pub mod pool;
 pub mod probe;
 pub mod pty;

@@ -310,6 +310,23 @@ impl App {
                 }
             }
 
+            AppAction::SubmitPassword | AppAction::DismissPassword => {
+                if self.view.password_prompts.is_empty() {
+                    return Ok(());
+                }
+                let prompt = self.view.password_prompts.remove(0);
+                let password =
+                    matches!(action, AppAction::SubmitPassword).then_some(prompt.field.value);
+                // The connection checks it with the server and asks again if
+                // it is refused.
+                if omnyssh_core::ssh::password::answer(prompt.request_id, password).is_err() {
+                    self.view.status_message = Some(format!(
+                        "{} is no longer waiting for a password",
+                        prompt.login
+                    ));
+                }
+            }
+
             // ---------------------------------------------------------------
             // Detail View actions
             // ---------------------------------------------------------------

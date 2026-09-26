@@ -3221,6 +3221,7 @@ name = "omnyssh-gui"
 version = "1.1.2"
 dependencies = [
  "chrono",
+ "gtk",
  "libc",
  "omnyssh-core",
  "proptest",
@@ -3231,11 +3232,15 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
  "tauri-plugin-store",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
  "tauri-specta",
  "tokio",
+ "webkit2gtk",
+ "x11-dl",
+ "zbus",
 ]
 
 [[package]]
@@ -5424,6 +5429,22 @@ dependencies = [
  "thiserror 2.0.18",
  "url",
  "windows 0.61.3",
+ "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-single-instance"
+version = "2.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db817fe9295e19b7d8357e900af31edb93703dd9fb6de524b007b47b6afc63b0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "windows-sys 0.60.2",
  "zbus",
 ]
 

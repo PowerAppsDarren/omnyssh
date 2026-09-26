@@ -8,6 +8,7 @@
   import { Button, Icon } from '$lib/theme';
   import Modal from '$lib/components/Modal.svelte';
   import Select from '$lib/components/Select.svelte';
+  import { isWindows } from '$lib/platform';
   import { emptyForwardRow, formToInput, type HostFormFields } from './hostForm';
 
   let {
@@ -174,6 +175,38 @@
       {#if fields.monitoring === 'tcpPort'}
         <p class="text-xs text-faint">Checks the port only — no login, and no metrics on the card.</p>
       {/if}
+
+      <div class="flex items-center justify-between gap-4 border-t border-default pt-3.5">
+        <div class="min-w-0">
+          <p class="text-sm text-fg">Forward SSH agent</p>
+          <p class="text-xs text-faint">
+            {#if isWindows}
+              Not available on Windows yet.
+            {:else}
+              Terminals here can use your local agent's keys, like <span class="font-mono">ssh -A</span>
+              — for sudo or hopping on. Anyone with root on this server can use them while a
+              terminal is open.
+            {/if}
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={fields.forwardAgent}
+          aria-label="Forward SSH agent"
+          disabled={isWindows}
+          onclick={() => (fields.forwardAgent = !fields.forwardAgent)}
+          class="relative h-6 w-11 shrink-0 rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50 {fields.forwardAgent
+            ? 'bg-accent'
+            : 'bg-surface-inset'}"
+        >
+          <span
+            class="absolute top-0.5 h-5 w-5 rounded-full bg-surface shadow-soft transition-[left] {fields.forwardAgent
+              ? 'left-[1.375rem]'
+              : 'left-0.5'}"
+          ></span>
+        </button>
+      </div>
 
       <!-- Port forwarding (`ssh -L`): each row listens on a local port and carries it to
            a host:port the server reaches. One tunnel per host carries every row. -->

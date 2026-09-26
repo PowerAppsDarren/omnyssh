@@ -12,6 +12,7 @@ import type {
   KeySetupProgress,
   KeySetupRollback,
   MetricsDto,
+  PasswordRequired,
   ServiceDto,
   SftpConnected,
   SftpDirListed,
@@ -39,6 +40,7 @@ import {
   reduceRollback
 } from '$lib/stores/keySetup';
 import { enqueuePassphrase, passphraseQueue } from '$lib/stores/passphrase';
+import { passwordQueue } from '$lib/stores/password';
 import { offerUpdate } from '$lib/stores/update';
 import type { UpdateAvailable } from '$lib/bindings';
 
@@ -173,4 +175,9 @@ export function applyError(message: string): void {
 // the hosts sharing it wait on one dialog.
 export function applyKeyPassphraseRequired(payload: KeyPassphraseRequired): void {
   passphraseQueue.update((queue) => enqueuePassphrase(queue, payload));
+}
+
+// A login waiting for its password (tech-gui.md §4.3); answered by `answer_password`.
+export function applyPasswordRequired(payload: PasswordRequired): void {
+  passwordQueue.update((queue) => [...queue, payload]);
 }

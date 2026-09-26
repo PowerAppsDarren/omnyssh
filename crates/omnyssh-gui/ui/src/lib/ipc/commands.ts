@@ -9,6 +9,7 @@ import type {
   HostInputDto,
   SnippetDto,
   TerminalBytes,
+  TraySupportDto,
   UpdateConfigDto,
   UpdateInfoDto
 } from '$lib/bindings';
@@ -191,6 +192,23 @@ export async function tunnelStop(hostName: string): Promise<void> {
   if (res.status === 'error') throw new Error(res.error.message);
 }
 
+/** Paste into the focused terminal through the webview's own paste, for the Ctrl+Shift+V
+ *  WebKitGTK misses under a non-Latin layout. */
+export async function terminalPaste(): Promise<void> {
+  const res = await commands.terminalPaste();
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Minimize and close to the tray, or not; resolves to what this desktop allows. */
+export async function setTrayBehavior(
+  minimizeToTray: boolean,
+  closeToTray: boolean
+): Promise<TraySupportDto> {
+  const res = await commands.setTrayBehavior(minimizeToTray, closeToTray);
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
+}
+
 /** Force an immediate metric poll of every host (tech-gui.md §4.2). */
 export async function refreshMetrics(): Promise<void> {
   const res = await commands.refreshMetrics();
@@ -227,5 +245,11 @@ export async function saveUpdateConfig(config: UpdateConfigDto): Promise<void> {
 /** Decrypt an identity file with `passphrase` and cache it for this process. */
 export async function unlockIdentity(keyPath: string, passphrase: string): Promise<void> {
   const res = await commands.unlockIdentity(keyPath, passphrase);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Answer a login's password prompt; `null` cancels the login. */
+export async function answerPassword(requestId: number, password: string | null): Promise<void> {
+  const res = await commands.answerPassword(requestId, password);
   if (res.status === 'error') throw new Error(res.error.message);
 }

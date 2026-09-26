@@ -186,6 +186,20 @@ pub struct KeyPassphraseRequired {
     pub key_path: String,
 }
 
+/// A connection waits for the login password of `login` (`user@host`). Answered
+/// with `answer_password`; the password only ever crosses inbound. `retry` says
+/// the previous one was refused; `newHostKey` is the fingerprint of a host key
+/// first seen on this connection, to check before typing.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordRequired {
+    pub request_id: u64,
+    pub host_name: String,
+    pub login: String,
+    pub retry: bool,
+    pub new_host_key: Option<String>,
+}
+
 /// A background error surfaced to the user.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
 pub struct Error {
