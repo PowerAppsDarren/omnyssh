@@ -526,7 +526,9 @@ async fn jump_chain(host: &Host) -> anyhow::Result<Vec<Host>> {
     let known = tokio::task::spawn_blocking(crate::config::load_all_hosts)
         .await
         .context("host list load panicked")?
-        .map_err(|e| anyhow!("could not load hosts for ProxyJump resolution: {e:#}"))?;
+        // Only the outer error: a parse error quotes the offending line of
+        // hosts.toml, which may be a saved password.
+        .map_err(|e| anyhow!("could not load hosts for ProxyJump resolution: {e}"))?;
 
     let chain = crate::ssh::jump::resolve_chain(host, &known)?;
     tracing::debug!(
