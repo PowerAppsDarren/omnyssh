@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -151,6 +153,10 @@ pub fn render_help(frame: &mut Frame, theme: &Theme) {
         Span::styled("        Setup SSH key", desc_style),
     ]));
     col1_lines.push(Line::from(vec![
+        Span::styled("  f", key_style),
+        Span::styled("        Tunnel on/off", desc_style),
+    ]));
+    col1_lines.push(Line::from(vec![
         Span::styled("  hjkl", key_style),
         Span::styled("    Navigate", desc_style),
     ]));
@@ -175,6 +181,10 @@ pub fn render_help(frame: &mut Frame, theme: &Theme) {
     col2_lines.push(Line::from(vec![
         Span::styled("  4-9", key_style),
         Span::styled("      Quick view", desc_style),
+    ]));
+    col2_lines.push(Line::from(vec![
+        Span::styled("  f", key_style),
+        Span::styled("        Tunnel on/off", desc_style),
     ]));
     col2_lines.push(Line::from(""));
 
@@ -338,7 +348,11 @@ pub fn render_host_form(frame: &mut Frame, form: &HostForm, title: &str, theme: 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let num_fields = FORM_FIELD_LABELS.len();
+    // A terminal too short for every field shows the ones around the focus;
+    // the padding and spacer rows point at the ones scrolled out.
+    let capacity = usize::from(inner.height.saturating_sub(3) / 2);
+    let window = field_window(FORM_FIELD_LABELS.len(), form.focused_field, capacity);
+    let num_fields = window.len();
     // 1 blank line top + 2 lines per field (label + input) + 2 hint lines
     let mut constraints: Vec<Constraint> = Vec::with_capacity(num_fields * 2 + 3);
     constraints.push(Constraint::Length(1)); // top padding
@@ -367,9 +381,23 @@ pub fn render_host_form(frame: &mut Frame, form: &HostForm, title: &str, theme: 
         .fg(theme.accent)
         .add_modifier(Modifier::BOLD);
 
-    for (i, label) in FORM_FIELD_LABELS.iter().enumerate() {
-        let label_row = rows[1 + i * 2];
-        let input_row = rows[2 + i * 2];
+    let more_style = Style::default().fg(theme.text_muted);
+    if window.start > 0 {
+        let more = format!("  ↑ {} more", window.start);
+        frame.render_widget(Paragraph::new(Span::styled(more, more_style)), rows[0]);
+    }
+    if window.end < FORM_FIELD_LABELS.len() {
+        let more = format!("  ↓ {} more", FORM_FIELD_LABELS.len() - window.end);
+        frame.render_widget(
+            Paragraph::new(Span::styled(more, more_style)),
+            rows[1 + num_fields * 2],
+        );
+    }
+
+    for (row, i) in window.enumerate() {
+        let label = FORM_FIELD_LABELS[i];
+        let label_row = rows[1 + row * 2];
+        let input_row = rows[2 + row * 2];
         let is_focused = i == form.focused_field;
 
         // Label
@@ -433,6 +461,16 @@ pub fn render_host_form(frame: &mut Frame, form: &HostForm, title: &str, theme: 
         ]);
         frame.render_widget(Paragraph::new(hint), rows[hint_row_idx]);
     }
+}
+
+/// The run of `count` form fields that fits in `capacity` slots and holds the
+/// `focused` one. Scrolls only once the focus passes the last slot.
+fn field_window(count: usize, focused: usize, capacity: usize) -> Range<usize> {
+    let capacity = capacity.clamp(1, count.max(1));
+    let start = focused
+        .saturating_sub(capacity - 1)
+        .min(count.saturating_sub(capacity));
+    start..start + capacity.min(count)
 }
 
 // ---------------------------------------------------------------------------
@@ -1776,4 +1814,36 @@ pub fn render_update(frame: &mut Frame, popup: &UpdatePopup, theme: &Theme) {
         ]),
     };
     frame.render_widget(Paragraph::new(hint), rows[2]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_form_window_always_holds_the_focused_field() {
+        for count in 1..=12 {
+            for capacity in 0..=13 {
+                for focused in 0..count {
+                    let window = field_window(count, focused, capacity);
+                    assert!(
+                        window.contains(&focused),
+                        "{count} fields, {capacity} slots, focus {focused}: {window:?}"
+                    );
+                    assert_eq!(window.len(), capacity.clamp(1, count));
+                    assert!(window.end <= count);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_form_window_scrolls_only_past_the_last_slot() {
+        // 11 fields at the 80x24 minimum leave room for 9.
+        assert_eq!(field_window(11, 0, 9), 0..9);
+        assert_eq!(field_window(11, 8, 9), 0..9);
+        assert_eq!(field_window(11, 9, 9), 1..10);
+        assert_eq!(field_window(11, 10, 9), 2..11);
+        assert_eq!(field_window(11, 10, 20), 0..11);
+    }
 }

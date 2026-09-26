@@ -5,6 +5,7 @@ import { hosts } from '$lib/stores/hosts';
 import { statuses } from '$lib/stores/statuses';
 import { metrics } from '$lib/stores/metrics';
 import { services } from '$lib/stores/services';
+import { tunnels } from '$lib/stores/tunnels';
 import { snippetRun, beginRun, clearRun } from '$lib/stores/snippets';
 import { sessions } from '$lib/stores/sessions';
 import { lastError } from '$lib/stores/notifications';
@@ -24,6 +25,7 @@ import {
   applyServicesFailed,
   applySnippetResult,
   applyTerminalExited,
+  applyTunnelStatusChanged,
   terminalDidExit
 } from './router';
 
@@ -33,6 +35,7 @@ describe('ipc event router', () => {
     statuses.set(new Map());
     metrics.set(new Map());
     services.set(new Map());
+    tunnels.set(new Map());
     lastError.set(null);
     dismissPassphrasePrompt();
   });
@@ -47,7 +50,9 @@ describe('ipc event router', () => {
         tags: [],
         source: 'manual',
         hasKey: false,
-        monitoring: 'ssh'
+        monitoring: 'ssh',
+        localForwards: [],
+        tunnelAutostart: false
       }
     ];
 
@@ -114,7 +119,7 @@ describe('ipc event router', () => {
     applyServicesDetected({ hostName: 'web-2', services: [{ kind: 'docker', metrics: [] }] });
 
     applyHostsLoaded([
-      { name: 'web-1', hostname: '10.0.0.1', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false, monitoring: 'ssh' }
+      { name: 'web-1', hostname: '10.0.0.1', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false, monitoring: 'ssh', localForwards: [], tunnelAutostart: false }
     ]);
 
     expect(get(statuses).has('web-2')).toBe(false);
@@ -220,5 +225,22 @@ describe('ipc event router', () => {
       keyPath: '/home/me/.ssh/other'
     });
     expect(get(passphrasePrompt)?.hostName).toBe('web-1');
+  });
+
+  it('keeps each host\'s latest tunnel status and forgets a stopped one', () => {
+    applyTunnelStatusChanged({ hostName: 'nas', status: { kind: 'connecting' } });
+    applyTunnelStatusChanged({ hostName: 'nas', status: { kind: 'up' } });
+    applyTunnelStatusChanged({ hostName: 'db', status: { kind: 'retrying', message: 'connection lost' } });
+    expect(get(tunnels).get('nas')).toEqual({ kind: 'up' });
+    expect(get(tunnels).get('db')).toEqual({ kind: 'retrying', message: 'connection lost' });
+
+    applyTunnelStatusChanged({ hostName: 'nas', status: { kind: 'stopped' } });
+    expect(get(tunnels).has('nas')).toBe(false);
+  });
+
+  it('drops the tunnel status of a host that is gone', () => {
+    applyTunnelStatusChanged({ hostName: 'old', status: { kind: 'failed', message: 'x' } });
+    applyHostsLoaded([]);
+    expect(get(tunnels).has('old')).toBe(false);
   });
 });

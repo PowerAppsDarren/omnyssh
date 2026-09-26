@@ -17,12 +17,14 @@ import type {
   SftpDisconnected,
   SftpOpDone,
   SnippetResult,
-  TransferProgressDto
+  TransferProgressDto,
+  TunnelStatusChanged
 } from '$lib/bindings';
 import { hosts } from '$lib/stores/hosts';
 import { statuses } from '$lib/stores/statuses';
 import { metrics, mergeMetrics } from '$lib/stores/metrics';
 import { services } from '$lib/stores/services';
+import { tunnels } from '$lib/stores/tunnels';
 import { snippetRun, reduceRunResult } from '$lib/stores/snippets';
 import { sessions } from '$lib/stores/sessions';
 import { sftp } from '$lib/stores/sftp';
@@ -48,6 +50,7 @@ export function applyHostsLoaded(payload: HostDto[]): void {
   statuses.update(prune);
   metrics.update(prune);
   services.update(prune);
+  tunnels.update(prune);
 }
 
 export function applyHostStatusChanged(payload: {
@@ -69,6 +72,17 @@ export function applyServicesDetected(payload: { hostName: string; services: Ser
 
 export function applyServicesFailed(payload: { hostName: string; message: string }): void {
   services.update((m) => new Map(m).set(payload.hostName, { kind: 'failed', message: payload.message }));
+}
+
+// A stopped tunnel leaves no entry, so a host that is renamed or deleted while its
+// tunnel winds down does not keep a stale one.
+export function applyTunnelStatusChanged(payload: TunnelStatusChanged): void {
+  tunnels.update((m) => {
+    const next = new Map(m);
+    if (payload.status.kind === 'stopped') next.delete(payload.hostName);
+    else next.set(payload.hostName, payload.status);
+    return next;
+  });
 }
 
 export function applySnippetResult(payload: SnippetResult): void {

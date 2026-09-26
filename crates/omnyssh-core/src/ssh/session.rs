@@ -12,6 +12,8 @@
 //! - Connect timeout: 10 seconds (per hop)
 //! - Command timeout: 30 seconds
 
+use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +41,10 @@ pub(crate) struct KnownHostsHandler {
     host: String,
     /// Port used for known_hosts lookup.
     port: u16,
+    /// Set when the server ends the session with a DISCONNECT of its own, as
+    /// OpenSSH does after too many failed logins. A link that just dies leaves
+    /// it unset.
+    hung_up: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -100,6 +106,59 @@ impl client::Handler for KnownHostsHandler {
                 Ok(false)
             }
         }
+    }
+
+    async fn disconnected(
+        &mut self,
+        reason: client::DisconnectReason<Self::Error>,
+    ) -> Result<(), Self::Error> {
+        match reason {
+            client::DisconnectReason::ReceivedDisconnect(_) => {
+                self.hung_up.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            client::DisconnectReason::Error(e) => Err(e),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Refused
+// ---------------------------------------------------------------------------
+
+/// A connection the server turned away on purpose: it refused every credential,
+/// or its host key no longer matches `known_hosts`. A type of its own so a caller
+/// that reconnects by itself can stop instead of piling up failed logins.
+#[derive(Debug)]
+pub(crate) struct Refused(String);
+
+impl fmt::Display for Refused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Whether `e` is, or wraps, a refused connection.
+pub(crate) fn is_refused(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
+        cause.is::<Refused>()
+            || matches!(
+                cause.downcast_ref::<russh::Error>(),
+                Some(russh::Error::UnknownKey)
+            )
+    })
+}
+
+/// Prefixes a hop's error with where it failed. The message is flattened, as
+/// before, but a refusal stays recognisable through the jump chain.
+fn at_hop(e: anyhow::Error, context: String) -> anyhow::Error {
+    let message = format!("{context}: {e:#}");
+    if is_refused(&e) {
+        Refused(message).into()
+    } else {
+        anyhow!(message)
     }
 }
 
@@ -276,14 +335,14 @@ pub(crate) async fn connect_and_auth(host: &Host) -> anyhow::Result<SshConnectio
             None => connect_direct(&config, hop).await,
             Some(via) => connect_tunnelled(&config, via, hop).await,
         }
-        .map_err(|e| anyhow!("ProxyJump via '{}' failed: {e:#}", hop.name))?;
+        .map_err(|e| at_hop(e, format!("ProxyJump via '{}' failed", hop.name)))?;
         jumps.push(handle);
     }
 
     let handle = match (jumps.last(), chain.last()) {
         (Some(via), Some(last)) => connect_tunnelled(&config, via, host)
             .await
-            .map_err(|e| anyhow!("connecting via '{}' failed: {e:#}", last.name))?,
+            .map_err(|e| at_hop(e, format!("connecting via '{}' failed", last.name)))?,
         _ => connect_direct(&config, host).await?,
     };
 
@@ -356,15 +415,20 @@ async fn connect_direct(
     host: &Host,
 ) -> anyhow::Result<Handle<KnownHostsHandler>> {
     let addr = format!("{}:{}", host.hostname, host.port);
+    let hung_up = Arc::new(AtomicBool::new(false));
     let handle = time::timeout(
         CONNECT_TIMEOUT,
-        client::connect(Arc::clone(config), addr, known_hosts_handler(host)),
+        client::connect(
+            Arc::clone(config),
+            addr,
+            known_hosts_handler(host, &hung_up),
+        ),
     )
     .await
     .map_err(|_| anyhow!("SSH connection timed out (10 s)"))?
     .context("SSH connection failed")?;
 
-    finish_auth(handle, host).await
+    finish_auth(handle, host, &hung_up).await
 }
 
 /// Reaches `host` through the already-connected bastion `via`: a `direct-tcpip`
@@ -389,28 +453,30 @@ async fn connect_tunnelled(
     .map_err(|_| anyhow!("SSH connection timed out (10 s)"))?
     .with_context(|| format!("open tunnel to {}:{}", host.hostname, host.port))?;
 
+    let hung_up = Arc::new(AtomicBool::new(false));
     let handle = time::timeout(
         CONNECT_TIMEOUT,
         client::connect_stream(
             Arc::clone(config),
             channel.into_stream(),
-            known_hosts_handler(host),
+            known_hosts_handler(host, &hung_up),
         ),
     )
     .await
     .map_err(|_| anyhow!("SSH connection timed out (10 s)"))?
     .context("SSH connection failed")?;
 
-    finish_auth(handle, host).await
+    finish_auth(handle, host, &hung_up).await
 }
 
 /// The host-key verifier for `host`. The lookup uses the target's own
 /// hostname/port even over a tunnel, so `known_hosts` entries match what an
 /// `ssh -J` would record.
-fn known_hosts_handler(host: &Host) -> KnownHostsHandler {
+fn known_hosts_handler(host: &Host, hung_up: &Arc<AtomicBool>) -> KnownHostsHandler {
     KnownHostsHandler {
         host: host.hostname.clone(),
         port: host.port,
+        hung_up: Arc::clone(hung_up),
     }
 }
 
@@ -434,16 +500,31 @@ pub fn passphrase_required(err: &anyhow::Error) -> Option<(String, String)> {
 async fn finish_auth(
     mut handle: Handle<KnownHostsHandler>,
     host: &Host,
+    hung_up: &AtomicBool,
 ) -> anyhow::Result<Handle<KnownHostsHandler>> {
     match authenticate(&mut handle, host).await? {
-        AuthOutcome::Ok => Ok(handle),
-        AuthOutcome::Failed => Err(anyhow!("SSH authentication failed for {}", host.name)),
-        AuthOutcome::PassphraseRequired { path } => Err(PassphraseRequired {
-            host: host.name.clone(),
-            path,
+        AuthOutcome::Ok => return Ok(handle),
+        AuthOutcome::PassphraseRequired { path } => {
+            return Err(PassphraseRequired {
+                host: host.name.clone(),
+                path,
+            }
+            .into());
         }
-        .into()),
+        AuthOutcome::Failed => {}
     }
+    let message = format!("SSH authentication failed for {}", host.name);
+    // `authenticate` folds a dropped link into "not accepted". A connection
+    // that is gone refused us only if the server hung up itself, as OpenSSH
+    // does after too many failed logins. russh records that as the session
+    // winds down, so let it finish first.
+    if handle.is_closed() {
+        let _ = time::timeout(Duration::from_secs(1), &mut handle).await;
+        if !hung_up.load(Ordering::SeqCst) {
+            return Err(anyhow!(message));
+        }
+    }
+    Err(Refused(message).into())
 }
 
 // ---------------------------------------------------------------------------

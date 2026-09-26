@@ -22,6 +22,7 @@ use commands::sftp::{
 };
 use commands::snippets::{delete_snippet, execute_snippet, list_snippets, save_snippet};
 use commands::terminal::{terminal_close, terminal_open, terminal_resize, terminal_write};
+use commands::tunnels::{tunnel_start, tunnel_stop};
 use commands::update::{check_update, install_update, load_update_config, save_update_config};
 use omnyssh_core::event::{CoreEvent, SessionId};
 use omnyssh_core::ssh::pty::PtyManager;
@@ -110,6 +111,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             list_local_dir,
             preview_local_file,
             start_key_setup,
+            tunnel_start,
+            tunnel_stop,
             refresh_metrics,
             unlock_identity,
             check_update,
@@ -123,6 +126,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             events::MetricsUpdated,
             events::ServicesDetected,
             events::ServicesFailed,
+            events::TunnelStatusChanged,
             events::SnippetResult,
             events::TerminalExited,
             events::SftpConnected,

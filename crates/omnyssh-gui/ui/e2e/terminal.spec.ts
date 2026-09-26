@@ -7,8 +7,8 @@ import { expect, test, type Page } from '@playwright/test';
 // on Enter (proving input round-trips). The host-first path (a Dashboard card's `sh`,
 // no picker) is the load-bearing flow the stage requires.
 const HOSTS = [
-  { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: ['prod'], source: 'manual', hasKey: true },
-  { name: 'db-1', hostname: 'db-1.example.com', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false }
+  { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: ['prod'], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false },
+  { name: 'db-1', hostname: 'db-1.example.com', user: 'root', port: 22, tags: [], source: 'manual', hasKey: false, localForwards: [], tunnelAutostart: false }
 ];
 
 async function boot(page: Page): Promise<void> {

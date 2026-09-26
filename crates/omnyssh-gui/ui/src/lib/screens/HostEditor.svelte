@@ -5,10 +5,10 @@
   // surfaces inline without closing. Semantic tokens only.
   import { onMount } from 'svelte';
   import type { HostInputDto } from '$lib/bindings';
-  import { Button } from '$lib/theme';
+  import { Button, Icon } from '$lib/theme';
   import Modal from '$lib/components/Modal.svelte';
   import Select from '$lib/components/Select.svelte';
-  import { formToInput, type HostFormFields } from './hostForm';
+  import { emptyForwardRow, formToInput, type HostFormFields } from './hostForm';
 
   let {
     mode,
@@ -63,6 +63,11 @@
   const secretHint = $derived(mode === 'edit' ? 'Leave blank to keep the current value' : undefined);
 
   const label = 'block space-y-1 text-xs font-medium text-muted';
+  const forwardGrid = 'grid grid-cols-[8.5rem,1fr,4.5rem,1.75rem] items-center gap-2';
+  const smallBtn =
+    'inline-flex items-center gap-1 rounded-full border border-default px-2 py-0.5 text-xs text-muted transition ' +
+    'hover:border-strong hover:bg-accent hover:text-accent-fg ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
   const field =
     'w-full rounded-lg bg-surface-inset px-3 py-2 text-sm text-fg outline-none ' +
     'focus-visible:ring-2 focus-visible:ring-focus placeholder:text-faint';
@@ -169,6 +174,91 @@
       {#if fields.monitoring === 'tcpPort'}
         <p class="text-xs text-faint">Checks the port only — no login, and no metrics on the card.</p>
       {/if}
+
+      <!-- Port forwarding (`ssh -L`): each row listens on a local port and carries it to
+           a host:port the server reaches. One tunnel per host carries every row. -->
+      <div class="space-y-2 border-t border-default pt-3.5">
+        <div class="flex items-center justify-between gap-3">
+          <span class="text-xs font-medium text-muted">Port forwarding</span>
+          <button
+            type="button"
+            class={smallBtn}
+            onclick={() => fields.forwards.push(emptyForwardRow())}
+          >
+            <Icon name="plus" size={12} />
+            Add forward
+          </button>
+        </div>
+        {#if fields.forwards.length}
+          <div class="{forwardGrid} text-[11px] text-faint">
+            <span>Local port</span>
+            <span>Remote host</span>
+            <span>Port</span>
+            <span></span>
+          </div>
+          {#each fields.forwards as row, i (i)}
+            <div class={forwardGrid}>
+              <input
+                bind:value={row.local}
+                class="{field} font-mono"
+                placeholder="9443"
+                aria-label="Forward {i + 1} local port"
+              />
+              <input
+                bind:value={row.remoteHost}
+                class="{field} font-mono"
+                placeholder="localhost"
+                aria-label="Forward {i + 1} remote host"
+              />
+              <input
+                bind:value={row.remotePort}
+                inputmode="numeric"
+                class="{field} font-mono"
+                placeholder="9443"
+                aria-label="Forward {i + 1} remote port"
+              />
+              <button
+                type="button"
+                class="grid h-7 w-7 place-items-center rounded-lg text-muted transition hover:bg-surface-inset hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                title="Remove forward {i + 1}"
+                aria-label="Remove forward {i + 1}"
+                onclick={() => fields.forwards.splice(i, 1)}
+              >
+                <Icon name="close" size={13} />
+              </button>
+            </div>
+          {/each}
+          <p class="text-xs text-faint">
+            The local port listens on this machine only — write <span class="font-mono">0.0.0.0:8080</span>
+            to share it on your network. The remote host is resolved by the server, so
+            <span class="font-mono">localhost</span> is the server itself.
+          </p>
+          <div class="flex items-center justify-between gap-4 pt-1">
+            <span class="text-sm text-fg">Start tunnel when OmnySSH opens</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={fields.tunnelAutostart}
+              aria-label="Start tunnel when OmnySSH opens"
+              onclick={() => (fields.tunnelAutostart = !fields.tunnelAutostart)}
+              class="relative h-6 w-11 shrink-0 rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus {fields.tunnelAutostart
+                ? 'bg-accent'
+                : 'bg-surface-inset'}"
+            >
+              <span
+                class="absolute top-0.5 h-5 w-5 rounded-full bg-surface shadow-soft transition-[left] {fields.tunnelAutostart
+                  ? 'left-[1.375rem]'
+                  : 'left-0.5'}"
+              ></span>
+            </button>
+          </div>
+        {:else}
+          <p class="text-xs text-faint">
+            Reach a service on this server — a database, a web UI — at a port on this machine,
+            like <span class="font-mono">ssh -L</span>.
+          </p>
+        {/if}
+      </div>
 
       {#if error}
         <p class="text-xs text-status-crit">{error}</p>
