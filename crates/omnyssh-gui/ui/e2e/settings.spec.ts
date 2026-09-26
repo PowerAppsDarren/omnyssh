@@ -6,7 +6,7 @@ import { expect, test, type Page } from '@playwright/test';
 // is fired after `reload_hosts` (which the layout calls once its listeners are attached),
 // mirroring the startup check.
 const HOSTS = [
-  { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: [], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false }
+  { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: [], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false, forwardAgent: false }
 ];
 
 const UPDATE = {

@@ -24,6 +24,11 @@ pub const FORM_FIELD_LABELS: &[&str] = &[
     "Monitoring (ssh | tcp | tcp:PORT)",
     "Port forwards (port:host:hostport, ...)",
     "Start tunnel on launch (y/n)",
+    #[cfg(unix)]
+    "Forward SSH agent (y/n)",
+    // Kept so a hosts.toml shared with another machine round-trips it.
+    #[cfg(not(unix))]
+    "Forward SSH agent (y/n, not on Windows yet)",
 ];
 
 /// Whether an edit changed anything a running poller reads. Everything else on
@@ -101,24 +106,22 @@ fn parse_forwards(value: &str) -> Result<Vec<LocalForward>, String> {
     Ok(forwards)
 }
 
-/// Renders the autostart flag into its form field; off stays blank like the
-/// other optional fields.
-fn autostart_value(host: &Host) -> &'static str {
-    if host.tunnel_autostart {
+/// Renders a y/n flag into its form field; off stays blank like the other
+/// optional fields.
+fn yes_no_value(on: bool) -> &'static str {
+    if on {
         "y"
     } else {
         ""
     }
 }
 
-fn parse_autostart(value: &str) -> Result<bool, String> {
+/// Parses a y/n field; `label` names it in the error.
+fn parse_yes_no(label: &str, value: &str) -> Result<bool, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "" | "n" | "no" => Ok(false),
         "y" | "yes" => Ok(true),
-        _ => Err(format!(
-            "Start tunnel on launch must be y or n, got '{}'",
-            value.trim()
-        )),
+        _ => Err(format!("{label} must be y or n, got '{}'", value.trim())),
     }
 }
 
@@ -193,7 +196,8 @@ impl HostForm {
         form.fields[7] = FormField::with_value(host.notes.as_deref().unwrap_or(""));
         form.fields[8] = FormField::with_value(monitoring_value(host));
         form.fields[9] = FormField::with_value(forwards_value(host));
-        form.fields[10] = FormField::with_value(autostart_value(host));
+        form.fields[10] = FormField::with_value(yes_no_value(host.tunnel_autostart));
+        form.fields[11] = FormField::with_value(yes_no_value(host.forward_agent));
         form
     }
 
@@ -268,7 +272,8 @@ impl HostForm {
 
         let (monitoring, monitor_port) = parse_monitoring(self.fields[8].value.trim())?;
         let local_forwards = parse_forwards(&self.fields[9].value)?;
-        let tunnel_autostart = parse_autostart(&self.fields[10].value)?;
+        let tunnel_autostart = parse_yes_no("Start tunnel on launch", &self.fields[10].value)?;
+        let forward_agent = parse_yes_no("Forward SSH agent", &self.fields[11].value)?;
 
         Ok(Host {
             name,
@@ -286,6 +291,7 @@ impl HostForm {
             monitor_port,
             local_forwards,
             tunnel_autostart,
+            forward_agent,
             key_setup_date: None,
             password_auth_disabled: None,
         })
@@ -878,23 +884,52 @@ mod tests {
             ("y", true),
             ("YES", true),
         ] {
-            assert_eq!(parse_autostart(text), Ok(on), "parsing '{text}'");
+            assert_eq!(
+                parse_yes_no("Start tunnel on launch", text),
+                Ok(on),
+                "parsing '{text}'"
+            );
         }
         for on in [false, true] {
             let host = Host {
                 tunnel_autostart: on,
                 ..Host::default()
             };
-            assert_eq!(parse_autostart(autostart_value(&host)), Ok(on));
+            let form = HostForm::from_host(&host);
+            assert_eq!(
+                parse_yes_no("Start tunnel on launch", &form.fields[10].value),
+                Ok(on)
+            );
         }
         for text in ["maybe", "1", "true"] {
             assert_eq!(
-                parse_autostart(text),
+                parse_yes_no("Start tunnel on launch", text),
                 Err(format!(
                     "Start tunnel on launch must be y or n, got '{text}'"
                 ))
             );
         }
+    }
+
+    #[test]
+    fn the_agent_field_round_trips_and_edits() {
+        let host = Host {
+            name: String::from("lab"),
+            hostname: String::from("10.0.0.7"),
+            forward_agent: true,
+            ..Host::default()
+        };
+        let parsed = |form: &HostForm| form.to_host(HostSource::Manual).map(|h| h.forward_agent);
+        let mut form = HostForm::from_host(&host);
+        assert_eq!(form.fields[11].value, "y");
+        assert_eq!(parsed(&form), Ok(true));
+
+        form.fields[11] = FormField::with_value("n");
+        assert_eq!(parsed(&form), Ok(false));
+
+        form.fields[11] = FormField::with_value("sometimes");
+        let error = "Forward SSH agent must be y or n, got 'sometimes'";
+        assert_eq!(parsed(&form), Err(String::from(error)));
     }
 
     #[test]

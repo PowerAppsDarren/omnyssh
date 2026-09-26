@@ -13,7 +13,8 @@ const HOSTS = [
     source: 'manual',
     hasKey: true,
     localForwards: [],
-    tunnelAutostart: false
+    tunnelAutostart: false,
+    forwardAgent: false
   },
   {
     name: 'db-1',
@@ -24,7 +25,8 @@ const HOSTS = [
     source: 'manual',
     hasKey: false,
     localForwards: [],
-    tunnelAutostart: false
+    tunnelAutostart: false,
+    forwardAgent: false
   }
 ];
 

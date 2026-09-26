@@ -6,7 +6,7 @@ import { expect, test, type Page } from '@playwright/test';
 // `password-required`, `answer_password` hands the answer back, a wrong password
 // comes back as a new request marked `retry`, and every answer is recorded.
 const HOSTS = [
-  { name: 'nas', hostname: 'nas.example.com', user: 'admin', port: 22, tags: [], source: 'sshConfig', hasKey: false, localForwards: [], tunnelAutostart: false }
+  { name: 'nas', hostname: 'nas.example.com', user: 'admin', port: 22, tags: [], source: 'sshConfig', hasKey: false, localForwards: [], tunnelAutostart: false, forwardAgent: false }
 ];
 
 type Answer = { requestId: number; password: string | null };
