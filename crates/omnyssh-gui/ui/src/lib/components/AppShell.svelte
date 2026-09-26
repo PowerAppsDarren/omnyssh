@@ -10,6 +10,7 @@
   import SupportModal from './SupportModal.svelte';
   import KeySetupProgress from '$lib/screens/KeySetupProgress.svelte';
   import PassphrasePrompt from '$lib/screens/PassphrasePrompt.svelte';
+  import PasswordPrompt from '$lib/screens/PasswordPrompt.svelte';
   import UpdateBanner from './UpdateBanner.svelte';
   import { support } from '$lib/stores/support';
   import { sidebarCollapsed, isCollapseChord } from '$lib/stores/ui';
@@ -45,5 +46,6 @@
   {/if}
   <KeySetupProgress />
   <PassphrasePrompt />
+  <PasswordPrompt />
   <UpdateBanner />
 </div>

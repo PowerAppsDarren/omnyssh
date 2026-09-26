@@ -94,6 +94,10 @@ pub struct Host {
     /// Start the tunnel when OmnySSH starts.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tunnel_autostart: bool,
+    /// Lend the local SSH agent to this host's terminals (`ssh -A`). Anyone with
+    /// root on the host can use it while a terminal is open, so it is opt-in.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forward_agent: bool,
 
     // -----------------------------------------------------------------------
     // Auto SSH Key Setup metadata
@@ -147,6 +151,7 @@ impl Default for Host {
             monitor_port: None,
             local_forwards: Vec::new(),
             tunnel_autostart: false,
+            forward_agent: false,
             key_setup_date: None,
             password_auth_disabled: None,
         }

@@ -17,9 +17,16 @@
   import { terminalDidExit } from '$lib/ipc/router';
   import { lastError } from '$lib/stores/notifications';
   import { dialogs } from '$lib/stores/dialogs';
-  import { terminalOpen, terminalWrite, terminalResize, terminalClose } from '$lib/ipc/commands';
+  import {
+    terminalOpen,
+    terminalWrite,
+    terminalResize,
+    terminalClose,
+    terminalPaste
+  } from '$lib/ipc/commands';
   import { shouldFadeTop } from './terminalFade';
-  import { chunkBytes } from './terminalInput';
+  import { chunkBytes, isCopyShortcut, layoutFallback } from './terminalInput';
+  import { isMac } from '$lib/platform';
   import type { TerminalBytes } from '$lib/bindings';
 
   let { session, active }: { session: Session; active: boolean } = $props();
@@ -154,6 +161,34 @@
         return;
       }
 
+      // Copy takes Ctrl+Shift+C whether or not anything is selected, so the chord never
+      // reaches the shell. Returning false only keeps xterm out of it; the default is
+      // ours to stop. The write happens inside the keydown, which WebKit requires.
+      term.attachCustomKeyEventHandler((e) => {
+        if (isCopyShortcut(e, isMac)) {
+          e.preventDefault();
+          if (term?.hasSelection()) {
+            navigator.clipboard.writeText(term.getSelection()).catch((err) => {
+              lastError.set(`Copy failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+          return false;
+        }
+        // Under a non-Latin layout WebKitGTK names no key; the physical one stands in.
+        const fallback = layoutFallback(e);
+        if (!fallback) return true;
+        // As xterm does with a key it handles: nothing else acts on it.
+        e.preventDefault();
+        e.stopPropagation();
+        if (fallback.kind === 'control') {
+          term?.input(fallback.data);
+        } else {
+          terminalPaste().catch((err) => {
+            lastError.set(`Paste failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
+        return false;
+      });
       // Text keystrokes/paste are UTF-8; onBinary carries raw 8-bit sequences
       // (e.g. legacy mouse reporting) that must go byte-for-byte, not re-encoded.
       term.onData((data) => sendInput(ENCODER.encode(data)));

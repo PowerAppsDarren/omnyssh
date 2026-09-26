@@ -360,6 +360,13 @@
             {/if}
           {/if}
 
+          <!-- Why it is down. It can name hosts and addresses, so streamer mode keeps it off screen. -->
+          {#if card.failure}
+            <p class="break-words text-xs text-status-crit">
+              {$streamerMode ? 'Details hidden in streamer mode' : card.failure}
+            </p>
+          {/if}
+
           <!-- Detected services -->
           {#if card.detectedServices.length}
             <div class="flex flex-wrap gap-1.5">

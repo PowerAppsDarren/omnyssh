@@ -5,8 +5,8 @@ import { expect, test, type Page } from '@playwright/test';
 // (§6.4). The stub plays the core: `key-passphrase-required` names a locked key,
 // `unlock_identity` accepts only the right passphrase, and every call is recorded.
 const HOSTS = [
-  { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: [], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false },
-  { name: 'web-2', hostname: 'web-2.example.com', user: 'deploy', port: 22, tags: [], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false }
+  { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: [], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false, forwardAgent: false },
+  { name: 'web-2', hostname: 'web-2.example.com', user: 'deploy', port: 22, tags: [], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false, forwardAgent: false }
 ];
 const KEY = '/home/me/.ssh/id_ed25519';
 const OTHER = '/home/me/.ssh/deploy_key';

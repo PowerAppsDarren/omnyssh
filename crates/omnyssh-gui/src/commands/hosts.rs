@@ -192,6 +192,7 @@ mod tests {
             monitor_port: None,
             local_forwards: vec![],
             tunnel_autostart: false,
+            forward_agent: false,
         }
     }
 
@@ -392,5 +393,22 @@ mod tests {
         upsert(&mut hosts, input("nas"), None);
         assert!(hosts[0].local_forwards.is_empty());
         assert!(!hosts[0].tunnel_autostart);
+    }
+
+    #[test]
+    fn upsert_takes_agent_forwarding_from_the_form() {
+        // On the form, so switching it off must switch it off.
+        let mut hosts = vec![Host {
+            name: "lab".to_string(),
+            forward_agent: true,
+            ..Host::default()
+        }];
+        upsert(&mut hosts, input("lab"), None);
+        assert!(!hosts[0].forward_agent);
+
+        let mut on = input("lab");
+        on.forward_agent = true;
+        upsert(&mut hosts, on, None);
+        assert!(hosts[0].forward_agent);
     }
 }

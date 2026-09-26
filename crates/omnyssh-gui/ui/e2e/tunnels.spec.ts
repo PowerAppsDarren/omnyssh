@@ -11,7 +11,8 @@ const BASE = {
   hasKey: true,
   monitoring: 'ssh',
   localForwards: [],
-  tunnelAutostart: false
+  tunnelAutostart: false,
+  forwardAgent: false
 };
 const HOSTS = [
   {
@@ -64,7 +65,8 @@ async function boot(page: Page, options: { rejectStart?: string } = {}): Promise
                 ...state.hosts[i],
                 hostname: h.hostname,
                 localForwards: h.localForwards,
-                tunnelAutostart: h.tunnelAutostart
+                tunnelAutostart: h.tunnelAutostart,
+                forwardAgent: h.forwardAgent
               };
               state.hosts[i] = view;
               return Promise.resolve(null);

@@ -1,4 +1,5 @@
-//! Unlock passphrase-protected identity files (in-memory cache only).
+//! Unlock passphrase-protected identity files and answer login-password
+//! prompts (in-memory only).
 
 use crate::error::CommandError;
 
@@ -16,6 +17,17 @@ pub async fn unlock_identity(key_path: String, passphrase: String) -> Result<(),
         message: format!("unlock task failed: {e}"),
     })?
     .map_err(|e| CommandError {
+        message: e.to_string(),
+    })
+}
+
+/// Answer the `password-required` prompt `request_id`: a password to try, or
+/// `null` to cancel that login. The connection checks it with the server and
+/// asks again if it is refused.
+#[tauri::command]
+#[specta::specta]
+pub fn answer_password(request_id: u64, password: Option<String>) -> Result<(), CommandError> {
+    omnyssh_core::ssh::password::answer(request_id, password).map_err(|e| CommandError {
         message: e.to_string(),
     })
 }
