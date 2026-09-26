@@ -66,6 +66,15 @@ describe('deriveCard — health state', () => {
     expect(card.offline).toBe(true);
   });
 
+  it('says why a failed host is down, and nothing otherwise', () => {
+    const failed: ConnectionStatusDto = { kind: 'failed', message: 'SSH connection failed: Connection refused' };
+    expect(deriveCard(host(), failed, undefined, undefined).failure).toBe(failed.message);
+    expect(deriveCard(host(), failed, metrics({ cpuPercent: 40 }), undefined).failure).toBe(failed.message);
+    expect(deriveCard(tcpHost(), failed, undefined, undefined).failure).toBe(failed.message);
+    expect(deriveCard(host(), CONNECTED, undefined, undefined).failure).toBeUndefined();
+    expect(deriveCard(host(), { kind: 'connecting' }, undefined, undefined).failure).toBeUndefined();
+  });
+
   it('a failed host keeps showing its last metrics rather than an offline state', () => {
     const card = deriveCard(host(), { kind: 'failed', message: 'refused' }, metrics({ cpuPercent: 40 }), undefined);
     expect(card.overall).toBe('off');

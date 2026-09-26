@@ -46,6 +46,8 @@ export interface ServerCard {
   offline: boolean;
   /** Set only for a reachability host, which has no metrics to show. */
   reachability?: Reachability;
+  /** Why the last connection attempt failed; unset unless it did. */
+  failure?: string;
   metricRows: MetricRow[];
   uptime?: string;
   osInfo?: string;
@@ -162,6 +164,7 @@ export function deriveCard(
       overall: kind === 'connected' ? 'ok' : kind === 'failed' ? 'off' : 'unknown',
       offline: kind === 'failed',
       reachability: kind === 'connected' ? 'reachable' : kind === 'failed' ? 'unreachable' : 'checking',
+      failure: failureOf(status),
       metricRows: [],
       topProcesses: [],
       detectedServices: [],
@@ -191,6 +194,7 @@ export function deriveCard(
     host,
     overall,
     offline,
+    failure: failureOf(status),
     metricRows,
     uptime: m?.uptime ?? undefined,
     osInfo: m?.osInfo ?? undefined,
@@ -199,6 +203,10 @@ export function deriveCard(
     servicesError: svc?.kind === 'failed' ? svc.message : undefined,
     tunnel: deriveTunnel(host, tunnel)
   };
+}
+
+function failureOf(status: ConnectionStatusDto | undefined): string | undefined {
+  return status?.kind === 'failed' ? status.message : undefined;
 }
 
 /** Live dashboard cards, one per host, recomputed as any live store changes. */
