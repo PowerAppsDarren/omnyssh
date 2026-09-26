@@ -550,14 +550,17 @@ async fn a_locked_key_waits_for_its_passphrase() {
         is_bound(local).await,
         "the tunnel keeps its ports while it waits"
     );
+    // Reported canonical, but in the drive form on Windows (no `\\?\` prefix).
     let canonical = std::fs::canonicalize(&key).expect("canonical path");
+    let canonical = canonical.to_string_lossy();
+    let expected = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
     match statuses.rx.try_recv() {
         Ok(CoreEvent::KeyPassphraseRequired {
             host_name,
             key_path,
         }) => {
             assert_eq!(host_name, "locked");
-            assert_eq!(key_path, canonical.to_string_lossy());
+            assert_eq!(key_path, expected);
         }
         other => panic!("expected a passphrase prompt, got {other:?}"),
     }
