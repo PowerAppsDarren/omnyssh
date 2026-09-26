@@ -544,10 +544,13 @@ async fn authenticate(
     let user = host.user.clone();
     let mut encrypted_key: Option<String> = None;
 
-    // 1. Try SSH agent first — it handles passphrase-protected keys already
-    //    unlocked in the agent (including Windows OpenSSH's named pipe).
-    if try_agent_auth(handle, &user).await.unwrap_or(false) {
-        return Ok(AuthOutcome::Ok);
+    // 1. Try SSH agent first — it handles passphrase-protected keys and is the
+    //    most common auth method for non-interactive clients.
+    #[cfg(unix)]
+    {
+        if try_agent_auth(handle, &user).await.unwrap_or(false) {
+            return Ok(AuthOutcome::Ok);
+        }
     }
 
     // 2. Try explicit identity_file from host config.
@@ -643,15 +646,8 @@ async fn try_key_auth(
     Ok(ok)
 }
 
-async fn try_agent_auth(
-    handle: &mut Handle<KnownHostsHandler>,
-    user: &str,
-) -> anyhow::Result<bool> {
-    try_agent_auth_inner(handle, user).await
-}
-
 #[cfg(unix)]
-async fn try_agent_auth_inner(
+async fn try_agent_auth(
     handle: &mut Handle<KnownHostsHandler>,
     user: &str,
 ) -> anyhow::Result<bool> {
@@ -660,38 +656,7 @@ async fn try_agent_auth_inner(
     let mut agent = AgentClient::connect_env()
         .await
         .context("connect to SSH agent")?;
-    offer_agent_identities(handle, user, agent).await
-}
 
-#[cfg(windows)]
-async fn try_agent_auth_inner(
-    handle: &mut Handle<KnownHostsHandler>,
-    user: &str,
-) -> anyhow::Result<bool> {
-    use russh::keys::agent::client::AgentClient;
-
-    let agent = AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent")
-        .await
-        .context("connect to Windows OpenSSH agent")?;
-    offer_agent_identities(handle, user, agent).await
-}
-
-#[cfg(not(any(unix, windows)))]
-async fn try_agent_auth_inner(
-    _handle: &mut Handle<KnownHostsHandler>,
-    _user: &str,
-) -> anyhow::Result<bool> {
-    Ok(false)
-}
-
-async fn offer_agent_identities<S>(
-    handle: &mut Handle<KnownHostsHandler>,
-    user: &str,
-    mut agent: russh::keys::agent::client::AgentClient<S>,
-) -> anyhow::Result<bool>
-where
-    S: russh::keys::agent::client::AgentStream + Unpin + Send + 'static,
-{
     let identities = agent
         .request_identities()
         .await
