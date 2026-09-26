@@ -62,7 +62,9 @@ pub(crate) struct KnownHostsHandler {
     /// terminal's target does; any other gets its agent channels closed.
     lends_agent: bool,
     /// Dropped with the handler when the session ends, which wakes [`Link::ended`]
-    /// and any agent channel still being carried.
+    /// and any agent channel still being carried. Only unix lends the agent, so
+    /// elsewhere it is only ever dropped.
+    #[cfg_attr(not(unix), allow(dead_code))]
     ended: watch::Sender<()>,
 }
 
