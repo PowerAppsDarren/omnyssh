@@ -582,7 +582,10 @@ async fn a_locked_key_waits_for_its_passphrase() {
         .until("locked", |s| matches!(s, TunnelStatus::Failed(_)))
         .await;
     let redials = link.dials() - dials;
-    assert!((1..=2).contains(&redials), "the unlock redials at once: {redials}");
+    assert!(
+        (1..=2).contains(&redials),
+        "the unlock redials at once: {redials}"
+    );
 }
 
 /// A host key that no longer matches `known_hosts` is refused for good.
