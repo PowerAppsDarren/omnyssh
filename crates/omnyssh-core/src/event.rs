@@ -153,6 +153,17 @@ pub enum CoreEvent {
     /// A private key is encrypted and no passphrase is cached for it yet.
     /// Frontends prompt once per key path and call [`crate::ssh::identity::unlock`].
     KeyPassphraseRequired { host_name: HostId, key_path: String },
+    /// A connection to `host_name` waits for the login password of `login`
+    /// (`user@host`). Frontends answer with [`crate::ssh::password::answer`];
+    /// `retry` says the previous one was refused.
+    PasswordRequired {
+        request_id: u64,
+        host_name: HostId,
+        login: String,
+        retry: bool,
+    },
+    /// The connection behind a [`CoreEvent::PasswordRequired`] stopped waiting.
+    PasswordPromptClosed(u64),
 
     // -----------------------------------------------------------------------
     // Update checker events

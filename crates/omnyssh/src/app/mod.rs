@@ -157,6 +157,8 @@ pub struct ViewState {
     pub update_popup: Option<UpdatePopup>,
     /// Encrypted keys waiting for a passphrase, one per key; the first is shown.
     pub passphrase_prompts: Vec<PassphrasePrompt>,
+    /// Logins waiting for a password, oldest first; the first is shown.
+    pub password_prompts: Vec<PasswordPrompt>,
 }
 
 impl ViewState {
@@ -176,6 +178,7 @@ impl ViewState {
             tick_count: 0,
             update_popup: None,
             passphrase_prompts: Vec::new(),
+            password_prompts: Vec::new(),
         }
     }
 }
@@ -194,6 +197,17 @@ pub struct PassphrasePrompt {
     pub error: Option<String>,
     /// Set while the key is being decrypted; input is ignored meanwhile.
     pub unlocking: bool,
+}
+
+/// In-memory prompt for the login password a connection waits on.
+pub struct PasswordPrompt {
+    pub request_id: u64,
+    pub host_name: String,
+    /// `user@host`, as the server is asked.
+    pub login: String,
+    /// The previous password for this login was refused.
+    pub retry: bool,
+    pub field: FormField,
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +481,10 @@ impl App {
                                 .filter(|c| !matches!(c, '\r' | '\n'))
                                 .for_each(|c| prompt.field.insert_char(c));
                         }
+                    } else if let Some(prompt) = self.view.password_prompts.first_mut() {
+                        text.chars()
+                            .filter(|c| !matches!(c, '\r' | '\n'))
+                            .for_each(|c| prompt.field.insert_char(c));
                     } else {
                         for key in crate::utils::paste::paste_to_keys(&text) {
                             let action = self.handle_key(key).await?;
@@ -839,6 +857,32 @@ impl App {
                         unlocking: false,
                     });
                 }
+            }
+
+            CoreEvent::PasswordRequired {
+                request_id,
+                host_name,
+                login,
+                retry,
+            } => {
+                // As with a passphrase, the terminal screen keeps its keys.
+                if self.state.read().await.screen == Screen::Terminal {
+                    self.view.status_message =
+                        Some(format!("{login} needs a password — Ctrl+Q to enter it"));
+                }
+                self.view.password_prompts.push(PasswordPrompt {
+                    request_id,
+                    host_name,
+                    login,
+                    retry,
+                    field: FormField::default(),
+                });
+            }
+
+            CoreEvent::PasswordPromptClosed(request_id) => {
+                self.view
+                    .password_prompts
+                    .retain(|p| p.request_id != request_id);
             }
 
             // ----------------------------------------------------------------

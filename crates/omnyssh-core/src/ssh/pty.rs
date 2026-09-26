@@ -14,13 +14,15 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use russh::ChannelMsg;
 use tokio::sync::mpsc;
 
 use crate::event::CoreEvent;
 use crate::ssh::client::Host;
 use crate::ssh::identity;
-use crate::ssh::session::{connect_and_auth, passphrase_required, SshConnection};
+use crate::ssh::password::AskPassword;
+use crate::ssh::session::{connect_and_auth, passphrase_required, Passwords, SshConnection};
 
 /// Stable numeric identifier for a PTY session (mirrors [`crate::event::SessionId`]).
 pub type SessionId = u64;
@@ -183,17 +185,31 @@ async fn session_task(
     tx: mpsc::Sender<CoreEvent>,
     raw_output: Option<mpsc::Sender<(SessionId, Vec<u8>)>>,
 ) {
-    // Phase A/B: connect, authenticate, and open the remote shell. Failures are
-    // reported in the status bar and tear the tab down via PtyExited.
-    let result = async {
-        let handle = connect_and_auth(&host).await?;
-        open_shell(&handle, cols, rows).await.map(|ch| (handle, ch))
-    }
-    .await;
+    // Phase A/B: connect, authenticate — asking for a password in the tab when
+    // the keys do not get in — and open the remote shell. Failures are reported
+    // in the status bar and tear the tab down via PtyExited.
+    let mut prompt = InlinePrompt {
+        id,
+        parser: &parser,
+        tx: &tx,
+        raw_output: raw_output.as_ref(),
+        ctrl_rx: &mut ctrl_rx,
+        size: (cols, rows),
+        closed: false,
+    };
+    let connected = connect_and_auth(&host, Passwords::Ask(&mut prompt)).await;
+    let ((cols, rows), closed) = (prompt.size, prompt.closed);
+    let result = match connected {
+        Ok(handle) => open_shell(&handle, cols, rows).await.map(|ch| (handle, ch)),
+        Err(e) => Err(e),
+    };
     let (_handle, mut channel) = match result {
         Ok(pair) => pair,
         Err(e) => {
-            let _ = tx.send(CoreEvent::Error(format!("Terminal: {e}"))).await;
+            // A tab closed at the password prompt needs no error.
+            if !closed {
+                let _ = tx.send(CoreEvent::Error(format!("Terminal: {e}"))).await;
+            }
             if let Some(path) = passphrase_required(&e) {
                 identity::ask_passphrase(&tx, &host.name, path).await;
             }
@@ -237,6 +253,123 @@ async fn session_task(
     let _ = channel.eof().await;
     let _ = tx.send(CoreEvent::PtyExited(id)).await;
     // _handle drops here → russh closes the TCP connection.
+}
+
+/// Asks for the login password inside the tab, the way ssh(1) does: the prompt
+/// is drawn as terminal output, and keystrokes are read without echo until
+/// Enter. Nothing typed here reaches the server as shell input.
+struct InlinePrompt<'a> {
+    id: SessionId,
+    parser: &'a Arc<Mutex<vt100::Parser>>,
+    tx: &'a mpsc::Sender<CoreEvent>,
+    raw_output: Option<&'a mpsc::Sender<(SessionId, Vec<u8>)>>,
+    ctrl_rx: &'a mut mpsc::UnboundedReceiver<Ctrl>,
+    /// The latest window size, for the shell opened once the login is done.
+    size: (u16, u16),
+    /// The tab was closed at the prompt.
+    closed: bool,
+}
+
+impl InlinePrompt<'_> {
+    async fn print(&self, text: &str) {
+        feed_parser(self.parser, text.as_bytes());
+        let _ = self.tx.send(CoreEvent::PtyOutput(self.id)).await;
+        if let Some(raw) = self.raw_output {
+            let _ = raw.send((self.id, text.as_bytes().to_vec())).await;
+        }
+    }
+}
+
+#[async_trait]
+impl<'a> AskPassword for InlinePrompt<'a> {
+    async fn ask(&mut self, login: &str, retry: bool) -> Option<String> {
+        if retry {
+            self.print("Permission denied, please try again.\r\n").await;
+        }
+        self.print(&format!("{login}'s password: ")).await;
+        let mut line = PasswordLine::default();
+        let typed = loop {
+            match self.ctrl_rx.recv().await {
+                Some(Ctrl::Input(bytes)) => {
+                    if let Some(typed) = line.feed(&bytes) {
+                        break typed;
+                    }
+                }
+                Some(Ctrl::Resize { cols, rows }) => self.size = (cols, rows),
+                Some(Ctrl::Close) | None => {
+                    self.closed = true;
+                    return None;
+                }
+            }
+        };
+        self.print("\r\n").await;
+        typed
+    }
+}
+
+/// A password being typed at the inline prompt.
+#[derive(Default)]
+struct PasswordLine {
+    bytes: Vec<u8>,
+    escape: Escape,
+}
+
+/// Where the prompt is inside a terminal escape sequence (arrow keys, function
+/// keys, paste markers), which are dropped.
+#[derive(Default, Clone, Copy)]
+enum Escape {
+    #[default]
+    None,
+    Started,
+    Sequence,
+}
+
+impl PasswordLine {
+    /// Takes keystrokes. `Some` once the line is done: the password on Enter,
+    /// `None` on Ctrl+C (or Ctrl+D on an empty line). Input after Enter is
+    /// dropped, never sent on.
+    fn feed(&mut self, input: &[u8]) -> Option<Option<String>> {
+        for &byte in input {
+            match self.escape {
+                Escape::Started => {
+                    self.escape = if matches!(byte, b'[' | b'O') {
+                        Escape::Sequence
+                    } else {
+                        Escape::None
+                    };
+                    continue;
+                }
+                // Parameters and intermediates run 0x20..=0x3f; the final byte ends it.
+                Escape::Sequence => {
+                    if !(0x20..=0x3f).contains(&byte) {
+                        self.escape = Escape::None;
+                    }
+                    continue;
+                }
+                Escape::None => {}
+            }
+            match byte {
+                0x1b => self.escape = Escape::Started,
+                b'\r' | b'\n' => {
+                    return Some(Some(String::from_utf8_lossy(&self.bytes).into_owned()))
+                }
+                0x03 => return Some(None),
+                0x04 if self.bytes.is_empty() => return Some(None),
+                0x15 => self.bytes.clear(),
+                // One character, not one byte.
+                0x08 | 0x7f => {
+                    while let Some(last) = self.bytes.pop() {
+                        if last & 0xc0 != 0x80 {
+                            break;
+                        }
+                    }
+                }
+                byte if byte < 0x20 => {}
+                byte => self.bytes.push(byte),
+            }
+        }
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +511,62 @@ impl Default for PtyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn typed(chunks: &[&[u8]]) -> Option<Option<String>> {
+        let mut line = PasswordLine::default();
+        chunks.iter().find_map(|chunk| line.feed(chunk))
+    }
+
+    #[test]
+    fn the_password_is_whatever_was_typed_before_enter() {
+        assert_eq!(
+            typed(&[b"se", b"cret\r"]),
+            Some(Some(String::from("secret")))
+        );
+        assert_eq!(typed(&[b"secret\n"]), Some(Some(String::from("secret"))));
+        assert_eq!(typed(&[b"\r"]), Some(Some(String::new())));
+        assert_eq!(typed(&[b"secret"]), None, "not done before Enter");
+    }
+
+    #[test]
+    fn the_prompt_edits_like_a_line() {
+        assert_eq!(
+            typed(&["pässw\x7fword\r".as_bytes()]),
+            Some(Some(String::from("pässword")))
+        );
+        assert_eq!(
+            typed(&["pä\x7f\x7fx\r".as_bytes()]),
+            Some(Some(String::from("x"))),
+            "backspace removes a whole character"
+        );
+        assert_eq!(
+            typed(&[b"wrong\x15right\r"]),
+            Some(Some(String::from("right")))
+        );
+    }
+
+    #[test]
+    fn escape_sequences_are_not_part_of_the_password() {
+        // Arrow keys, an SS3 function key and bracketed-paste markers.
+        let keys: &[u8] = b"\x1b[Ase\x1bOPcr\x1b[1;5Det\x1b[200~!\x1b[201~\r";
+        assert_eq!(typed(&[keys]), Some(Some(String::from("secret!"))));
+    }
+
+    #[test]
+    fn ctrl_c_or_ctrl_d_on_an_empty_line_cancels() {
+        assert_eq!(typed(&[b"secr\x03"]), Some(None));
+        assert_eq!(typed(&[b"\x04"]), Some(None));
+        assert_eq!(typed(&[b"a\x04b\r"]), Some(Some(String::from("ab"))));
+    }
+
+    #[test]
+    fn nothing_after_enter_is_kept() {
+        let mut line = PasswordLine::default();
+        assert_eq!(
+            line.feed(b"secret\rls -la\r"),
+            Some(Some(String::from("secret")))
+        );
+    }
 
     fn dummy_tx() -> mpsc::Sender<CoreEvent> {
         mpsc::channel(1).0

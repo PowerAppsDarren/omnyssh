@@ -2,10 +2,10 @@
 //! directory navigation and SFTP transfers.
 
 use std::collections::HashSet;
-use std::time::Duration;
 
 use super::*;
 use omnyssh_core::ssh::identity;
+use omnyssh_core::ssh::password::Prompter;
 use omnyssh_core::ssh::sftp::{self, FileEntry, SftpCommand, SftpManager};
 
 // ---------------------------------------------------------------------------
@@ -320,45 +320,32 @@ impl App {
         self.view.file_manager.connected_host = None;
         self.view.file_manager.remote = FilePanelView::default();
 
-        self.view.status_message = Some(format!("Connecting to '{}'… (30s timeout)", host.name));
+        self.view.status_message = Some(format!("Connecting to '{}'…", host.name));
         self.view.file_manager.sftp_connecting = true;
 
-        // Spawn connection in background with 30s timeout to prevent UI freeze
+        // In the background: the login may wait on a password prompt. Every
+        // step of the connect has a bound of its own.
         let tx = self.core_tx.clone();
         let host_clone = host.clone();
         tokio::spawn(async move {
-            let connect_future = SftpManager::connect(&host_clone, tx.clone());
-            let timeout_future = tokio::time::sleep(Duration::from_secs(30));
-
-            tokio::select! {
-                result = connect_future => {
-                    match result {
-                        Ok(mgr) => {
-                            // Send the manager through a new event type
-                            let _ = tx
-                                .send(CoreEvent::SftpManagerReady {
-                                    host_name: host_clone.name.clone(),
-                                    manager: Box::new(mgr),
-                                })
-                                .await;
-                        }
-                        Err(e) => {
-                            if let Some(path) = omnyssh_core::ssh::session::passphrase_required(&e)
-                            {
-                                identity::ask_passphrase(&tx, &host_clone.name, path).await;
-                            }
-                            let _ = tx
-                                .send(CoreEvent::SftpDisconnected {
-                                    reason: format!("{e:#}"),
-                                })
-                                .await;
-                        }
-                    }
+            let prompter = Prompter::new(tx.clone(), &host_clone.name);
+            match SftpManager::connect_asking(&host_clone, tx.clone(), prompter).await {
+                Ok(mgr) => {
+                    // Send the manager through a new event type
+                    let _ = tx
+                        .send(CoreEvent::SftpManagerReady {
+                            host_name: host_clone.name.clone(),
+                            manager: Box::new(mgr),
+                        })
+                        .await;
                 }
-                _ = timeout_future => {
+                Err(e) => {
+                    if let Some(path) = omnyssh_core::ssh::session::passphrase_required(&e) {
+                        identity::ask_passphrase(&tx, &host_clone.name, path).await;
+                    }
                     let _ = tx
                         .send(CoreEvent::SftpDisconnected {
-                            reason: "connection timed out (30s)".to_string(),
+                            reason: format!("{e:#}"),
                         })
                         .await;
                 }

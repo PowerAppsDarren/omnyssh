@@ -25,7 +25,8 @@ use crate::ssh::metrics::{
     parse_cpu_proc_stat, parse_cpu_top, parse_cpu_top_macos, parse_disk_df, parse_loadavg,
     parse_ram_free, parse_ram_vmstat, parse_top_processes, parse_uptime,
 };
-use crate::ssh::session::{passphrase_required, SshSession};
+use crate::ssh::password;
+use crate::ssh::session::{passphrase_required, password_required, SshSession};
 
 // ---------------------------------------------------------------------------
 // Backoff schedule
@@ -247,16 +248,23 @@ async fn run_ssh_poller(
                     tracing::debug!(host = %host.name, error = %reason, "connection failed");
                     send_status(&tx, &host.name, ConnectionStatus::Failed(reason)).await;
                     let delay = backoff.next_delay();
-                    let Some(path) = passphrase_required(&e).map(str::to_owned) else {
+                    if let Some(path) = passphrase_required(&e).map(str::to_owned) {
+                        identity::ask_passphrase_once(&tx, &host.name, &path).await;
+                        // Only an unlock can change the outcome, so it ends the wait.
+                        tokio::select! {
+                            () = wait_backoff(delay, &mut refresh_rx) => {}
+                            () = identity::unlocked(&path) => {}
+                        }
+                    } else if let Some(login) = password_required(&e).map(str::to_owned) {
+                        // A poller never asks; a password typed for the login
+                        // elsewhere (a terminal) ends the wait.
+                        tokio::select! {
+                            () = wait_backoff(delay, &mut refresh_rx) => {}
+                            () = password::remembered(&login) => {}
+                        }
+                    } else {
                         // Wait with backoff, allowing early refresh.
                         wait_backoff(delay, &mut refresh_rx).await;
-                        continue;
-                    };
-                    identity::ask_passphrase_once(&tx, &host.name, &path).await;
-                    // Only an unlock can change the outcome, so it ends the wait.
-                    tokio::select! {
-                        () = wait_backoff(delay, &mut refresh_rx) => {}
-                        () = identity::unlocked(&path) => {}
                     }
                     continue;
                 }

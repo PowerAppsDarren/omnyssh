@@ -12,7 +12,8 @@ use tokio::sync::mpsc;
 
 use crate::event::{CoreEvent, TransferId};
 use crate::ssh::client::Host;
-use crate::ssh::session::SshSession;
+use crate::ssh::password::Prompter;
+use crate::ssh::session::{Passwords, SshSession};
 
 // ---------------------------------------------------------------------------
 // FileEntry — represents one file or directory in a panel listing
@@ -88,6 +89,30 @@ impl SftpManager {
         let session = SshSession::connect(host)
             .await
             .context("SFTP SSH connect")?;
+        Self::open(host, session, event_tx).await
+    }
+
+    /// [`SftpManager::connect`] for a session the user opened: a login the keys
+    /// do not get into asks for the password through `prompter`.
+    ///
+    /// # Errors
+    /// As [`SftpManager::connect`], plus a cancelled password prompt.
+    pub async fn connect_asking(
+        host: &Host,
+        event_tx: mpsc::Sender<CoreEvent>,
+        mut prompter: Prompter,
+    ) -> anyhow::Result<Self> {
+        let session = SshSession::connect_with(host, Passwords::Ask(&mut prompter))
+            .await
+            .context("SFTP SSH connect")?;
+        Self::open(host, session, event_tx).await
+    }
+
+    async fn open(
+        host: &Host,
+        session: SshSession,
+        event_tx: mpsc::Sender<CoreEvent>,
+    ) -> anyhow::Result<Self> {
         let stream = session
             .open_sftp_channel()
             .await

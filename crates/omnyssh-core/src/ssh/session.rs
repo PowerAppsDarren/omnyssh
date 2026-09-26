@@ -26,6 +26,7 @@ use tokio::time;
 
 use crate::ssh::client::Host;
 use crate::ssh::identity::{self, IdentityError};
+use crate::ssh::password::{self, AskPassword};
 
 // ---------------------------------------------------------------------------
 // russh Handler implementation
@@ -163,6 +164,12 @@ fn at_hop(e: anyhow::Error, context: String) -> anyhow::Error {
             message,
         }
         .into()
+    } else if let Some(login) = password_required(&e) {
+        PasswordRequired {
+            login: login.to_owned(),
+            message,
+        }
+        .into()
     } else if is_refused(&e) {
         Refused(message).into()
     } else {
@@ -206,6 +213,65 @@ pub fn passphrase_required(e: &anyhow::Error) -> Option<&str> {
     e.chain()
         .find_map(|cause| cause.downcast_ref::<PassphraseRequired>())
         .map(|locked| locked.path.as_str())
+}
+
+// ---------------------------------------------------------------------------
+// PasswordRequired
+// ---------------------------------------------------------------------------
+
+/// No key got in and there was no password to try. Not final either: once one
+/// is typed for the login elsewhere ([`password::remembered`]) the same
+/// connection can go again.
+#[derive(Debug)]
+pub(crate) struct PasswordRequired {
+    /// The login key the password is remembered under.
+    login: String,
+    message: String,
+}
+
+impl fmt::Display for PasswordRequired {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for PasswordRequired {}
+
+/// The login a failed connection needs a password for, if that is why it failed.
+pub(crate) fn password_required(e: &anyhow::Error) -> Option<&str> {
+    e.chain()
+        .find_map(|cause| cause.downcast_ref::<PasswordRequired>())
+        .map(|missing| missing.login.as_str())
+}
+
+// ---------------------------------------------------------------------------
+// Passwords
+// ---------------------------------------------------------------------------
+
+/// Which login passwords a connection may use.
+pub(crate) enum Passwords<'a> {
+    /// The host's saved password and one typed for the login this session.
+    /// Background work: pollers, tunnels that retry, snippets.
+    Remembered,
+    /// The host's saved password only. Key setup checks a new key this way; a
+    /// remembered password would let a broken key pass.
+    SavedOnly,
+    /// As [`Passwords::Remembered`], then ask the user. A connection the user
+    /// started and is watching.
+    Ask(&'a mut dyn AskPassword),
+}
+
+/// How many passwords the user may type for one login before it fails.
+const PASSWORD_PROMPTS: usize = 3;
+
+/// The key a typed password is remembered under: the login plus every bastion
+/// on the way, so a private address behind another bastion never gets it.
+fn login_key(host: &Host, via: &[Host]) -> String {
+    let login = |h: &Host| format!("{}@{}:{}", h.user, h.hostname, h.port);
+    std::iter::once(login(host))
+        .chain(via.iter().rev().map(login))
+        .collect::<Vec<_>>()
+        .join(" via ")
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +323,8 @@ impl SshSession {
     /// 1. SSH agent (unix only, via `SSH_AUTH_SOCK`).
     /// 2. Identity file specified in the host config (`identity_file`).
     /// 3. Default key files (`~/.ssh/id_ed25519`, `id_rsa`, etc.).
-    /// 4. Password (if provided in host config).
+    /// 4. Password: one typed for this login earlier in the session, then the
+    ///    one in the host config.
     ///
     /// A host with a `ProxyJump` is reached through its bastion chain; each hop
     /// authenticates the same way.
@@ -270,8 +337,16 @@ impl SshSession {
     /// - Network error
     /// - An unresolvable `ProxyJump` chain (cycle or too many hops)
     pub async fn connect(host: &Host) -> anyhow::Result<Self> {
+        Self::connect_with(host, Passwords::Remembered).await
+    }
+
+    /// [`SshSession::connect`] with a say over which passwords it may use.
+    pub(crate) async fn connect_with(
+        host: &Host,
+        passwords: Passwords<'_>,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
-            handle: Arc::new(connect_and_auth(host).await?),
+            handle: Arc::new(connect_and_auth(host, passwords).await?),
         })
     }
 
@@ -369,27 +444,32 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// # Errors
 /// Connection timeout (> 10 s per hop), host-key rejection, authentication
 /// failure, or an unresolvable `ProxyJump` chain.
-pub(crate) async fn connect_and_auth(host: &Host) -> anyhow::Result<SshConnection> {
+pub(crate) async fn connect_and_auth(
+    host: &Host,
+    mut passwords: Passwords<'_>,
+) -> anyhow::Result<SshConnection> {
     let chain = jump_chain(host).await?;
     let config = client_config();
 
     // Walk the bastions outward: the first is reached directly, every later one
     // through its predecessor. The target then rides the last hop.
     let mut jumps: Vec<Handle<KnownHostsHandler>> = Vec::with_capacity(chain.len());
-    for hop in &chain {
+    for (i, hop) in chain.iter().enumerate() {
+        let key = login_key(hop, &chain[..i]);
         let handle = match jumps.last() {
-            None => connect_direct(&config, hop).await,
-            Some(via) => connect_tunnelled(&config, via, hop).await,
+            None => connect_direct(&config, hop, &key, &mut passwords).await,
+            Some(via) => connect_tunnelled(&config, via, hop, &key, &mut passwords).await,
         }
         .map_err(|e| at_hop(e, format!("ProxyJump via '{}' failed", hop.name)))?;
         jumps.push(handle);
     }
 
+    let key = login_key(host, &chain);
     let handle = match (jumps.last(), chain.last()) {
-        (Some(via), Some(last)) => connect_tunnelled(&config, via, host)
+        (Some(via), Some(last)) => connect_tunnelled(&config, via, host, &key, &mut passwords)
             .await
             .map_err(|e| at_hop(e, format!("connecting via '{}' failed", last.name)))?,
-        _ => connect_direct(&config, host).await?,
+        _ => connect_direct(&config, host, &key, &mut passwords).await?,
     };
 
     Ok(SshConnection {
@@ -461,9 +541,11 @@ async fn jump_chain(host: &Host) -> anyhow::Result<Vec<Host>> {
 async fn connect_direct(
     config: &Arc<client::Config>,
     host: &Host,
+    key: &str,
+    passwords: &mut Passwords<'_>,
 ) -> anyhow::Result<Handle<KnownHostsHandler>> {
     let dial = || dial_direct(config, host);
-    finish_auth(dial().await?, host, dial).await
+    finish_auth(dial().await?, host, key, dial, passwords).await
 }
 
 /// Reaches `host` through the already-connected bastion `via`: a `direct-tcpip`
@@ -473,9 +555,11 @@ async fn connect_tunnelled(
     config: &Arc<client::Config>,
     via: &Handle<KnownHostsHandler>,
     host: &Host,
+    key: &str,
+    passwords: &mut Passwords<'_>,
 ) -> anyhow::Result<Handle<KnownHostsHandler>> {
     let dial = || dial_tunnelled(config, via, host);
-    finish_auth(dial().await?, host, dial).await
+    finish_auth(dial().await?, host, key, dial, passwords).await
 }
 
 /// A connection that has shaken hands and passed the host-key check, not yet
@@ -551,13 +635,15 @@ fn known_hosts_handler(host: &Host, hung_up: &Arc<AtomicBool>) -> KnownHostsHand
     }
 }
 
-/// Authenticates the `first` connection as `host`, converting a refusal into
-/// an error. `dial` opens another connection to the same hop, for the
-/// keyboard-interactive fallback.
+/// Authenticates the `first` connection as `host` (remembered passwords under
+/// `key`), converting a refusal into an error. `dial` opens another connection
+/// to the same hop, for the keyboard-interactive fallback.
 async fn finish_auth<F, Fut>(
     first: Dialed,
     host: &Host,
+    key: &str,
     dial: F,
+    passwords: &mut Passwords<'_>,
 ) -> anyhow::Result<Handle<KnownHostsHandler>>
 where
     F: Fn() -> Fut,
@@ -572,12 +658,24 @@ where
         KeyAuth::Rejected { encrypted_key } => encrypted_key,
     };
 
-    // The server login password, never a key passphrase. Tried last: keys are
-    // what OmnySSH steers users towards.
-    if let Some(password) = &host.password {
-        match try_password(&mut handle, &dial, host, password).await {
+    // The server login password, never a key passphrase, and tried last: keys
+    // are what OmnySSH steers users towards. One typed this session goes first;
+    // it is newer than any saved one.
+    let typed = match passwords {
+        Passwords::SavedOnly => None,
+        _ => password::accepted(key),
+    };
+    let saved = host.password.clone().filter(|p| typed.as_ref() != Some(p));
+    let known = typed.is_some() || saved.is_some();
+    for (password, was_typed) in typed
+        .map(|p| (p, true))
+        .into_iter()
+        .chain(saved.map(|p| (p, false)))
+    {
+        match try_password(&mut handle, &dial, host, &password).await {
             Offer::Here => return Ok(password_login(host, handle)),
             Offer::There(fresh) => return Ok(password_login(host, fresh)),
+            Offer::No if was_typed => password::forget(key, &password),
             Offer::No => {}
         }
     }
@@ -585,6 +683,40 @@ where
     if let Some(path) = encrypted_key {
         return Err(PassphraseRequired::new(path).into());
     }
+
+    if let Passwords::Ask(ask) = passwords {
+        let login = format!("{}@{}", host.user, host.hostname);
+        let mut retry = known;
+        for _ in 0..PASSWORD_PROMPTS {
+            let Some(password) = ask.ask(&login, retry).await else {
+                return Err(Refused(format!("SSH login cancelled for {}", host.name)).into());
+            };
+            match try_password(&mut handle, &dial, host, &password).await {
+                Offer::Here => {
+                    password::remember(key, &password);
+                    return Ok(password_login(host, handle));
+                }
+                Offer::There(fresh) => {
+                    password::remember(key, &password);
+                    return Ok(password_login(host, fresh));
+                }
+                Offer::No => retry = true,
+            }
+        }
+        return Err(Refused(format!("SSH authentication failed for {}", host.name)).into());
+    }
+
+    if !known && !matches!(passwords, Passwords::SavedOnly) {
+        return Err(PasswordRequired {
+            login: key.to_string(),
+            message: format!(
+                "SSH authentication failed for {}: no key was accepted and no password is saved",
+                host.name
+            ),
+        }
+        .into());
+    }
+
     let message = format!("SSH authentication failed for {}", host.name);
     // Every attempt folds a dropped link into "not accepted". A connection
     // that is gone refused us only if the server hung up itself, as OpenSSH
