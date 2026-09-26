@@ -11,30 +11,49 @@
   let passphrase = $state('');
   let submitting = $state(false);
   let error = $state<string | null>(null);
+  let input = $state<HTMLInputElement>();
 
-  // A fresh form per key. Keyed on the path, not the prompt object, so a repeat
-  // event for the key on screen does not wipe what is being typed.
+  // A fresh, focused form per key. Keyed on the path, not the prompt object, so a
+  // repeat event for the key on screen does not wipe what is being typed. Focus is
+  // taken outright: autofocus yields to whatever holds it, often a live terminal,
+  // which would then receive the passphrase.
   const keyPath = $derived($passphrasePrompt?.keyPath);
   $effect(() => {
     void keyPath;
     passphrase = '';
     error = null;
     submitting = false;
+    input?.focus();
+  });
+
+  // The dialog opens unbidden, often over a terminal: focus goes back there when
+  // the last prompt closes. Pre-effect, so it is read before the input takes it.
+  const open = $derived($passphrasePrompt !== null);
+  let opener: Element | null = null;
+  $effect.pre(() => {
+    if (open) {
+      opener = document.activeElement;
+    } else if (opener instanceof HTMLElement) {
+      opener.focus();
+      opener = null;
+    }
   });
 
   async function submit(): Promise<void> {
-    if (!keyPath || submitting || !passphrase) return;
+    // Held across the await: a cancel meanwhile moves the dialog to another key.
+    const path = keyPath;
+    if (!path || submitting || !passphrase) return;
     const secret = passphrase;
     passphrase = '';
     submitting = true;
     error = null;
     try {
-      await unlockIdentity(keyPath, secret);
-      settlePassphrase(keyPath);
+      await unlockIdentity(path, secret);
+      settlePassphrase(path);
     } catch (e) {
-      error = message(e);
+      if (keyPath === path) error = message(e);
     } finally {
-      submitting = false;
+      if (keyPath === path) submitting = false;
     }
   }
 
@@ -66,13 +85,12 @@
       </div>
       <label class="block space-y-1 text-xs font-medium text-muted">
         <span>Passphrase</span>
-        <!-- svelte-ignore a11y_autofocus -->
         <input
           type="password"
+          bind:this={input}
           bind:value={passphrase}
           class={field}
           autocomplete="off"
-          autofocus
         />
       </label>
       <p class="text-xs text-faint">

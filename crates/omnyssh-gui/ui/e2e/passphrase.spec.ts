@@ -13,9 +13,14 @@ const OTHER = '/home/me/.ssh/deploy_key';
 
 type Unlock = { keyPath: string; passphrase: string };
 
-async function boot(page: Page, opts: { lockedAtLaunch: boolean; openDelay?: number }): Promise<void> {
+type Terminal = 'locked' | 'slow' | 'ok';
+
+async function boot(
+  page: Page,
+  opts: { lockedAtLaunch: boolean; terminal?: Terminal; unlockDelay?: number }
+): Promise<void> {
   await page.addInitScript(
-    ({ hosts, key, other, lockedAtLaunch, openDelay }) => {
+    ({ hosts, key, other, lockedAtLaunch, terminal, unlockDelay }) => {
       let cbid = 0;
       const win = window as unknown as Record<string, unknown>;
       const listeners: Record<string, number[]> = {};
@@ -48,24 +53,28 @@ async function boot(page: Page, opts: { lockedAtLaunch: boolean; openDelay?: num
             case 'unlock_identity': {
               const { keyPath, passphrase } = args as { keyPath: string; passphrase: string };
               unlocks.push({ keyPath, passphrase });
-              return passphrase === 'sesame'
-                ? Promise.resolve(null)
-                : Promise.reject({ message: 'wrong passphrase' });
+              return new Promise((resolve, reject) =>
+                setTimeout(
+                  () => (passphrase === 'sesame' ? resolve(null) : reject({ message: 'wrong passphrase' })),
+                  unlockDelay
+                )
+              );
             }
             case 'terminal_open': {
-              if (openDelay) {
+              if (terminal === 'ok') return Promise.resolve(7);
+              if (terminal === 'slow') {
                 // The key locks another tab while this one is still opening.
                 setTimeout(() => fire('key-passphrase-required', { hostName: 'web-2', keyPath: key }), 0);
                 return new Promise((resolve) =>
                   setTimeout(() => {
                     win.__opened = true;
                     resolve(7);
-                  }, openDelay)
+                  }, 600)
                 );
               }
               // What the core sends when the terminal's key is locked.
               setTimeout(() => {
-                fire('error', { message: `Terminal: SSH key ${key} requires a passphrase` });
+                fire('error', { message: `Terminal: SSH key requires a passphrase: ${key}` });
                 fire('key-passphrase-required', { hostName: 'web-1', keyPath: key });
               }, 30);
               setTimeout(() => fire('terminal-exited', { sessionId: 1 }), 400);
@@ -90,7 +99,14 @@ async function boot(page: Page, opts: { lockedAtLaunch: boolean; openDelay?: num
         }
       };
     },
-    { hosts: HOSTS, key: KEY, other: OTHER, lockedAtLaunch: opts.lockedAtLaunch, openDelay: opts.openDelay ?? 0 }
+    {
+      hosts: HOSTS,
+      key: KEY,
+      other: OTHER,
+      lockedAtLaunch: opts.lockedAtLaunch,
+      terminal: opts.terminal ?? 'locked',
+      unlockDelay: opts.unlockDelay ?? 0
+    }
   );
   await page.goto('/');
   await expect(page.getByText('2 hosts')).toBeVisible();
@@ -154,7 +170,7 @@ test('a terminal on a locked key closes with the reason and asks for the passphr
 
   const dialog = page.getByRole('dialog', { name: 'Unlock SSH key' });
   await expect(dialog.getByText(KEY)).toBeVisible();
-  await expect(page.getByText(`Terminal: SSH key ${KEY} requires a passphrase`)).toBeVisible();
+  await expect(page.getByText(`Terminal: SSH key requires a passphrase: ${KEY}`)).toBeVisible();
   await expect(tab).toHaveCount(0);
 
   await page.keyboard.press('Escape');
@@ -164,7 +180,7 @@ test('a terminal on a locked key closes with the reason and asks for the passphr
 test('a terminal that finishes opening under the dialog leaves the keyboard to it', async ({
   page
 }) => {
-  await boot(page, { lockedAtLaunch: false, openDelay: 600 });
+  await boot(page, { lockedAtLaunch: false, terminal: 'slow' });
 
   await page.getByTitle('sh on web-1').click();
   const input = page.getByRole('dialog', { name: 'Unlock SSH key' }).getByLabel('Passphrase');
@@ -176,4 +192,69 @@ test('a terminal that finishes opening under the dialog leaves the keyboard to i
   await page.keyboard.type('sesame');
   await expect(input).toBeFocused();
   await expect(input).toHaveValue('sesame');
+
+  // Once the dialog goes, the terminal gets the keyboard it was kept from.
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.xterm-helper-textarea')).toBeFocused();
+});
+
+test('closing the dialog hands the keyboard back to the terminal it covered', async ({ page }) => {
+  await boot(page, { lockedAtLaunch: false, terminal: 'ok' });
+
+  await page.getByTitle('sh on web-1').click();
+  const terminalInput = page.locator('.xterm-helper-textarea');
+  await expect(terminalInput).toBeFocused();
+
+  await page.evaluate((key) => {
+    (window as unknown as { __fire: (e: string, p: unknown) => void }).__fire(
+      'key-passphrase-required',
+      { hostName: 'web-2', keyPath: key }
+    );
+  }, KEY);
+  await expect(page.getByRole('dialog', { name: 'Unlock SSH key' }).getByLabel('Passphrase')).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(terminalInput).toBeFocused();
+});
+
+test('cancelling while an unlock is running leaves the next key alone', async ({ page }) => {
+  await boot(page, { lockedAtLaunch: true, unlockDelay: 500 });
+
+  const dialog = page.getByRole('dialog', { name: 'Unlock SSH key' });
+  const input = dialog.getByLabel('Passphrase');
+  await input.fill('wrong');
+  await input.press('Enter');
+  // The first key's unlock is still running when the user gives up on it.
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog.getByText(OTHER)).toBeVisible();
+
+  await page.waitForTimeout(700);
+  await expect(dialog.getByText(OTHER)).toBeVisible();
+  await expect(dialog.getByText('wrong passphrase')).toHaveCount(0);
+});
+
+test('Escape on the prompt closes only the prompt, not the form under it', async ({ page }) => {
+  await boot(page, { lockedAtLaunch: false });
+
+  await page.getByRole('button', { name: 'Add host' }).click();
+  const editor = page.getByRole('dialog', { name: 'Add host' });
+  const name = editor.getByLabel('Name', { exact: true });
+  await name.fill('db-9');
+
+  await page.evaluate((key) => {
+    (window as unknown as { __fire: (e: string, p: unknown) => void }).__fire(
+      'key-passphrase-required',
+      { hostName: 'web-2', keyPath: key }
+    );
+  }, KEY);
+  const prompt = page.getByRole('dialog', { name: 'Unlock SSH key' });
+  await expect(prompt.getByLabel('Passphrase')).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(prompt).toHaveCount(0);
+  await expect(editor).toBeVisible();
+  await expect(name).toHaveValue('db-9');
+  // Focus goes back to the field the prompt interrupted.
+  await expect(name).toBeFocused();
 });
