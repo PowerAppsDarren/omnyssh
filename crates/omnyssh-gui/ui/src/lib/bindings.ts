@@ -361,6 +361,19 @@ async answerPassword(requestId: number, password: string | null) : Promise<Resul
 }
 },
 /**
+ * Minimize and close to the tray, or not. Resolves to what this desktop allows —
+ * a tray at all, and minimizing into it; what it does not, the window keeps doing
+ * as before.
+ */
+async setTrayBehavior(minimizeToTray: boolean, closeToTray: boolean) : Promise<Result<TraySupportDto, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_tray_behavior", { minimizeToTray, closeToTray }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Query GitHub for a newer release (tech-gui.md §4.2). `None` means up to date — the
  * core swallows network/parse errors so a failed check never disrupts.
  */
@@ -669,6 +682,11 @@ export type TransferProgress = TransferProgressDto
  * remote size could not be determined).
  */
 export type TransferProgressDto = { sessionId: number; transferId: number; done: number; total: number }
+/**
+ * What this desktop allows the tray (tech-gui.md §4.2 `set_tray_behavior`): an icon
+ * at all, and hiding a minimized window into it.
+ */
+export type TraySupportDto = { available: boolean; minimize: boolean }
 /**
  * A host's port-forwarding tunnel changed state (tech-gui.md §4.3).
  */

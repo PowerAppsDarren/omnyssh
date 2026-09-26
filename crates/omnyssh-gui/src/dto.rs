@@ -133,6 +133,15 @@ pub struct HostInputDto {
     pub forward_agent: bool,
 }
 
+/// What this desktop allows the tray (tech-gui.md §4.2 `set_tray_behavior`): an icon
+/// at all, and hiding a minimized window into it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TraySupportDto {
+    pub available: bool,
+    pub minimize: bool,
+}
+
 /// Live connection state for a host (tech-gui.md §4.1). Internally tagged so the
 /// frontend consumes a discriminated union keyed on `kind`.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
