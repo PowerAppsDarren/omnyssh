@@ -6,6 +6,7 @@
   import { Button, Icon } from '$lib/theme';
   import { displayLogin, passwordPrompt, settlePassword } from '$lib/stores/password';
   import { streamerMode } from '$lib/stores/streamer';
+  import { lastError } from '$lib/stores/notifications';
   import { answerPassword } from '$lib/ipc/commands';
 
   let password = $state('');
@@ -24,11 +25,15 @@
   // Pre-effect, so it is read before the input takes it.
   const open = $derived($passwordPrompt !== null);
   let opener: Element | null = null;
+  let form = $state<HTMLFormElement>();
   $effect.pre(() => {
     if (open) {
       opener = document.activeElement;
-    } else if (opener instanceof HTMLElement) {
-      opener.focus();
+    } else {
+      // Only if the keyboard is still here: a dialog opened on top of this one
+      // keeps it, or its keys would go to the opener (often a terminal).
+      const here = document.activeElement === document.body || form?.contains(document.activeElement);
+      if (here && opener instanceof HTMLElement) opener.focus();
       opener = null;
     }
   });
@@ -38,10 +43,12 @@
     if (id === undefined) return;
     password = '';
     // Settled first either way: the answer goes once. A login that stopped
-    // waiting (it gave up after a few minutes) refuses it, and then the dialog
-    // simply goes.
+    // waiting (it gives up after a few minutes) refuses it; say so, or a typed
+    // password would vanish without a word.
     settlePassword(id);
-    await answerPassword(id, secret).catch(() => {});
+    await answerPassword(id, secret).catch(() =>
+      lastError.set('That login stopped waiting for a password. Open it again.')
+    );
   }
 
   function submit(): void {
@@ -58,6 +65,7 @@
   <!-- A stray click beside it must not cancel the login. -->
   <Modal label="SSH login" onClose={() => void answer(null)} backdropCloses={false}>
     <form
+      bind:this={form}
       class="space-y-4 px-5 py-4"
       onsubmit={(e) => {
         e.preventDefault();

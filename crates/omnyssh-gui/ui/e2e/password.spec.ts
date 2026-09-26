@@ -154,7 +154,7 @@ test('a server met for the first time shows its host key before the password goe
   await expect(dialog.getByText('SHA256:abcDEF123')).toBeVisible();
 });
 
-test('a prompt its login gave up on closes quietly when answered', async ({ page }) => {
+test('a prompt its login gave up on closes and says so when answered', async ({ page }) => {
   await boot(page);
   await page.evaluate(() => {
     const fire = (window as unknown as { __fire: (e: string, p: unknown) => void }).__fire;
@@ -164,7 +164,7 @@ test('a prompt its login gave up on closes quietly when answered', async ({ page
   await dialog.getByLabel('Password').fill('late');
   await dialog.getByLabel('Password').press('Enter');
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await expect(page.getByText('no login is waiting')).toHaveCount(0);
+  await expect(page.getByText('That login stopped waiting for a password. Open it again.')).toBeVisible();
 });
 
 test('a click beside the dialog does not cancel the login', async ({ page }) => {

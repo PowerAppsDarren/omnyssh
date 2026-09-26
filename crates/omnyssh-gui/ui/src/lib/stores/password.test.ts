@@ -3,19 +3,19 @@ import { get } from 'svelte/store';
 import { displayLogin, passwordPrompt, passwordQueue, settlePassword } from './password';
 
 const sftp = { requestId: 1, hostName: 'nas', login: 'admin@10.0.0.5', retry: false, newHostKey: null };
-const tunnel = { requestId: 2, hostName: 'db', login: 'root@10.0.0.6', retry: false, newHostKey: null };
+const terminal = { requestId: 2, hostName: 'db', login: 'root@10.0.0.6', retry: false, newHostKey: null };
 
 describe('password prompt queue', () => {
   beforeEach(() => passwordQueue.set([]));
 
   it('shows the oldest waiting login, then the next once it is settled', () => {
-    passwordQueue.set([sftp, tunnel]);
+    passwordQueue.set([sftp, terminal]);
     expect(get(passwordPrompt)).toEqual(sftp);
 
     settlePassword(sftp.requestId);
-    expect(get(passwordPrompt)).toEqual(tunnel);
+    expect(get(passwordPrompt)).toEqual(terminal);
 
-    settlePassword(tunnel.requestId);
+    settlePassword(terminal.requestId);
     expect(get(passwordPrompt)).toBeNull();
   });
 
