@@ -9,8 +9,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    FormField, HostForm, SnippetForm, SnippetResultEntry, UpdateButton, UpdatePopup,
-    UpdatePopupPhase, FORM_FIELD_LABELS, SNIPPET_FORM_FIELD_LABELS, UPDATE_BUTTONS,
+    FormField, HostForm, PassphrasePrompt, SnippetForm, SnippetResultEntry, UpdateButton,
+    UpdatePopup, UpdatePopupPhase, FORM_FIELD_LABELS, SNIPPET_FORM_FIELD_LABELS, UPDATE_BUTTONS,
 };
 use crate::ui::theme::Theme;
 use omnyssh_core::ssh::client::Host;
@@ -1047,6 +1047,97 @@ pub fn render_broadcast_picker(
     );
 }
 
+/// Renders the passphrase prompt for an encrypted identity file.
+pub fn render_passphrase_prompt(frame: &mut Frame, prompt: &PassphrasePrompt, theme: &Theme) {
+    // Six text rows plus the border, whatever the frame height.
+    let screen = frame.area();
+    let width = (screen.width * 7 / 10).max(60).min(screen.width);
+    let height = 8.min(screen.height);
+    let area = Rect::new(
+        screen.x + (screen.width - width) / 2,
+        screen.y + (screen.height - height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!(" Unlock SSH key — {} ", prompt.host_name))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1); 6])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {}", prompt.key_path),
+            Style::default().fg(theme.text_secondary),
+        ))),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "  Passphrase (kept in memory until OmnySSH exits):",
+            Style::default().fg(theme.text_primary),
+        ))),
+        rows[1],
+    );
+
+    let input = if prompt.unlocking {
+        String::from("  Unlocking…")
+    } else {
+        format!("  {}| ", "*".repeat(prompt.field.value.chars().count()))
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            input,
+            Style::default()
+                .fg(theme.form_focused_fg)
+                .bg(theme.success_border)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        rows[2],
+    );
+
+    if let Some(error) = &prompt.error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  {error}"),
+                Style::default().fg(theme.text_error),
+            ))),
+            rows[3],
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  Enter",
+                Style::default()
+                    .fg(theme.text_success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":unlock  ", Style::default().fg(theme.text_muted)),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(theme.text_warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":cancel", Style::default().fg(theme.text_muted)),
+        ])),
+        rows[5],
+    );
+}
+
 /// Renders the single-line quick-execute command-input popup.
 pub fn render_quick_execute_input(
     frame: &mut Frame,
@@ -1754,5 +1845,38 @@ mod tests {
         assert_eq!(field_window(11, 9, 9), 1..10);
         assert_eq!(field_window(11, 10, 9), 2..11);
         assert_eq!(field_window(11, 10, 20), 0..11);
+    }
+
+    #[test]
+    fn the_passphrase_prompt_fits_the_smallest_screen() {
+        let prompt = PassphrasePrompt {
+            host_name: String::from("lab"),
+            key_path: String::from("/home/me/.ssh/test_key"),
+            field: FormField::with_value("secret"),
+            error: Some(String::from("wrong passphrase")),
+            unlocking: false,
+        };
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_passphrase_prompt(frame, &prompt, &Theme::default()))
+            .expect("draw");
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        for text in [
+            "Unlock SSH key — lab",
+            "/home/me/.ssh/test_key",
+            "******|",
+            "wrong passphrase",
+            "Enter:unlock",
+        ] {
+            assert!(screen.contains(text), "{text:?} is not on screen");
+        }
+        assert!(!screen.contains("secret"), "the passphrase is never drawn");
     }
 }

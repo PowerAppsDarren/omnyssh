@@ -30,7 +30,10 @@ use tokio::time;
 
 use crate::event::CoreEvent;
 use crate::ssh::client::Host;
-use crate::ssh::session::{connect_and_auth, connect_budget, is_refused, SshConnection};
+use crate::ssh::identity;
+use crate::ssh::session::{
+    connect_and_auth, connect_budget, is_refused, passphrase_required, SshConnection,
+};
 
 // ---------------------------------------------------------------------------
 // LocalForward
@@ -352,6 +355,7 @@ async fn serve(host: &Host, tx: &mpsc::Sender<CoreEvent>) -> TunnelStatus {
     let mut retry = 0;
     loop {
         let budget = connect_budget(host).await + AUTH_BUDGET;
+        let mut locked = None;
         let reason = match time::timeout(budget, connect_and_auth(host)).await {
             Ok(Ok(conn)) => {
                 send_status(tx, &host.name, TunnelStatus::Up).await;
@@ -363,7 +367,10 @@ async fn serve(host: &Host, tx: &mpsc::Sender<CoreEvent>) -> TunnelStatus {
                 reason
             }
             Ok(Err(e)) if is_refused(&e) => return TunnelStatus::Failed(format!("{e:#}")),
-            Ok(Err(e)) => format!("{e:#}"),
+            Ok(Err(e)) => {
+                locked = passphrase_required(&e).map(str::to_owned);
+                format!("{e:#}")
+            }
             Err(_) => format!(
                 "no answer from {} within {}s",
                 host.hostname,
@@ -372,6 +379,13 @@ async fn serve(host: &Host, tx: &mpsc::Sender<CoreEvent>) -> TunnelStatus {
         };
         tracing::debug!(host = %host.name, %reason, "tunnel down");
         send_status(tx, &host.name, TunnelStatus::Retrying(reason)).await;
+        if let Some(path) = locked {
+            // Redialling cannot help until the key is unlocked, and every try is
+            // a failed login on the server: hold the ports and wait for it.
+            identity::ask_passphrase_once(tx, &host.name, &path).await;
+            identity::unlocked(&path).await;
+            continue;
+        }
         time::sleep(RETRY_DELAYS[retry]).await;
         retry = (retry + 1).min(RETRY_DELAYS.len() - 1);
     }

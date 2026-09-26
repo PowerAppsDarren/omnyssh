@@ -4,7 +4,9 @@
   // click to close — but a solid raised surface for readable forms. Content is
   // passed in; the chrome (scrim, box, key handling) is fixed here so the snippet
   // dialogs don't each re-implement it.
-  import type { Snippet } from 'svelte';
+  import { onDestroy, type Snippet } from 'svelte';
+  import { get } from 'svelte/store';
+  import { dialogs } from '$lib/stores/dialogs';
 
   let {
     label,
@@ -12,8 +14,14 @@
     children
   }: { label: string; onClose: () => void; children: Snippet } = $props();
 
+  // Dialogs can stack (the passphrase prompt opens on its own over any other):
+  // Escape closes only the top one.
+  const id = Symbol('dialog');
+  dialogs.update((open) => [...open, id]);
+  onDestroy(() => dialogs.update((open) => open.filter((d) => d !== id)));
+
   function onKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
+    if (e.key === 'Escape' && get(dialogs).at(-1) === id) {
       e.preventDefault();
       onClose();
     }

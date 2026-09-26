@@ -84,6 +84,8 @@ Before touching `sshd_config` it saves a backup on the server. If any step fails
 
 The code lives in [`crates/omnyssh-core/src/ssh/key_setup.rs`](crates/omnyssh-core/src/ssh/key_setup.rs). Read it before you point this at production. That is the whole point of shipping it open source.
 
+Keys with a passphrase work too. When a key is encrypted, OmnySSH asks for its passphrase once and keeps it in memory until you quit; it is never written to disk. On macOS and Linux a key already loaded in `ssh-agent` is used without asking. The host **Password** field is the server login password, not a key passphrase.
+
 ---
 
 ## Comparison
