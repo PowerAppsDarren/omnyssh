@@ -136,7 +136,7 @@
           type="password"
           bind:value={fields.password}
           class={field}
-          placeholder={secretHint ?? 'For initial key setup only'}
+          placeholder={secretHint ?? 'Login password, not the key passphrase'}
           autocomplete="off"
         />
       </label>

@@ -13,6 +13,7 @@ mod error;
 mod events;
 mod state;
 
+use commands::auth::unlock_identity;
 use commands::hosts::{delete_host, list_hosts, refresh_metrics, reload_hosts, save_host};
 use commands::keysetup::start_key_setup;
 use commands::sftp::{
@@ -113,6 +114,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             tunnel_start,
             tunnel_stop,
             refresh_metrics,
+            unlock_identity,
             check_update,
             install_update,
             load_update_config,
@@ -138,6 +140,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             events::KeySetupFailed,
             events::KeySetupRollback,
             events::UpdateAvailable,
+            events::KeyPassphraseRequired,
             events::Error
         ])
 }

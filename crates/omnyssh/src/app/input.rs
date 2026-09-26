@@ -9,6 +9,16 @@ use crate::ui;
 
 impl App {
     pub(crate) async fn handle_key(&mut self, key: KeyEvent) -> anyhow::Result<Option<AppAction>> {
+        let screen = self.state.read().await.screen.clone();
+
+        // A passphrase prompt is modal everywhere but the terminal screen, whose
+        // keys belong to the remote shell. It sits above the update popup too, so
+        // a passphrase being typed never lands on an update button. Ctrl+C
+        // cancels it rather than quitting.
+        if !self.view.passphrase_prompts.is_empty() && !matches!(screen, Screen::Terminal) {
+            return Ok(self.handle_passphrase_key(key));
+        }
+
         // The update popup is modal — it captures all input until dismissed.
         // Ctrl+C still quits as an escape hatch.
         if self.view.update_popup.is_some() {
@@ -18,8 +28,6 @@ impl App {
             self.handle_update_popup_key(key).await;
             return Ok(None);
         }
-
-        let screen = self.state.read().await.screen.clone();
 
         // ----------------------------------------------------------------
         // Terminal screen intercepts ALL keys — including Ctrl+C which must
@@ -198,6 +206,26 @@ impl App {
         }
 
         Ok(None)
+    }
+
+    fn handle_passphrase_key(&mut self, key: KeyEvent) -> Option<AppAction> {
+        let prompt = self.view.passphrase_prompts.first_mut()?;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => Some(AppAction::DismissPassphrase),
+            KeyCode::Char('c') if ctrl => Some(AppAction::DismissPassphrase),
+            _ if prompt.unlocking => None,
+            KeyCode::Enter => Some(AppAction::SubmitPassphrase),
+            KeyCode::Backspace => {
+                prompt.field.backspace();
+                None
+            }
+            KeyCode::Char(c) if !ctrl => {
+                prompt.field.insert_char(c);
+                None
+            }
+            _ => None,
+        }
     }
 
     /// Handles key events when the Terminal screen is active.

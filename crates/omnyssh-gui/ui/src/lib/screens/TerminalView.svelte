@@ -6,6 +6,7 @@
   // terminal commands. Subscribes to the theme store and re-themes live (§5.1).
   import '@xterm/xterm/css/xterm.css';
   import { onMount, onDestroy } from 'svelte';
+  import { get } from 'svelte/store';
   import type { Terminal } from '@xterm/xterm';
   import type { FitAddon } from '@xterm/addon-fit';
   import { Channel } from '@tauri-apps/api/core';
@@ -15,6 +16,7 @@
   import { closeSession } from '$lib/stores/navigation';
   import { terminalDidExit } from '$lib/ipc/router';
   import { lastError } from '$lib/stores/notifications';
+  import { dialogs } from '$lib/stores/dialogs';
   import { terminalOpen, terminalWrite, terminalResize, terminalClose } from '$lib/ipc/commands';
   import { shouldFadeTop } from './terminalFade';
   import { chunkBytes } from './terminalInput';
@@ -161,7 +163,7 @@
       resizeObserver.observe(container);
 
       ready = true;
-      if (active) term.focus();
+      if (active && get(dialogs).length === 0) term.focus();
     })().catch((err) => {
       // `terminal_open` itself failed (e.g. the session could not be spawned): no
       // PtyExited follows, so mark the tab failed here instead of leaving it hung.
@@ -183,11 +185,14 @@
   });
 
   // Becoming visible: a hidden container measured 0, so refit and take focus.
+  // An open dialog keeps the keyboard (keystrokes meant for a key passphrase must
+  // never reach the shell); the terminal takes it back once the last one closes.
   $effect(() => {
     if (active && ready) {
+      const free = $dialogs.length === 0;
       requestAnimationFrame(() => {
         safeFit();
-        term?.focus();
+        if (free) term?.focus();
         syncScrolled();
       });
     }

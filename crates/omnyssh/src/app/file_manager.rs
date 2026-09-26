@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use super::*;
+use omnyssh_core::ssh::identity;
 use omnyssh_core::ssh::sftp::{self, FileEntry, SftpCommand, SftpManager};
 
 // ---------------------------------------------------------------------------
@@ -342,9 +343,13 @@ impl App {
                                 .await;
                         }
                         Err(e) => {
+                            if let Some(path) = omnyssh_core::ssh::session::passphrase_required(&e)
+                            {
+                                identity::ask_passphrase(&tx, &host_clone.name, path).await;
+                            }
                             let _ = tx
                                 .send(CoreEvent::SftpDisconnected {
-                                    reason: e.to_string(),
+                                    reason: format!("{e:#}"),
                                 })
                                 .await;
                         }

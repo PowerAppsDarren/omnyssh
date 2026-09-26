@@ -2,7 +2,7 @@
 //!
 //! Provides [`SshSession`] — a thin wrapper around a russh client handle that
 //! supports connecting, executing commands, and graceful disconnect.
-//! Authentication order: identity file → SSH agent → failure.
+//! Authentication order: SSH agent → identity file → default keys → password.
 //!
 //! Hosts with a `ProxyJump` are reached through their bastions: each hop is
 //! connected and authenticated in turn, and the next hop rides a
@@ -24,6 +24,7 @@ use russh::ChannelMsg;
 use tokio::time;
 
 use crate::ssh::client::Host;
+use crate::ssh::identity::{self, IdentityError};
 
 // ---------------------------------------------------------------------------
 // russh Handler implementation
@@ -151,14 +152,59 @@ pub(crate) fn is_refused(e: &anyhow::Error) -> bool {
 }
 
 /// Prefixes a hop's error with where it failed. The message is flattened, as
-/// before, but a refusal stays recognisable through the jump chain.
+/// before, but a refusal or a locked key stays recognisable through the jump
+/// chain.
 fn at_hop(e: anyhow::Error, context: String) -> anyhow::Error {
     let message = format!("{context}: {e:#}");
-    if is_refused(&e) {
+    if let Some(path) = passphrase_required(&e) {
+        PassphraseRequired {
+            path: path.to_owned(),
+            message,
+        }
+        .into()
+    } else if is_refused(&e) {
         Refused(message).into()
     } else {
         anyhow!(message)
     }
+}
+
+// ---------------------------------------------------------------------------
+// PassphraseRequired
+// ---------------------------------------------------------------------------
+
+/// No credential got in, and an encrypted key was skipped for want of its
+/// passphrase. Unlike [`Refused`] it is not final: once the key is unlocked
+/// ([`crate::ssh::identity::unlock`]) the same login can succeed.
+#[derive(Debug)]
+pub(crate) struct PassphraseRequired {
+    /// Canonical path of the encrypted key.
+    path: String,
+    message: String,
+}
+
+impl PassphraseRequired {
+    fn new(path: String) -> Self {
+        // The path goes last: frontends cut messages at the first ':', and a
+        // Windows path has one.
+        let message = format!("SSH key requires a passphrase: {path}");
+        Self { path, message }
+    }
+}
+
+impl fmt::Display for PassphraseRequired {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for PassphraseRequired {}
+
+/// The encrypted key a failed connection is waiting on, if that is why it failed.
+pub fn passphrase_required(e: &anyhow::Error) -> Option<&str> {
+    e.chain()
+        .find_map(|cause| cause.downcast_ref::<PassphraseRequired>())
+        .map(|locked| locked.path.as_str())
 }
 
 // ---------------------------------------------------------------------------
@@ -485,64 +531,81 @@ async fn finish_auth(
     host: &Host,
     hung_up: &AtomicBool,
 ) -> anyhow::Result<Handle<KnownHostsHandler>> {
-    if !authenticate(&mut handle, host).await? {
-        let message = format!("SSH authentication failed for {}", host.name);
-        // `authenticate` folds a dropped link into "not accepted". A connection
-        // that is gone refused us only if the server hung up itself, as OpenSSH
-        // does after too many failed logins. russh records that as the session
-        // winds down, so let it finish first.
-        if handle.is_closed() {
-            let _ = time::timeout(Duration::from_secs(1), &mut handle).await;
-            if !hung_up.load(Ordering::SeqCst) {
-                return Err(anyhow!(message));
-            }
+    match authenticate(&mut handle, host).await? {
+        AuthOutcome::Ok => return Ok(handle),
+        AuthOutcome::PassphraseRequired { path } => {
+            return Err(PassphraseRequired::new(path).into())
         }
-        return Err(Refused(message).into());
+        AuthOutcome::Failed => {}
     }
-    Ok(handle)
+    let message = format!("SSH authentication failed for {}", host.name);
+    // `authenticate` folds a dropped link into "not accepted". A connection
+    // that is gone refused us only if the server hung up itself, as OpenSSH
+    // does after too many failed logins. russh records that as the session
+    // winds down, so let it finish first.
+    if handle.is_closed() {
+        let _ = time::timeout(Duration::from_secs(1), &mut handle).await;
+        if !hung_up.load(Ordering::SeqCst) {
+            return Err(anyhow!(message));
+        }
+    }
+    Err(Refused(message).into())
 }
 
 // ---------------------------------------------------------------------------
 // Authentication helpers
 // ---------------------------------------------------------------------------
 
-async fn authenticate(handle: &mut Handle<KnownHostsHandler>, host: &Host) -> anyhow::Result<bool> {
+enum AuthOutcome {
+    Ok,
+    Failed,
+    PassphraseRequired { path: String },
+}
+
+async fn authenticate(
+    handle: &mut Handle<KnownHostsHandler>,
+    host: &Host,
+) -> anyhow::Result<AuthOutcome> {
     let user = host.user.clone();
+    let mut encrypted_key: Option<String> = None;
 
     // 1. Try SSH agent first — it handles passphrase-protected keys and is the
     //    most common auth method for non-interactive clients.
     #[cfg(unix)]
     {
         if try_agent_auth(handle, &user).await.unwrap_or(false) {
-            return Ok(true);
+            return Ok(AuthOutcome::Ok);
         }
     }
 
     // 2. Try explicit identity_file from host config.
     if let Some(key_path) = &host.identity_file {
-        let path = expand_tilde(key_path);
-        if try_key_auth(handle, &user, &path).await.unwrap_or(false) {
-            return Ok(true);
+        match try_key_auth(handle, &user, key_path).await {
+            Ok(true) => return Ok(AuthOutcome::Ok),
+            Ok(false) => {}
+            Err(e) => note_encrypted(&mut encrypted_key, e),
         }
     }
 
     // 3. Try default key files — mirrors what the `ssh` binary does when no
-    //    -i flag is given. Skips files that don't exist.
+    //    -i flag is given. Skips files that don't exist. A locked one is worth a
+    //    prompt only without an identity file: ssh(1) would not offer it then.
     for key_path in default_key_paths() {
         if key_path.exists() {
             let path_str = key_path.to_string_lossy().into_owned();
-            if try_key_auth(handle, &user, &path_str)
-                .await
-                .unwrap_or(false)
-            {
-                return Ok(true);
+            match try_key_auth(handle, &user, &path_str).await {
+                Ok(true) => return Ok(AuthOutcome::Ok),
+                Ok(false) => {}
+                Err(e) if host.identity_file.is_none() => note_encrypted(&mut encrypted_key, e),
+                Err(_) => {}
             }
         }
     }
 
     // 4. Try password authentication if provided.
     //    Password auth is NOT recommended for production use but is required for
-    //    the initial connection before setting up key-based auth.
+    //    the initial connection before setting up key-based auth. This is the
+    //    server login password, never the private-key passphrase.
     if let Some(password) = &host.password {
         if try_password_auth(handle, &user, password)
             .await
@@ -552,29 +615,39 @@ async fn authenticate(handle: &mut Handle<KnownHostsHandler>, host: &Host) -> an
                 host = %host.name,
                 "Connected via password authentication — consider setting up SSH key"
             );
-            return Ok(true);
+            return Ok(AuthOutcome::Ok);
         }
     }
 
-    Ok(false)
+    if let Some(path) = encrypted_key {
+        return Ok(AuthOutcome::PassphraseRequired { path });
+    }
+    Ok(AuthOutcome::Failed)
+}
+
+fn note_encrypted(encrypted_key: &mut Option<String>, err: anyhow::Error) {
+    match err.downcast_ref::<IdentityError>() {
+        Some(IdentityError::Encrypted(path)) if encrypted_key.is_none() => {
+            *encrypted_key = Some(path.clone());
+        }
+        _ => {
+            tracing::debug!(error = %err, "public-key authentication attempt failed");
+        }
+    }
 }
 
 /// Returns the standard default SSH private key paths in priority order.
+/// FIDO (`id_*_sk`) keys are left out: russh cannot sign with them, so a
+/// locked one would ask for a passphrase that could never help.
 fn default_key_paths() -> Vec<std::path::PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return vec![];
     };
     let ssh = home.join(".ssh");
-    [
-        "id_ed25519",
-        "id_rsa",
-        "id_ecdsa",
-        "id_ecdsa_sk",
-        "id_ed25519_sk",
-    ]
-    .iter()
-    .map(|name| ssh.join(name))
-    .collect()
+    ["id_ed25519", "id_rsa", "id_ecdsa"]
+        .iter()
+        .map(|name| ssh.join(name))
+        .collect()
 }
 
 async fn try_key_auth(
@@ -584,11 +657,9 @@ async fn try_key_auth(
 ) -> anyhow::Result<bool> {
     // load_secret_key is synchronous (file I/O) — offload to blocking pool.
     let path = key_path.to_string();
-    let key_pair = tokio::task::spawn_blocking(move || {
-        russh::keys::load_secret_key(&path, None).with_context(|| format!("load key from {path}"))
-    })
-    .await
-    .context("spawn_blocking panicked")??;
+    let key_pair = tokio::task::spawn_blocking(move || identity::load_key_pair(&path))
+        .await
+        .context("spawn_blocking panicked")??;
 
     let ok = handle
         .authenticate_publickey(user, Arc::new(key_pair))
@@ -676,15 +747,26 @@ async fn collect_output(
     Ok((normalised, exit_status))
 }
 
-// ---------------------------------------------------------------------------
-// Path helpers
-// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn expand_tilde(path: &str) -> String {
-    if path.starts_with("~/") || path == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return path.replacen('~', &home.to_string_lossy(), 1);
-        }
+    #[test]
+    fn a_locked_key_stays_recognisable_through_a_jump_host() {
+        let locked = anyhow::Error::from(PassphraseRequired::new(String::from("/k/id")));
+        let hop = at_hop(locked, String::from("ProxyJump via 'bastion' failed"));
+        assert_eq!(passphrase_required(&hop), Some("/k/id"));
+        assert!(!is_refused(&hop));
+        assert_eq!(
+            hop.to_string(),
+            "ProxyJump via 'bastion' failed: SSH key requires a passphrase: /k/id"
+        );
     }
-    path.to_string()
+
+    #[test]
+    fn a_locked_key_is_found_under_added_context() {
+        let e = anyhow::Error::from(PassphraseRequired::new(String::from("/k/id")))
+            .context("SFTP SSH connect");
+        assert_eq!(passphrase_required(&e), Some("/k/id"));
+    }
 }

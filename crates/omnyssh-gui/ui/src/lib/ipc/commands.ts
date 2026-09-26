@@ -223,3 +223,9 @@ export async function saveUpdateConfig(config: UpdateConfigDto): Promise<void> {
   const res = await commands.saveUpdateConfig(config);
   if (res.status === 'error') throw new Error(res.error.message);
 }
+
+/** Decrypt an identity file with `passphrase` and cache it for this process. */
+export async function unlockIdentity(keyPath: string, passphrase: string): Promise<void> {
+  const res = await commands.unlockIdentity(keyPath, passphrase);
+  if (res.status === 'error') throw new Error(res.error.message);
+}

@@ -20,11 +20,12 @@ use tokio::time;
 
 use crate::event::{CoreEvent, Metrics, ProcessInfo};
 use crate::ssh::client::{ConnectionStatus, Host, MonitorMode};
+use crate::ssh::identity;
 use crate::ssh::metrics::{
     parse_cpu_proc_stat, parse_cpu_top, parse_cpu_top_macos, parse_disk_df, parse_loadavg,
     parse_ram_free, parse_ram_vmstat, parse_top_processes, parse_uptime,
 };
-use crate::ssh::session::SshSession;
+use crate::ssh::session::{passphrase_required, SshSession};
 
 // ---------------------------------------------------------------------------
 // Backoff schedule
@@ -241,9 +242,18 @@ async fn run_ssh_poller(
                 Err(e) => {
                     tracing::debug!(host = %host.name, error = %e, "connection failed");
                     send_status(&tx, &host.name, ConnectionStatus::Failed(e.to_string())).await;
-                    // Wait with backoff, allowing early refresh.
                     let delay = backoff.next_delay();
-                    wait_backoff(delay, &mut refresh_rx).await;
+                    let Some(path) = passphrase_required(&e).map(str::to_owned) else {
+                        // Wait with backoff, allowing early refresh.
+                        wait_backoff(delay, &mut refresh_rx).await;
+                        continue;
+                    };
+                    identity::ask_passphrase_once(&tx, &host.name, &path).await;
+                    // Only an unlock can change the outcome, so it ends the wait.
+                    tokio::select! {
+                        () = wait_backoff(delay, &mut refresh_rx) => {}
+                        () = identity::unlocked(&path) => {}
+                    }
                     continue;
                 }
             }
