@@ -9,6 +9,16 @@ use crate::ui;
 
 impl App {
     pub(crate) async fn handle_key(&mut self, key: KeyEvent) -> anyhow::Result<Option<AppAction>> {
+        let screen = self.state.read().await.screen.clone();
+
+        // A passphrase prompt is modal everywhere but the terminal screen, whose
+        // keys belong to the remote shell. It sits above the update popup too, so
+        // a passphrase being typed never lands on an update button. Ctrl+C
+        // cancels it rather than quitting.
+        if !self.view.passphrase_prompts.is_empty() && !matches!(screen, Screen::Terminal) {
+            return Ok(self.handle_passphrase_key(key));
+        }
+
         // The update popup is modal — it captures all input until dismissed.
         // Ctrl+C still quits as an escape hatch.
         if self.view.update_popup.is_some() {
@@ -19,8 +29,6 @@ impl App {
             return Ok(None);
         }
 
-        let screen = self.state.read().await.screen.clone();
-
         // ----------------------------------------------------------------
         // Terminal screen intercepts ALL keys — including Ctrl+C which must
         // be forwarded to the PTY rather than quitting the application.
@@ -29,12 +37,6 @@ impl App {
         // ----------------------------------------------------------------
         if matches!(screen, Screen::Terminal) {
             return Ok(self.handle_terminal_key(key));
-        }
-
-        // A passphrase prompt is modal on every other screen. Ctrl+C cancels it
-        // rather than quitting.
-        if !self.view.passphrase_prompts.is_empty() {
-            return Ok(self.handle_passphrase_key(key));
         }
 
         // Ctrl+C always quits regardless of any other state (non-Terminal screens).

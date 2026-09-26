@@ -806,8 +806,13 @@ impl App {
     /// waiting on the key retry by themselves; a closed terminal or file tab
     /// has to be opened again.
     pub(crate) fn finish_unlock(&mut self, key_path: String, result: Result<(), String>) {
+        // Only the prompt still waiting on it: one dismissed mid-unlock may have
+        // been replaced by a fresh prompt for the same key.
         let prompts = &mut self.view.passphrase_prompts;
-        let Some(pos) = prompts.iter().position(|p| p.key_path == key_path) else {
+        let Some(pos) = prompts
+            .iter()
+            .position(|p| p.key_path == key_path && p.unlocking)
+        else {
             return;
         };
         match result {

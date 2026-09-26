@@ -460,10 +460,7 @@ impl App {
                     };
                     if on_terminal {
                         self.handle_term_paste(&text);
-                    } else if let (None, Some(prompt)) = (
-                        &self.view.update_popup,
-                        self.view.passphrase_prompts.first_mut(),
-                    ) {
+                    } else if let Some(prompt) = self.view.passphrase_prompts.first_mut() {
                         // Typed in, never submitted by a trailing newline.
                         if !prompt.unlocking {
                             text.chars()
@@ -820,6 +817,13 @@ impl App {
                 host_name,
                 key_path,
             } => {
+                // The terminal screen keeps its keys; the prompt waits until the
+                // user leaves it. Said on every ask, as other messages replace it.
+                if self.state.read().await.screen == Screen::Terminal {
+                    self.view.status_message = Some(format!(
+                        "SSH key needs a passphrase — Ctrl+Q to enter it: {key_path}"
+                    ));
+                }
                 // One prompt per key: a single unlock serves every host using it.
                 if !self
                     .view
@@ -827,13 +831,6 @@ impl App {
                     .iter()
                     .any(|p| p.key_path == key_path)
                 {
-                    // The terminal screen keeps its keys; the prompt waits until
-                    // the user leaves it.
-                    if self.state.read().await.screen == Screen::Terminal {
-                        self.view.status_message = Some(format!(
-                            "SSH key {key_path} needs a passphrase — Ctrl+Q to enter it"
-                        ));
-                    }
                     self.view.passphrase_prompts.push(PassphrasePrompt {
                         host_name,
                         key_path,
