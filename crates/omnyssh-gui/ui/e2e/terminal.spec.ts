@@ -59,6 +59,8 @@ async function boot(page: Page): Promise<void> {
             }
             case 'terminal_write': {
               const { sessionId, data } = args as { sessionId: number; data: number[] };
+              // Every byte the shell would get, for tests that assert what a key sent.
+              ((win.__writes ??= []) as number[][]).push(data);
               const chId = sessionChannel[sessionId];
               // Echo a canned result once Enter (\r == 13) arrives, so output is assertable.
               if (chId != null && data.includes(13)) {
@@ -170,4 +172,74 @@ test('a remote exit (terminal-exited) tears the tab down', async ({ page }) => {
 
   await expect(page.getByRole('button', { name: 'web-1 · terminal', exact: true })).toHaveCount(0);
   await expect(page.locator('.xterm')).toHaveCount(0);
+});
+
+// Windows and Linux copy with Ctrl+Shift+C. The Desktop Chrome device reports a Windows
+// user agent, so this is the path those platforms take; the clipboard is stubbed at the
+// boundary like the IPC, which also keeps parallel runs apart.
+async function bootWithClipboard(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const win = window as unknown as { __copied: string[] };
+    win.__copied = [];
+    navigator.clipboard.writeText = (text: string) => {
+      win.__copied.push(text);
+      return Promise.resolve();
+    };
+  });
+  await boot(page);
+  await page.getByTitle('sh on web-1').click();
+  await expect(page.locator('.xterm-rows')).toContainText('omnyssh-ready');
+}
+
+const copied = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __copied: string[] }).__copied);
+const writes = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __writes?: number[][] }).__writes ?? []);
+
+/** Double-clicks the first word of the first row, as a user selects it. */
+async function selectPrompt(page: Page): Promise<void> {
+  const row = (await page.locator('.xterm-rows > div').first().boundingBox())!;
+  await page.mouse.dblclick(row.x + 20, row.y + row.height / 2);
+}
+
+test('Ctrl+Shift+C copies the selection and sends the shell nothing', async ({ page }) => {
+  await bootWithClipboard(page);
+  await selectPrompt(page);
+
+  await page.keyboard.press('Control+Shift+C');
+  await expect.poll(() => copied(page)).toEqual(['omnyssh-ready>']);
+  expect(await writes(page)).toEqual([]);
+
+  // Bare Ctrl+C stays the interrupt, selection or not.
+  await page.keyboard.press('Control+C');
+  await expect.poll(() => writes(page)).toEqual([[3]]);
+  expect(await copied(page)).toEqual(['omnyssh-ready>']);
+
+  // Ctrl+Shift+V is the webview's own paste; xterm must not turn it into ^V or a V.
+  await page.keyboard.press('Control+Shift+V');
+  expect(await writes(page)).toEqual([[3]]);
+});
+
+test('Ctrl+Shift+C with nothing selected copies nothing', async ({ page }) => {
+  await bootWithClipboard(page);
+  await page.locator('.xterm-helper-textarea').focus();
+
+  await page.keyboard.press('Control+Shift+C');
+  expect(await copied(page)).toEqual([]);
+  expect(await writes(page)).toEqual([]);
+});
+
+test.describe('on macOS', () => {
+  test.use({
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)'
+  });
+
+  test('Ctrl+Shift+C is left alone — Cmd+C copies there', async ({ page }) => {
+    await bootWithClipboard(page);
+    await selectPrompt(page);
+
+    await page.keyboard.press('Control+Shift+C');
+    expect(await copied(page)).toEqual([]);
+  });
 });
