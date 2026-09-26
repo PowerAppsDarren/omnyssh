@@ -38,11 +38,14 @@ async fn main() -> anyhow::Result<()> {
     let file_appender = tracing_appender::rolling::daily(&log_dir, "omnyssh.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
+    // russh dumps auth packets, login passwords included, at debug and trace.
+    // These caps come after RUST_LOG, so they hold whatever it asks for.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level))
+        .add_directive("russh::client::encrypted=info".parse()?)
+        .add_directive("russh::session=debug".parse()?);
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level)),
-        )
+        .with_env_filter(filter)
         .with_writer(non_blocking)
         .init();
 
