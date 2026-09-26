@@ -353,7 +353,7 @@ impl App {
                             }
                             let _ = tx
                                 .send(CoreEvent::SftpDisconnected {
-                                    reason: e.to_string(),
+                                    reason: format!("{e:#}"),
                                 })
                                 .await;
                         }

@@ -84,8 +84,11 @@ pub fn render(frame: &mut Frame, state: &AppState, view: &ViewState) {
         popup::render_help(frame, &view.theme);
     }
 
-    if let Some(prompt) = &view.passphrase_prompt {
-        popup::render_passphrase_prompt(frame, prompt, &view.theme);
+    // Kept off the terminal screen, whose keys belong to the remote shell.
+    if !matches!(state.screen, Screen::Terminal) {
+        if let Some(prompt) = view.passphrase_prompts.first() {
+            popup::render_passphrase_prompt(frame, prompt, &view.theme);
+        }
     }
 
     // The startup update popup sits above everything else.

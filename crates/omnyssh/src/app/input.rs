@@ -19,13 +19,6 @@ impl App {
             return Ok(None);
         }
 
-        if self.view.passphrase_prompt.is_some() {
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                return Ok(Some(AppAction::Quit));
-            }
-            return Ok(self.handle_passphrase_prompt_key(key));
-        }
-
         let screen = self.state.read().await.screen.clone();
 
         // ----------------------------------------------------------------
@@ -36,6 +29,12 @@ impl App {
         // ----------------------------------------------------------------
         if matches!(screen, Screen::Terminal) {
             return Ok(self.handle_terminal_key(key));
+        }
+
+        // A passphrase prompt is modal on every other screen. Ctrl+C cancels it
+        // rather than quitting.
+        if !self.view.passphrase_prompts.is_empty() {
+            return Ok(self.handle_passphrase_key(key));
         }
 
         // Ctrl+C always quits regardless of any other state (non-Terminal screens).
@@ -207,16 +206,19 @@ impl App {
         Ok(None)
     }
 
-    fn handle_passphrase_prompt_key(&mut self, key: KeyEvent) -> Option<AppAction> {
-        let prompt = self.view.passphrase_prompt.as_mut()?;
+    fn handle_passphrase_key(&mut self, key: KeyEvent) -> Option<AppAction> {
+        let prompt = self.view.passphrase_prompts.first_mut()?;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => Some(AppAction::DismissPassphrase),
+            KeyCode::Char('c') if ctrl => Some(AppAction::DismissPassphrase),
+            _ if prompt.unlocking => None,
             KeyCode::Enter => Some(AppAction::SubmitPassphrase),
             KeyCode::Backspace => {
                 prompt.field.backspace();
                 None
             }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(c) if !ctrl => {
                 prompt.field.insert_char(c);
                 None
             }

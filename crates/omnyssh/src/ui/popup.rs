@@ -1049,11 +1049,20 @@ pub fn render_broadcast_picker(
 
 /// Renders the passphrase prompt for an encrypted identity file.
 pub fn render_passphrase_prompt(frame: &mut Frame, prompt: &PassphrasePrompt, theme: &Theme) {
-    let area = centred_rect(62, 28, frame.area());
+    // Six text rows plus the border, whatever the frame height.
+    let screen = frame.area();
+    let width = (screen.width * 7 / 10).max(60).min(screen.width);
+    let height = 8.min(screen.height);
+    let area = Rect::new(
+        screen.x + (screen.width - width) / 2,
+        screen.y + (screen.height - height) / 2,
+        width,
+        height,
+    );
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(format!(" Unlock key — {} ", prompt.host_name))
+        .title(format!(" Unlock SSH key — {} ", prompt.host_name))
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -1062,20 +1071,9 @@ pub fn render_passphrase_prompt(frame: &mut Frame, prompt: &PassphrasePrompt, th
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if inner.height < 5 {
-        return;
-    }
-
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Length(1); 6])
         .split(inner);
 
     frame.render_widget(
@@ -1087,18 +1085,20 @@ pub fn render_passphrase_prompt(frame: &mut Frame, prompt: &PassphrasePrompt, th
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "  Enter passphrase (cached until OmnySSH exits):",
+            "  Passphrase (kept in memory until OmnySSH exits):",
             Style::default().fg(theme.text_primary),
         ))),
         rows[1],
     );
 
-    let masked: String = "*".repeat(prompt.field.value.chars().count());
-    let cursor = prompt.field.value.chars().count().min(masked.len());
-    let display = format!("  {}| ", &masked[..cursor]);
+    let input = if prompt.unlocking {
+        String::from("  Unlocking…")
+    } else {
+        format!("  {}| ", "*".repeat(prompt.field.value.chars().count()))
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            display,
+            input,
             Style::default()
                 .fg(theme.form_focused_fg)
                 .bg(theme.success_border)
@@ -1120,7 +1120,7 @@ pub fn render_passphrase_prompt(frame: &mut Frame, prompt: &PassphrasePrompt, th
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                "Enter",
+                "  Enter",
                 Style::default()
                     .fg(theme.text_success)
                     .add_modifier(Modifier::BOLD),
@@ -1845,5 +1845,38 @@ mod tests {
         assert_eq!(field_window(11, 9, 9), 1..10);
         assert_eq!(field_window(11, 10, 9), 2..11);
         assert_eq!(field_window(11, 10, 20), 0..11);
+    }
+
+    #[test]
+    fn the_passphrase_prompt_fits_the_smallest_screen() {
+        let prompt = PassphrasePrompt {
+            host_name: String::from("lab"),
+            key_path: String::from("/home/me/.ssh/test_key"),
+            field: FormField::with_value("secret"),
+            error: Some(String::from("wrong passphrase")),
+            unlocking: false,
+        };
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_passphrase_prompt(frame, &prompt, &Theme::default()))
+            .expect("draw");
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        for text in [
+            "Unlock SSH key — lab",
+            "/home/me/.ssh/test_key",
+            "******|",
+            "wrong passphrase",
+            "Enter:unlock",
+        ] {
+            assert!(screen.contains(text), "{text:?} is not on screen");
+        }
+        assert!(!screen.contains("secret"), "the passphrase is never drawn");
     }
 }

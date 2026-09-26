@@ -1,11 +1,9 @@
 //! The central action dispatcher: `process_action` applies an [`AppAction`] to
 //! shared state, spawns background tasks, and delegates to feature methods.
 
-use anyhow::Context;
+use super::*;
 use omnyssh_core::config::snippets::SnippetScope;
 use omnyssh_core::ssh::session::SshSession;
-
-use super::*;
 
 impl App {
     /// Executes an [`AppAction`] that requires access to shared state or the
@@ -286,30 +284,30 @@ impl App {
             }
 
             AppAction::SubmitPassphrase => {
-                let Some(mut prompt) = self.view.passphrase_prompt.take() else {
+                let Some(prompt) = self.view.passphrase_prompts.first_mut() else {
                     return Ok(());
                 };
-                let path = prompt.key_path.clone();
-                let passphrase = prompt.field.value.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    omnyssh_core::ssh::identity::unlock(&path, &passphrase)
-                })
-                .await
-                .context("passphrase unlock task panicked")?;
-                match result {
-                    Ok(()) => {
-                        self.view.status_message = Some(format!("Unlocked {}", prompt.key_path));
-                    }
-                    Err(e) => {
-                        prompt.error = Some(e.to_string());
-                        prompt.field = FormField::default();
-                        self.view.passphrase_prompt = Some(prompt);
-                    }
+                if prompt.unlocking || prompt.field.value.is_empty() {
+                    return Ok(());
                 }
+                prompt.unlocking = true;
+                prompt.error = None;
+                let key_path = prompt.key_path.clone();
+                let passphrase = std::mem::take(&mut prompt.field).value;
+                let tx = self.event_tx.clone();
+                // Decrypting runs the key's KDF, which can take a while: keep it
+                // off the render loop.
+                tokio::task::spawn_blocking(move || {
+                    let result = omnyssh_core::ssh::identity::unlock(&key_path, &passphrase)
+                        .map_err(|e| e.to_string());
+                    let _ = tx.blocking_send(AppEvent::PassphraseUnlocked { key_path, result });
+                });
             }
 
             AppAction::DismissPassphrase => {
-                self.view.passphrase_prompt = None;
+                if !self.view.passphrase_prompts.is_empty() {
+                    self.view.passphrase_prompts.remove(0);
+                }
             }
 
             // ---------------------------------------------------------------
@@ -800,5 +798,27 @@ impl App {
         }
 
         Ok(())
+    }
+}
+
+impl App {
+    /// Applies the result of a background unlock to its prompt. Connections
+    /// waiting on the key retry by themselves; a closed terminal or file tab
+    /// has to be opened again.
+    pub(crate) fn finish_unlock(&mut self, key_path: String, result: Result<(), String>) {
+        let prompts = &mut self.view.passphrase_prompts;
+        let Some(pos) = prompts.iter().position(|p| p.key_path == key_path) else {
+            return;
+        };
+        match result {
+            Ok(()) => {
+                prompts.remove(pos);
+                self.view.status_message = Some(format!("Unlocked {key_path}"));
+            }
+            Err(message) => {
+                prompts[pos].unlocking = false;
+                prompts[pos].error = Some(message);
+            }
+        }
     }
 }
