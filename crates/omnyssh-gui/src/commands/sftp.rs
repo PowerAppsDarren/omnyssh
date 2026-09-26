@@ -8,6 +8,7 @@ use tauri::{AppHandle, State};
 use tokio::sync::mpsc;
 
 use omnyssh_core::event::CoreEvent;
+use omnyssh_core::ssh::identity;
 use omnyssh_core::ssh::sftp::{
     list_local_dir as core_list_local_dir, preview_local_file as core_preview_local_file,
     SftpCommand, SftpManager,
@@ -42,13 +43,7 @@ pub async fn sftp_open(
         Ok(manager) => manager,
         Err(e) => {
             if let Some(path) = omnyssh_core::ssh::session::passphrase_required(&e) {
-                let _ = state
-                    .engine_sender()
-                    .send(CoreEvent::KeyPassphraseRequired {
-                        host_name,
-                        key_path: path.to_owned(),
-                    })
-                    .await;
+                identity::ask_passphrase(&state.engine_sender(), &host_name, path).await;
             }
             // The whole chain: the core wraps the cause in "SFTP SSH connect".
             return Err(CommandError {

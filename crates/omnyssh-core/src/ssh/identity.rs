@@ -9,7 +9,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use russh::keys::key::KeyPair;
 use thiserror::Error;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
+
+use crate::event::CoreEvent;
 
 #[derive(Default)]
 struct Cache {
@@ -18,6 +20,8 @@ struct Cache {
     /// Keys found encrypted. `unlock` takes no other path, so a frontend cannot
     /// use it to probe arbitrary files.
     encrypted: HashSet<String>,
+    /// Keys a retrying connection has asked about since they were last unlocked.
+    asked: HashSet<String>,
 }
 
 fn cache() -> MutexGuard<'static, Cache> {
@@ -38,7 +42,7 @@ fn unlocks() -> &'static watch::Sender<()> {
 #[derive(Debug, Error)]
 pub enum IdentityError {
     /// The key is encrypted and no usable passphrase is cached.
-    #[error("SSH key {0} requires a passphrase")]
+    #[error("SSH key requires a passphrase: {0}")]
     Encrypted(String),
     /// The passphrase did not decrypt the key.
     #[error("wrong passphrase")]
@@ -46,7 +50,7 @@ pub enum IdentityError {
     /// No connection has asked for this key's passphrase.
     #[error("no passphrase was asked for SSH key {0}")]
     NotRequested(String),
-    /// The file could not be read or parsed for a reason other than encryption.
+    /// The file could not be read or used for a reason other than encryption.
     #[error("could not load SSH key {path}: {source}")]
     Load {
         path: String,
@@ -60,11 +64,20 @@ pub enum IdentityError {
 pub(crate) fn normalize_key_path(path: &str) -> String {
     let expanded = expand_tilde(path);
     std::fs::canonicalize(&expanded)
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| without_verbatim_prefix(p.to_string_lossy().into_owned()))
         .unwrap_or(expanded)
 }
 
-pub(crate) fn expand_tilde(path: &str) -> String {
+/// Windows canonicalizes to `\\?\C:\…`; the path is shown to the user, so keep
+/// the drive form they know.
+fn without_verbatim_prefix(path: String) -> String {
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if rest.get(1..2) == Some(":") => rest.to_string(),
+        _ => path,
+    }
+}
+
+fn expand_tilde(path: &str) -> String {
     if path.starts_with("~/") || path == "~" {
         if let Some(home) = dirs::home_dir() {
             return path.replacen('~', &home.to_string_lossy(), 1);
@@ -77,6 +90,37 @@ pub(crate) fn expand_tilde(path: &str) -> String {
 /// by [`crate::event::CoreEvent::KeyPassphraseRequired`]).
 pub(crate) fn is_unlocked(path: &str) -> bool {
     cache().passphrases.contains_key(path)
+}
+
+/// Asks the frontends for `path`'s passphrase on behalf of `host_name`, for a
+/// connection the user started. Skipped when the key was unlocked while that
+/// connection was still under way.
+pub async fn ask_passphrase(tx: &mpsc::Sender<CoreEvent>, host_name: &str, path: &str) {
+    if !is_unlocked(path) {
+        send_prompt(tx, host_name, path).await;
+    }
+}
+
+/// [`ask_passphrase`] for a connection that retries on its own (a poller, a
+/// tunnel): each key is asked about once until it is unlocked, so a dismissed
+/// prompt does not come back by itself.
+pub(crate) async fn ask_passphrase_once(tx: &mpsc::Sender<CoreEvent>, host_name: &str, path: &str) {
+    let first = {
+        let mut cache = cache();
+        !cache.passphrases.contains_key(path) && cache.asked.insert(path.to_string())
+    };
+    if first {
+        send_prompt(tx, host_name, path).await;
+    }
+}
+
+async fn send_prompt(tx: &mpsc::Sender<CoreEvent>, host_name: &str, path: &str) {
+    let _ = tx
+        .send(CoreEvent::KeyPassphraseRequired {
+            host_name: host_name.to_string(),
+            key_path: path.to_string(),
+        })
+        .await;
 }
 
 /// Resolves once a passphrase is cached for `path`.
@@ -93,23 +137,40 @@ pub(crate) async fn unlocked(path: &str) {
 ///
 /// # Errors
 /// [`IdentityError::NotRequested`] for a key no connection found encrypted,
-/// [`IdentityError::WrongPassphrase`], or an unreadable file.
+/// [`IdentityError::WrongPassphrase`], or a key that cannot be read or used.
 pub fn unlock(path: &str, passphrase: &str) -> Result<(), IdentityError> {
     let key_path = normalize_key_path(path);
     if !cache().encrypted.contains(&key_path) {
         return Err(IdentityError::NotRequested(key_path));
     }
-    match russh::keys::load_secret_key(&key_path, Some(passphrase)) {
+    // Plain first: the passphrase may have been removed on disk since the
+    // prompt, and then the key needs none.
+    let loaded = match russh::keys::load_secret_key(&key_path, None) {
+        Err(russh::keys::Error::KeyIsEncrypted) => {
+            russh::keys::load_secret_key(&key_path, Some(passphrase))
+        }
+        plain => plain,
+    };
+    match loaded {
         Ok(_) => {
-            cache().passphrases.insert(key_path, passphrase.to_string());
+            {
+                let mut cache = cache();
+                cache
+                    .passphrases
+                    .insert(key_path.clone(), passphrase.to_string());
+                cache.asked.remove(&key_path);
+            }
             unlocks().send_replace(());
             Ok(())
         }
-        Err(russh::keys::Error::IO(e)) => Err(IdentityError::Load {
-            path: key_path,
-            source: e.into(),
-        }),
-        // The key is known to be encrypted, so any decode failure is the
+        // Unreadable, or decrypted into a key russh cannot sign with (FIDO).
+        Err(e @ (russh::keys::Error::IO(_) | russh::keys::Error::UnsupportedKeyType { .. })) => {
+            Err(IdentityError::Load {
+                path: key_path,
+                source: e.into(),
+            })
+        }
+        // The key is known to be encrypted, so any other decode failure is the
         // passphrase (russh reports it as a cipher or parse error).
         Err(_) => Err(IdentityError::WrongPassphrase),
     }
@@ -144,8 +205,13 @@ pub(crate) fn load_key_pair(path: &str) -> Result<KeyPair, IdentityError> {
         return Err(IdentityError::Encrypted(key_path));
     };
     russh::keys::load_secret_key(&key_path, Some(&passphrase)).map_err(|_| {
-        // Re-encrypted since it was unlocked: ask again.
-        cache().passphrases.remove(&key_path);
+        // Re-encrypted since it was unlocked: ask again. Only this passphrase
+        // goes; a newer one unlocked meanwhile stays.
+        let mut cache = cache();
+        if cache.passphrases.get(&key_path) == Some(&passphrase) {
+            cache.passphrases.remove(&key_path);
+            cache.asked.remove(&key_path);
+        }
         IdentityError::Encrypted(key_path)
     })
 }
@@ -244,6 +310,62 @@ mod tests {
 
         ssh_keygen(&["-q", "-p", "-f", &path, "-P", "new", "-N", ""]);
         load_key_pair(&path).expect("a key without a passphrase loads as is");
+    }
+
+    #[test]
+    fn a_passphrase_removed_on_disk_after_the_prompt_still_unlocks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_key(dir.path(), "correct horse");
+        assert!(load_key_pair(&path).is_err());
+
+        ssh_keygen(&["-q", "-p", "-f", &path, "-P", "correct horse", "-N", ""]);
+        unlock(&path, "correct horse").expect("a plain key needs no passphrase");
+        assert!(is_unlocked(&normalize_key_path(&path)));
+    }
+
+    #[test]
+    fn a_windows_verbatim_path_is_shown_in_its_drive_form() {
+        let verbatim = String::from(r"\\?\C:\Users\me\.ssh\id_ed25519");
+        assert_eq!(
+            without_verbatim_prefix(verbatim),
+            r"C:\Users\me\.ssh\id_ed25519"
+        );
+        let unc = String::from(r"\\?\UNC\server\share\key");
+        assert_eq!(without_verbatim_prefix(unc.clone()), unc);
+        assert_eq!(without_verbatim_prefix(String::from("/k/id")), "/k/id");
+    }
+
+    #[tokio::test]
+    async fn retrying_connections_ask_once_per_key_and_users_every_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_key(dir.path(), "correct horse");
+        assert!(load_key_pair(&path).is_err());
+        let key = normalize_key_path(&path);
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut asked_for = move || {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .map(|event| match event {
+                    CoreEvent::KeyPassphraseRequired { host_name, .. } => host_name,
+                    other => panic!("unexpected {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        ask_passphrase_once(&tx, "poller-a", &key).await;
+        ask_passphrase_once(&tx, "poller-b", &key).await;
+        ask_passphrase(&tx, "terminal", &key).await;
+        assert_eq!(asked_for(), ["poller-a", "terminal"]);
+
+        unlock(&path, "correct horse").expect("unlock");
+        ask_passphrase(&tx, "terminal", &key).await;
+        assert!(asked_for().is_empty(), "an unlocked key is not asked for");
+
+        // Re-encrypted on disk: that is worth one new prompt.
+        ssh_keygen(&["-q", "-p", "-f", &path, "-P", "correct horse", "-N", "new"]);
+        assert!(load_key_pair(&path).is_err());
+        ask_passphrase_once(&tx, "poller-a", &key).await;
+        ask_passphrase_once(&tx, "poller-b", &key).await;
+        assert_eq!(asked_for(), ["poller-a"]);
     }
 
     #[tokio::test]

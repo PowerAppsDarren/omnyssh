@@ -382,14 +382,7 @@ async fn serve(host: &Host, tx: &mpsc::Sender<CoreEvent>) -> TunnelStatus {
         if let Some(path) = locked {
             // Redialling cannot help until the key is unlocked, and every try is
             // a failed login on the server: hold the ports and wait for it.
-            if !identity::is_unlocked(&path) {
-                let _ = tx
-                    .send(CoreEvent::KeyPassphraseRequired {
-                        host_name: host.name.clone(),
-                        key_path: path.clone(),
-                    })
-                    .await;
-            }
+            identity::ask_passphrase_once(tx, &host.name, &path).await;
             identity::unlocked(&path).await;
             continue;
         }

@@ -185,7 +185,9 @@ pub(crate) struct PassphraseRequired {
 
 impl PassphraseRequired {
     fn new(path: String) -> Self {
-        let message = format!("SSH key {path} requires a passphrase");
+        // The path goes last: frontends cut messages at the first ':', and a
+        // Windows path has one.
+        let message = format!("SSH key requires a passphrase: {path}");
         Self { path, message }
     }
 }
@@ -578,8 +580,7 @@ async fn authenticate(
 
     // 2. Try explicit identity_file from host config.
     if let Some(key_path) = &host.identity_file {
-        let path = identity::expand_tilde(key_path);
-        match try_key_auth(handle, &user, &path).await {
+        match try_key_auth(handle, &user, key_path).await {
             Ok(true) => return Ok(AuthOutcome::Ok),
             Ok(false) => {}
             Err(e) => note_encrypted(&mut encrypted_key, e),
@@ -636,21 +637,17 @@ fn note_encrypted(encrypted_key: &mut Option<String>, err: anyhow::Error) {
 }
 
 /// Returns the standard default SSH private key paths in priority order.
+/// FIDO (`id_*_sk`) keys are left out: russh cannot sign with them, so a
+/// locked one would ask for a passphrase that could never help.
 fn default_key_paths() -> Vec<std::path::PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return vec![];
     };
     let ssh = home.join(".ssh");
-    [
-        "id_ed25519",
-        "id_rsa",
-        "id_ecdsa",
-        "id_ecdsa_sk",
-        "id_ed25519_sk",
-    ]
-    .iter()
-    .map(|name| ssh.join(name))
-    .collect()
+    ["id_ed25519", "id_rsa", "id_ecdsa"]
+        .iter()
+        .map(|name| ssh.join(name))
+        .collect()
 }
 
 async fn try_key_auth(
@@ -762,7 +759,7 @@ mod tests {
         assert!(!is_refused(&hop));
         assert_eq!(
             hop.to_string(),
-            "ProxyJump via 'bastion' failed: SSH key /k/id requires a passphrase"
+            "ProxyJump via 'bastion' failed: SSH key requires a passphrase: /k/id"
         );
     }
 

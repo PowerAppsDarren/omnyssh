@@ -228,9 +228,6 @@ async fn run_ssh_poller(
     let mut backoff = BackoffState::new();
     let mut session: Option<SshSession> = None;
     let mut discovery_done = false; // Track if we've done Quick Scan
-                                    // The locked key this host last asked about: one prompt per key rather than
-                                    // one per retry, so a dismissed prompt stays dismissed.
-    let mut asked: Option<String> = None;
 
     loop {
         // Ensure we have a live session.
@@ -241,7 +238,6 @@ async fn run_ssh_poller(
                     send_status(&tx, &host.name, ConnectionStatus::Connected).await;
                     session = Some(s);
                     discovery_done = false; // Reset discovery flag on new connection
-                    asked = None;
                 }
                 Err(e) => {
                     tracing::debug!(host = %host.name, error = %e, "connection failed");
@@ -252,22 +248,12 @@ async fn run_ssh_poller(
                         wait_backoff(delay, &mut refresh_rx).await;
                         continue;
                     };
-                    if asked.as_ref() != Some(&path) && !identity::is_unlocked(&path) {
-                        let _ = tx
-                            .send(CoreEvent::KeyPassphraseRequired {
-                                host_name: host.name.clone(),
-                                key_path: path.clone(),
-                            })
-                            .await;
-                    }
+                    identity::ask_passphrase_once(&tx, &host.name, &path).await;
                     // Only an unlock can change the outcome, so it ends the wait.
-                    let unlocked = tokio::select! {
-                        () = wait_backoff(delay, &mut refresh_rx) => false,
-                        () = identity::unlocked(&path) => true,
-                    };
-                    // A key that fails again after an unlock was re-encrypted on
-                    // disk: that is worth a new prompt.
-                    asked = (!unlocked).then_some(path);
+                    tokio::select! {
+                        () = wait_backoff(delay, &mut refresh_rx) => {}
+                        () = identity::unlocked(&path) => {}
+                    }
                     continue;
                 }
             }
