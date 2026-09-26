@@ -192,9 +192,11 @@ const RETRY_DELAYS: [Duration; 5] = [
 /// alone would redial every second a server that accepts and then drops us.
 const STABLE_AFTER: Duration = Duration::from_secs(60);
 
-/// Head room over [`connect_budget`] for authentication, which has no timeout
-/// of its own.
+/// Head room over [`connect_budget`] for the password steps of a login.
 const AUTH_BUDGET: Duration = Duration::from_secs(20);
+
+/// How often a tunnel with no key that gets in and no password tries again.
+const NO_PASSWORD_RETRY: Duration = Duration::from_secs(60);
 
 /// How often a live tunnel checks that its connection still is. A dead peer
 /// is noticed by the keepalives first; this only picks that up.
@@ -395,7 +397,12 @@ async fn serve(host: &Host, tx: &mpsc::Sender<CoreEvent>) -> TunnelStatus {
                     () = password::remembered(&login) => {}
                 }
             } else {
-                password::remembered(&login).await;
+                // No key got in, which an agent unlocked meanwhile could change:
+                // look again now and then.
+                tokio::select! {
+                    () = password::remembered(&login) => {}
+                    () = time::sleep(NO_PASSWORD_RETRY) => {}
+                }
             }
             continue;
         }

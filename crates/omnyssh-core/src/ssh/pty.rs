@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use crate::event::CoreEvent;
 use crate::ssh::client::Host;
 use crate::ssh::identity;
-use crate::ssh::password::{AskPassword, Prompt};
+use crate::ssh::password::{AskPassword, NoAnswer, Prompt};
 use crate::ssh::session::{connect_and_auth, passphrase_required, Passwords, SshConnection};
 
 /// Stable numeric identifier for a PTY session (mirrors [`crate::event::SessionId`]).
@@ -195,13 +195,22 @@ async fn session_task(
         raw_output: raw_output.as_ref(),
         ctrl_rx: &mut ctrl_rx,
         size: (cols, rows),
+        asked: false,
         closed: false,
     };
     let connected = connect_and_auth(&host, Passwords::Ask(&mut prompt)).await;
-    // Keys typed past the prompt must not reach the new shell (a password
-    // entered twice would be echoed there).
-    prompt.flush();
+    // Keys typed past a password prompt must not reach the new shell (a
+    // password entered twice would be echoed there). Without a prompt they are
+    // the user's first command, and stay queued.
+    if prompt.asked {
+        prompt.flush();
+    }
     let ((cols, rows), closed) = (prompt.size, prompt.closed);
+    if closed && connected.is_ok() {
+        // Closed at the prompt: no shell for a tab that is gone.
+        let _ = tx.send(CoreEvent::PtyExited(id)).await;
+        return;
+    }
     let result = match connected {
         Ok(handle) => open_shell(&handle, cols, rows).await.map(|ch| (handle, ch)),
         Err(e) => Err(e),
@@ -271,6 +280,8 @@ struct InlinePrompt<'a> {
     ctrl_rx: &'a mut mpsc::UnboundedReceiver<Ctrl>,
     /// The latest window size, for the shell opened once the login is done.
     size: (u16, u16),
+    /// A password prompt was shown.
+    asked: bool,
     /// The tab was closed at the prompt.
     closed: bool,
 }
@@ -299,10 +310,11 @@ impl InlinePrompt<'_> {
 
 #[async_trait]
 impl<'a> AskPassword for InlinePrompt<'a> {
-    async fn ask(&mut self, prompt: Prompt<'_>) -> Option<String> {
+    async fn ask(&mut self, prompt: Prompt<'_>) -> Result<String, NoAnswer> {
+        self.asked = true;
         self.flush();
         if self.closed {
-            return None;
+            return Err(NoAnswer::Cancelled);
         }
         if prompt.retry {
             self.print("Permission denied, please try again.\r\n").await;
@@ -324,12 +336,12 @@ impl<'a> AskPassword for InlinePrompt<'a> {
                 Some(Ctrl::Resize { cols, rows }) => self.size = (cols, rows),
                 Some(Ctrl::Close) | None => {
                     self.closed = true;
-                    return None;
+                    return Err(NoAnswer::Cancelled);
                 }
             }
         };
         self.print("\r\n").await;
-        typed
+        typed.ok_or(NoAnswer::Cancelled)
     }
 }
 
@@ -357,14 +369,12 @@ impl PasswordLine {
     fn feed(&mut self, input: &[u8]) -> Option<Option<String>> {
         for &byte in input {
             match self.escape {
-                Escape::Started => {
-                    self.escape = if matches!(byte, b'[' | b'O') {
-                        Escape::Sequence
-                    } else {
-                        Escape::None
-                    };
+                Escape::Started if matches!(byte, b'[' | b'O') => {
+                    self.escape = Escape::Sequence;
                     continue;
                 }
+                // A lone Esc: drop it, keep what follows.
+                Escape::Started => self.escape = Escape::None,
                 // Parameters and intermediates run 0x20..=0x3f; the final byte ends it.
                 Escape::Sequence => {
                     if !(0x20..=0x3f).contains(&byte) {
@@ -576,6 +586,14 @@ mod tests {
         // Arrow keys, an SS3 function key and bracketed-paste markers.
         let keys: &[u8] = b"\x1b[Ase\x1bOPcr\x1b[1;5Det\x1b[200~!\x1b[201~\r";
         assert_eq!(typed(&[keys]), Some(Some(String::from("secret!"))));
+    }
+
+    #[test]
+    fn a_lone_escape_keeps_the_next_key() {
+        assert_eq!(
+            typed(&[b"\x1bsecret\r"]),
+            Some(Some(String::from("secret")))
+        );
     }
 
     #[test]

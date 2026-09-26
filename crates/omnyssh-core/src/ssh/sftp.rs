@@ -6,14 +6,20 @@
 //! All operations are non-blocking from the UI perspective.
 //! Progress is reported via [`CoreEvent::FileTransferProgress`].
 
+use std::time::Duration;
+
 use anyhow::Context;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+use tokio::time;
 
 use crate::event::{CoreEvent, TransferId};
 use crate::ssh::client::Host;
 use crate::ssh::password::Prompter;
 use crate::ssh::session::{Passwords, SshSession};
+
+/// How long the SFTP channel and subsystem may take once logged in.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // FileEntry — represents one file or directory in a panel listing
@@ -79,25 +85,15 @@ pub struct SftpManager {
 
 impl SftpManager {
     /// Connects to `host` via SSH + SFTP subsystem and spawns the background task.
+    /// A login the keys do not get into asks for the password through `prompter`.
     ///
     /// On success sends [`CoreEvent::SftpConnected`] through `event_tx`.
     /// On failure the task sends [`CoreEvent::SftpDisconnected`].
     ///
     /// # Errors
-    /// Returns an error if the SSH connection fails before the task is spawned.
-    pub async fn connect(host: &Host, event_tx: mpsc::Sender<CoreEvent>) -> anyhow::Result<Self> {
-        let session = SshSession::connect(host)
-            .await
-            .context("SFTP SSH connect")?;
-        Self::open(host, session, event_tx).await
-    }
-
-    /// [`SftpManager::connect`] for a session the user opened: a login the keys
-    /// do not get into asks for the password through `prompter`.
-    ///
-    /// # Errors
-    /// As [`SftpManager::connect`], plus a cancelled password prompt.
-    pub async fn connect_asking(
+    /// Returns an error if the SSH connection fails before the task is spawned,
+    /// including a cancelled password prompt.
+    pub async fn connect(
         host: &Host,
         event_tx: mpsc::Sender<CoreEvent>,
         mut prompter: Prompter,
@@ -105,21 +101,18 @@ impl SftpManager {
         let session = SshSession::connect_with(host, Passwords::Ask(&mut prompter))
             .await
             .context("SFTP SSH connect")?;
-        Self::open(host, session, event_tx).await
-    }
-
-    async fn open(
-        host: &Host,
-        session: SshSession,
-        event_tx: mpsc::Sender<CoreEvent>,
-    ) -> anyhow::Result<Self> {
-        let stream = session
-            .open_sftp_channel()
-            .await
-            .context("open SFTP channel")?;
-        let sftp = russh_sftp::client::SftpSession::new(stream)
-            .await
-            .context("create SFTP session")?;
+        // The login is bounded step by step; the channel must not hang either.
+        let sftp = time::timeout(OPEN_TIMEOUT, async {
+            let stream = session
+                .open_sftp_channel()
+                .await
+                .context("open SFTP channel")?;
+            russh_sftp::client::SftpSession::new(stream)
+                .await
+                .context("create SFTP session")
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("SFTP did not start within {}s", OPEN_TIMEOUT.as_secs()))??;
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<SftpCommand>(64);
         let host_name = host.name.clone();

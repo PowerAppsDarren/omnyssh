@@ -329,7 +329,7 @@ impl App {
         let host_clone = host.clone();
         tokio::spawn(async move {
             let prompter = Prompter::new(tx.clone(), &host_clone.name);
-            match SftpManager::connect_asking(&host_clone, tx.clone(), prompter).await {
+            match SftpManager::connect(&host_clone, tx.clone(), prompter).await {
                 Ok(mgr) => {
                     // Send the manager through a new event type
                     let _ = tx

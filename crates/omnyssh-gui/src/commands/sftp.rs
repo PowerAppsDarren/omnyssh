@@ -43,7 +43,7 @@ pub async fn sftp_open(
     // The prompt goes out on the engine channel: this tab's own channel only
     // carries `sftp-*` events.
     let prompter = Prompter::new(state.engine_sender(), &host_name);
-    let manager = match SftpManager::connect_asking(&host, tx, prompter).await {
+    let manager = match SftpManager::connect(&host, tx, prompter).await {
         Ok(manager) => manager,
         Err(e) => {
             if let Some(path) = omnyssh_core::ssh::session::passphrase_required(&e) {

@@ -2,7 +2,9 @@
 //!
 //! Provides [`SshSession`] — a thin wrapper around a russh client handle that
 //! supports connecting, executing commands, and graceful disconnect.
-//! Authentication order: SSH agent → identity file → default keys → password.
+//! Authentication order: SSH agent → identity file → default keys → password
+//! (by the password method or keyboard-interactive) → asking the user, when the
+//! caller lets it.
 //!
 //! Hosts with a `ProxyJump` are reached through their bastions: each hop is
 //! connected and authenticated in turn, and the next hop rides a
@@ -31,7 +33,7 @@ use tokio::time;
 
 use crate::ssh::client::Host;
 use crate::ssh::identity::{self, IdentityError};
-use crate::ssh::password::{self, AskPassword, Method, Prompt};
+use crate::ssh::password::{self, AskPassword, Method, NoAnswer, Prompt};
 
 // ---------------------------------------------------------------------------
 // russh Handler implementation
@@ -562,8 +564,8 @@ pub(crate) async fn connect_budget(host: &Host) -> Duration {
     // A chain that fails to resolve costs nothing to connect; the caller's own
     // attempt reports why.
     let hops = jump_chain(host).await.map_or(0, |chain| chain.len());
-    // The agent's bound counts too: a caller that gives up mid-signature drops
-    // russh while it waits for us.
+    // The agent's bound counts too, so a slow but working agent is not taken
+    // for a dead host.
     (CONNECT_TIMEOUT + AGENT_BUDGET) * (hops as u32 + 1)
 }
 
@@ -837,14 +839,22 @@ where
             new_key.as_deref(),
         )
         .await?;
-        match asked {
-            Some(Offer::Here) => return Ok(password_login(host, first.handle)),
-            Some(Offer::There(handle)) => return Ok(password_login(host, handle)),
-            _ => {}
-        }
+        let refusal = match asked {
+            Asked::In(Offer::There(handle)) => return Ok(password_login(host, handle)),
+            Asked::In(_) => return Ok(password_login(host, first.handle)),
+            Asked::Unanswered(NoAnswer::Cancelled) => {
+                format!("SSH login cancelled for {}", host.name)
+            }
+            Asked::Unanswered(NoAnswer::TimedOut) => format!(
+                "SSH login to {} gave up waiting for the password",
+                host.name
+            ),
+            Asked::Refused => format!("SSH authentication failed for {}", host.name),
+        };
+        // No password got in: the key it skipped still may (#97).
         return Err(match locked {
             Some(path) => PassphraseRequired::new(path, key).into(),
-            None => Refused(format!("SSH authentication failed for {}", host.name)).into(),
+            None => Refused(refusal).into(),
         });
     }
 
@@ -865,8 +875,16 @@ where
     Err(Refused(message).into())
 }
 
-/// Asks the user for the password, up to [`PASSWORD_PROMPTS`] times, and says
-/// where one got in: [`Offer::Here`] or [`Offer::There`]. `None` when none did.
+/// How asking the user went.
+enum Asked {
+    /// A password got in: [`Offer::Here`] or [`Offer::There`].
+    In(Offer),
+    /// Every answer was refused.
+    Refused,
+    Unanswered(NoAnswer),
+}
+
+/// Asks the user for the password, up to [`PASSWORD_PROMPTS`] times.
 #[allow(clippy::too_many_arguments)]
 async fn ask_password<F, Fut>(
     ask: &mut dyn AskPassword,
@@ -877,7 +895,7 @@ async fn ask_password<F, Fut>(
     key: &str,
     refused: &[String],
     new_key: Option<&str>,
-) -> anyhow::Result<Option<Offer>>
+) -> anyhow::Result<Asked>
 where
     F: Fn() -> Fut,
     Fut: Future<Output = anyhow::Result<Dialed>>,
@@ -891,28 +909,32 @@ where
             retry,
             new_host_key: new_key,
         };
-        let Some(password) = ask.ask(prompt).await else {
-            return Err(Refused(format!("SSH login cancelled for {}", host.name)).into());
+        let password = match ask.ask(prompt).await {
+            Ok(password) => password,
+            Err(no_answer) => return Ok(Asked::Unanswered(no_answer)),
         };
         retry = true;
         // Sending it again would only cost another failed login.
         if refused.contains(&password) {
             continue;
         }
+        // Only a hang-up this answer caused ends the asking; one from the key
+        // attempts before it just moves the answers to fresh connections.
+        let first_open = first.usable().await;
         match offer(first, spare, dial, host, key, &password).await {
             Offer::Rejected => refused.push(password),
             Offer::Unavailable(e) => return Err(e),
             accepted => {
                 password::remember(key, &password);
-                return Ok(Some(accepted));
+                return Ok(Asked::In(accepted));
             }
         }
         // OpenSSH hangs up after too many failed logins; ssh(1) stops there too.
-        if first.closed().await && first.link.hung_up.load(Ordering::SeqCst) {
+        if first_open && first.closed().await && first.link.hung_up.load(Ordering::SeqCst) {
             break;
         }
     }
-    Ok(None)
+    Ok(Asked::Refused)
 }
 
 fn password_login(host: &Host, handle: Handle<KnownHostsHandler>) -> Handle<KnownHostsHandler> {
@@ -981,6 +1003,19 @@ where
             Err(e) => return Offer::Unavailable(e),
         },
     };
+    // With known_hosts unwritable every connection meets the key anew: this one
+    // must meet the same key as the first, whose fingerprint the user saw.
+    if let (Some(seen), Some(now)) = (first.link.new_key(), fresh.link.new_key()) {
+        if seen != now {
+            return Offer::Unavailable(
+                Refused(format!(
+                    "SSH login to {} stopped: the host key changed between connections",
+                    host.name
+                ))
+                .into(),
+            );
+        }
+    }
     let mut fresh = if method == Some(Method::Password) {
         fresh
     } else {
@@ -994,6 +1029,9 @@ where
                 *spare = conn;
                 return Offer::Rejected;
             }
+            // The password method already turned this password down.
+            (_, Kbd::Broken) if tried_password => return Offer::Rejected,
+            // A second factor is a dead end whatever the password: say so.
             (_, Kbd::WantsCode) => {
                 return Offer::Unavailable(
                     Refused(format!(
@@ -1170,7 +1208,7 @@ const AGENT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Upper bound on the agent's share of one hop's login, for callers that time
-/// the whole connect.
+/// the whole connect (so a slow but working agent is not taken for a dead host).
 const AGENT_BUDGET: Duration = Duration::from_secs(70);
 
 /// Agent keys whose signature was turned down or timed out, by fingerprint.
@@ -1213,12 +1251,8 @@ async fn try_agent_auth(
     user: &str,
     user_started: bool,
 ) -> anyhow::Result<bool> {
-    use russh::keys::agent::client::AgentClient;
-
     let (agent, identities) = time::timeout(AGENT_TIMEOUT, async {
-        let mut agent = AgentClient::connect_env()
-            .await
-            .context("connect to SSH agent")?;
+        let mut agent = connect_agent().await?;
         let identities = agent
             .request_identities()
             .await
@@ -1229,9 +1263,11 @@ async fn try_agent_auth(
     .map_err(|_| anyhow!("SSH agent did not answer"))??;
 
     let failed = Arc::new(tokio::sync::Notify::new());
+    let stalled = Arc::new(AtomicBool::new(false));
     let mut signer = AgentSigner {
         agent: Some(agent),
         failed: Arc::clone(&failed),
+        stalled: Arc::clone(&stalled),
     };
     for pubkey in identities {
         if !user_started && refused_agent_keys().contains(&pubkey.fingerprint()) {
@@ -1245,10 +1281,21 @@ async fn try_agent_auth(
             () = failed.notified() => {
                 // russh got the buffer back unsigned, sent nothing and now waits
                 // for a reply that will not come. Let it finish handing the
-                // buffer over, then leave the agent out of this login.
+                // buffer over; the signer went with it.
                 let _ = time::timeout(Duration::from_millis(100), &mut attempt).await;
-                tracing::debug!("SSH agent did not sign; trying other methods");
-                return Ok(false);
+                if stalled.load(Ordering::SeqCst) {
+                    tracing::debug!("SSH agent stopped answering; trying other methods");
+                    return Ok(false);
+                }
+                // Turned down: the agent is fine, and a later key may sign.
+                let agent = time::timeout(AGENT_TIMEOUT, connect_agent()).await;
+                let Ok(Ok(agent)) = agent else { return Ok(false) };
+                signer = AgentSigner {
+                    agent: Some(agent),
+                    failed: Arc::clone(&failed),
+                    stalled: Arc::clone(&stalled),
+                };
+                continue;
             }
         };
         signer = back;
@@ -1257,6 +1304,14 @@ async fn try_agent_auth(
         }
     }
     Ok(false)
+}
+
+#[cfg(unix)]
+async fn connect_agent(
+) -> anyhow::Result<russh::keys::agent::client::AgentClient<tokio::net::UnixStream>> {
+    russh::keys::agent::client::AgentClient::connect_env()
+        .await
+        .context("connect to SSH agent")
 }
 
 /// Signs through the SSH agent without ever leaving russh waiting.
@@ -1270,6 +1325,8 @@ async fn try_agent_auth(
 struct AgentSigner {
     agent: Option<russh::keys::agent::client::AgentClient<tokio::net::UnixStream>>,
     failed: Arc<tokio::sync::Notify>,
+    /// Set when a signature timed out: the agent is hung, not just unwilling.
+    stalled: Arc<AtomicBool>,
 }
 
 #[cfg(unix)]
@@ -1290,16 +1347,20 @@ impl russh::Signer for AgentSigner {
             if let Some(agent) = self.agent.take() {
                 // A timed-out request leaves the agent connection mid-reply, so
                 // it is dropped with the future.
-                if let Ok((agent, result)) =
-                    time::timeout(SIGN_TIMEOUT, agent.sign_request(&key, to_sign.clone())).await
-                {
-                    self.agent = Some(agent);
-                    // An agent reply russh cannot read comes back unchanged.
-                    signed = result.ok().filter(|data| data.len() != to_sign.len());
+                match time::timeout(SIGN_TIMEOUT, agent.sign_request(&key, to_sign.clone())).await {
+                    Ok((agent, result)) => {
+                        self.agent = Some(agent);
+                        // An agent reply russh cannot read comes back unchanged.
+                        signed = result.ok().filter(|data| data.len() != to_sign.len());
+                    }
+                    Err(_) => self.stalled.store(true, Ordering::SeqCst),
                 }
             }
             match signed {
-                Some(data) => (self, Ok(data)),
+                Some(data) => {
+                    refused_agent_keys().remove(&key.fingerprint());
+                    (self, Ok(data))
+                }
                 None => {
                     refused_agent_keys().insert(key.fingerprint());
                     self.failed.notify_one();
@@ -1335,9 +1396,10 @@ const KBD_TIMEOUT: Duration = Duration::from_secs(20);
 /// How a keyboard-interactive login went.
 enum Kbd {
     Accepted,
-    /// The server prompted and did not take the password.
+    /// The server was sent the password and did not take it.
     Refused,
-    /// The server does not do keyboard-interactive.
+    /// The server does not do keyboard-interactive, or not in a way the
+    /// password can answer.
     NotOffered,
     /// The server asked for a one-time code, not a password.
     WantsCode,
@@ -1370,7 +1432,6 @@ async fn kbd_exchange(conn: &mut Dialed, user: &str, password: &str) -> Kbd {
 
     let Dialed { handle, link, .. } = conn;
     let mut password = Some(password);
-    let mut prompted = false;
     let mut wants_code = false;
     let mut reply = kbd_wait(
         &mut link.ended,
@@ -1381,12 +1442,13 @@ async fn kbd_exchange(conn: &mut Dialed, user: &str, password: &str) -> Kbd {
         let prompts = match reply {
             Some(Ok(Reply::Success)) => return Kbd::Accepted,
             Some(Ok(Reply::Failure)) if wants_code => return Kbd::WantsCode,
-            Some(Ok(Reply::Failure)) if prompted => return Kbd::Refused,
+            // Refused only if the password went out; prompts it could not
+            // answer (a user name, several fields) are as good as no offer.
+            Some(Ok(Reply::Failure)) if password.is_none() => return Kbd::Refused,
             Some(Ok(Reply::Failure)) => return Kbd::NotOffered,
             Some(Ok(Reply::InfoRequest { prompts, .. })) if round <= KBD_ROUNDS => prompts,
             _ => return Kbd::Broken,
         };
-        prompted = true;
         // Always answered: russh waits for the answer and swallows everything
         // else meanwhile. Past the round cap, no answers at all, which makes the
         // server give up.
@@ -1449,16 +1511,24 @@ fn kbd_answers(
 }
 
 /// Whether a prompt asks for a one-time code rather than the password. A deny
-/// list, so "Password:" in any language still gets the password.
+/// list, so "Password:" in any language still gets the password. Whole words
+/// only, and never from a `user@host` (OpenSSH puts one in front): a user or
+/// host name is no hint.
 fn asks_for_code(prompt: &str) -> bool {
     let prompt = prompt.to_lowercase();
-    [
-        "code", "token", "otp", "passcode", "verif", "one-time", "one time", "2fa", "yubikey",
-        "duo", " pin",
-    ]
-    .iter()
-    .any(|word| prompt.contains(word))
-        || prompt.starts_with("pin")
+    let words: Vec<&str> = prompt
+        .split_whitespace()
+        .filter(|chunk| !chunk.contains('@'))
+        .flat_map(|chunk| chunk.split(|c: char| !c.is_alphanumeric()))
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.windows(2).any(|pair| pair == ["one", "time"])
+        || words.iter().any(|word| {
+            matches!(
+                *word,
+                "code" | "token" | "otp" | "passcode" | "2fa" | "yubikey" | "duo" | "pin"
+            ) || word.starts_with("verif")
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -1600,9 +1670,11 @@ mod tests {
         // Localised password prompts still get it.
         for text in [
             "Password: ",
-            "Contraseña: ",
             "Passwort: ",
+            "Contraseña: ",
             "(root@udm) Password:",
+            "(vscode@gitcode) Password:",
+            "Password for duo-admin@host:",
         ] {
             let (mut password, mut code) = (Some("secret"), false);
             assert_eq!(

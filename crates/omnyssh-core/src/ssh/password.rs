@@ -19,6 +19,8 @@ use crate::event::CoreEvent;
 struct State {
     /// Passwords a server accepted, by login key.
     accepted: HashMap<String, String>,
+    /// How many times each login's password was remembered.
+    generations: HashMap<String, u64>,
     /// How each login's password is sent, once a server has shown it.
     methods: HashMap<String, Method>,
     /// Prompts waiting for an answer, by request id.
@@ -61,10 +63,16 @@ pub(crate) fn accepted(key: &str) -> Option<String> {
 
 /// Remembers `password` for `key`; call only once the server took it.
 pub(crate) fn remember(key: &str, password: &str) {
-    state()
-        .accepted
-        .insert(key.to_string(), password.to_string());
+    {
+        let mut state = state();
+        state.accepted.insert(key.to_string(), password.to_string());
+        *state.generations.entry(key.to_string()).or_default() += 1;
+    }
     accepted_signal().send_replace(());
+}
+
+fn generation(key: &str) -> u64 {
+    state().generations.get(key).copied().unwrap_or_default()
 }
 
 /// Forgets `password` for `key` after the server turned it down. A newer one
@@ -86,11 +94,13 @@ pub(crate) fn learn(key: &str, method: Method) {
     state().methods.insert(key.to_string(), method);
 }
 
-/// Resolves once a password is remembered for `key`.
+/// Resolves once a password is remembered for `key` from now on. One held
+/// already did not get the caller in (it was held back from a new host key),
+/// so waking on it would only redial straight into the same failure.
 pub(crate) async fn remembered(key: &str) {
-    // Subscribe before checking, so one remembered in between is not missed.
     let mut rx = accepted_signal().subscribe();
-    while accepted(key).is_none() {
+    let seen = generation(key);
+    while generation(key) == seen || accepted(key).is_none() {
         // The sender lives in a static and is never dropped.
         let _ = rx.changed().await;
     }
@@ -130,11 +140,18 @@ pub(crate) struct Prompt<'a> {
     pub new_host_key: Option<&'a str>,
 }
 
+/// Why a prompt produced no password.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NoAnswer {
+    Cancelled,
+    /// Nobody answered within [`PROMPT_TIMEOUT`].
+    TimedOut,
+}
+
 /// Asks the user for a login password while a connection authenticates.
 #[async_trait]
 pub(crate) trait AskPassword: Send {
-    /// The password, or `None` when the user cancelled.
-    async fn ask(&mut self, prompt: Prompt<'_>) -> Option<String>;
+    async fn ask(&mut self, prompt: Prompt<'_>) -> Result<String, NoAnswer>;
 }
 
 /// Asks through the frontends: sends [`CoreEvent::PasswordRequired`] and waits
@@ -156,7 +173,7 @@ impl Prompter {
 
 #[async_trait]
 impl AskPassword for Prompter {
-    async fn ask(&mut self, prompt: Prompt<'_>) -> Option<String> {
+    async fn ask(&mut self, prompt: Prompt<'_>) -> Result<String, NoAnswer> {
         let (reply, answer) = oneshot::channel();
         let request_id = {
             let mut state = state();
@@ -177,15 +194,15 @@ impl AskPassword for Prompter {
             })
             .await;
         if asked.is_err() {
-            return None;
+            return Err(NoAnswer::Cancelled);
         }
-        // An expired prompt reads as cancelled; answering it later fails with
-        // NotRequested, which frontends take as "close it".
-        tokio::time::timeout(PROMPT_TIMEOUT, answer)
-            .await
-            .ok()?
-            .ok()
-            .flatten()
+        // Answering an expired prompt later fails with NotRequested, which
+        // frontends report and close it on.
+        match tokio::time::timeout(PROMPT_TIMEOUT, answer).await {
+            Ok(Ok(Some(password))) => Ok(password),
+            Ok(_) => Err(NoAnswer::Cancelled),
+            Err(_) => Err(NoAnswer::TimedOut),
+        }
     }
 }
 
@@ -226,7 +243,7 @@ mod tests {
 
         let id = asked(&mut rx).await;
         answer(id, Some(String::from("secret"))).expect("answer");
-        assert_eq!(asking.await.expect("ran").as_deref(), Some("secret"));
+        assert_eq!(asking.await.expect("ran").as_deref(), Ok("secret"));
         assert!(matches!(answer(id, None), Err(PasswordError::NotRequested)));
     }
 
@@ -238,7 +255,7 @@ mod tests {
 
         let id = asked(&mut rx).await;
         answer(id, None).expect("cancel");
-        assert_eq!(asking.await.expect("ran"), None);
+        assert_eq!(asking.await.expect("ran"), Err(NoAnswer::Cancelled));
     }
 
     #[tokio::test]
@@ -264,8 +281,25 @@ mod tests {
 
         let id = asked(&mut rx).await;
         tokio::time::advance(PROMPT_TIMEOUT + Duration::from_secs(1)).await;
-        assert_eq!(asking.await.expect("ran"), None);
+        assert_eq!(asking.await.expect("ran"), Err(NoAnswer::TimedOut));
         assert!(matches!(answer(id, None), Err(PasswordError::NotRequested)));
+    }
+
+    #[tokio::test]
+    async fn a_password_already_held_does_not_wake_a_waiter() {
+        let key = "held@10.6.6.6:22";
+        remember(key, "secret");
+        let waiter = tokio::spawn(async move { remembered(key).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiter.is_finished(),
+            "only a newly typed password wakes it"
+        );
+        remember(key, "newer");
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("the waiter wakes")
+            .expect("the waiter ran");
     }
 
     #[tokio::test]
