@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use crate::event::CoreEvent;
 use crate::ssh::client::Host;
 use crate::ssh::identity;
-use crate::ssh::password::AskPassword;
+use crate::ssh::password::{AskPassword, Prompt};
 use crate::ssh::session::{connect_and_auth, passphrase_required, Passwords, SshConnection};
 
 /// Stable numeric identifier for a PTY session (mirrors [`crate::event::SessionId`]).
@@ -198,6 +198,9 @@ async fn session_task(
         closed: false,
     };
     let connected = connect_and_auth(&host, Passwords::Ask(&mut prompt)).await;
+    // Keys typed past the prompt must not reach the new shell (a password
+    // entered twice would be echoed there).
+    prompt.flush();
     let ((cols, rows), closed) = (prompt.size, prompt.closed);
     let result = match connected {
         Ok(handle) => open_shell(&handle, cols, rows).await.map(|ch| (handle, ch)),
@@ -206,6 +209,9 @@ async fn session_task(
     let (_handle, mut channel) = match result {
         Ok(pair) => pair,
         Err(e) => {
+            // The tab goes first: the TUI reports a closed tab in the status bar,
+            // and the reason has to be the message that stays there.
+            let _ = tx.send(CoreEvent::PtyExited(id)).await;
             // A tab closed at the password prompt needs no error.
             if !closed {
                 let _ = tx.send(CoreEvent::Error(format!("Terminal: {e}"))).await;
@@ -213,7 +219,6 @@ async fn session_task(
             if let Some(path) = passphrase_required(&e) {
                 identity::ask_passphrase(&tx, &host.name, path).await;
             }
-            let _ = tx.send(CoreEvent::PtyExited(id)).await;
             return;
         }
     };
@@ -271,6 +276,18 @@ struct InlinePrompt<'a> {
 }
 
 impl InlinePrompt<'_> {
+    /// Drops keystrokes typed ahead, as ssh(1) does before and after a password
+    /// prompt, keeping a resize and a close.
+    fn flush(&mut self) {
+        while let Ok(ctrl) = self.ctrl_rx.try_recv() {
+            match ctrl {
+                Ctrl::Input(_) => {}
+                Ctrl::Resize { cols, rows } => self.size = (cols, rows),
+                Ctrl::Close => self.closed = true,
+            }
+        }
+    }
+
     async fn print(&self, text: &str) {
         feed_parser(self.parser, text.as_bytes());
         let _ = self.tx.send(CoreEvent::PtyOutput(self.id)).await;
@@ -282,11 +299,20 @@ impl InlinePrompt<'_> {
 
 #[async_trait]
 impl<'a> AskPassword for InlinePrompt<'a> {
-    async fn ask(&mut self, login: &str, retry: bool) -> Option<String> {
-        if retry {
-            self.print("Permission denied, please try again.\r\n").await;
+    async fn ask(&mut self, prompt: Prompt<'_>) -> Option<String> {
+        self.flush();
+        if self.closed {
+            return None;
         }
-        self.print(&format!("{login}'s password: ")).await;
+        if prompt.retry {
+            self.print("Permission denied, please try again.\r\n").await;
+        } else if let Some(key) = prompt.new_host_key {
+            // A server first met on this connection: show its key before the
+            // password goes to it.
+            self.print(&format!("New host key recorded: {key}\r\n"))
+                .await;
+        }
+        self.print(&format!("{}'s password: ", prompt.login)).await;
         let mut line = PasswordLine::default();
         let typed = loop {
             match self.ctrl_rx.recv().await {

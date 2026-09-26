@@ -40,7 +40,7 @@ import {
   reduceRollback
 } from '$lib/stores/keySetup';
 import { enqueuePassphrase, passphraseQueue } from '$lib/stores/passphrase';
-import { passwordQueue, settlePassword } from '$lib/stores/password';
+import { passwordQueue } from '$lib/stores/password';
 import { offerUpdate } from '$lib/stores/update';
 import type { UpdateAvailable } from '$lib/bindings';
 
@@ -180,9 +180,4 @@ export function applyKeyPassphraseRequired(payload: KeyPassphraseRequired): void
 // A login waiting for its password (tech-gui.md §4.3); answered by `answer_password`.
 export function applyPasswordRequired(payload: PasswordRequired): void {
   passwordQueue.update((queue) => [...queue, payload]);
-}
-
-// The connection stopped waiting, so its dialog goes.
-export function applyPasswordPromptClosed(requestId: number): void {
-  settlePassword(requestId);
 }

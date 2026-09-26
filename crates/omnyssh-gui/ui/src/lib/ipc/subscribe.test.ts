@@ -37,7 +37,6 @@ vi.mock('$lib/bindings', () => {
       updateAvailable: channel('updateAvailable'),
       keyPassphraseRequired: channel('keyPassphraseRequired'),
       passwordRequired: channel('passwordRequired'),
-      passwordPromptClosed: channel('passwordPromptClosed'),
       error: channel('error')
     }
   };
@@ -98,14 +97,14 @@ describe('startEventBridge', () => {
     expect(get(passphrasePrompt)).toEqual({ hostName: 'web-1', keyPath: '/k/id_ed25519' });
   });
 
-  it('shows a password prompt and takes it down when its connection stops waiting', async () => {
+  it('queues password prompts in order', async () => {
     await startEventBridge();
-    const prompt = { requestId: 7, hostName: 'nas', login: 'admin@10.0.0.5', retry: false };
-    listeners.passwordRequired({ payload: prompt });
-    expect(get(passwordPrompt)).toEqual(prompt);
-
-    listeners.passwordPromptClosed({ payload: { requestId: 7 } });
-    expect(get(passwordPrompt)).toBeNull();
+    const first = { requestId: 7, hostName: 'nas', login: 'admin@10.0.0.5', retry: false, newHostKey: null };
+    const second = { ...first, requestId: 8, hostName: 'db' };
+    listeners.passwordRequired({ payload: first });
+    listeners.passwordRequired({ payload: second });
+    expect(get(passwordPrompt)).toEqual(first);
+    expect(get(passwordQueue)).toEqual([first, second]);
   });
 
   it('terminal-exited closes the tab whose backend id matches', async () => {

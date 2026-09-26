@@ -207,6 +207,8 @@ pub struct PasswordPrompt {
     pub login: String,
     /// The previous password for this login was refused.
     pub retry: bool,
+    /// Fingerprint of a host key first seen on this connection.
+    pub new_host_key: Option<String>,
     pub field: FormField,
 }
 
@@ -864,6 +866,7 @@ impl App {
                 host_name,
                 login,
                 retry,
+                new_host_key,
             } => {
                 // As with a passphrase, the terminal screen keeps its keys.
                 if self.state.read().await.screen == Screen::Terminal {
@@ -875,14 +878,9 @@ impl App {
                     host_name,
                     login,
                     retry,
+                    new_host_key,
                     field: FormField::default(),
                 });
-            }
-
-            CoreEvent::PasswordPromptClosed(request_id) => {
-                self.view
-                    .password_prompts
-                    .retain(|p| p.request_id != request_id);
             }
 
             // ----------------------------------------------------------------

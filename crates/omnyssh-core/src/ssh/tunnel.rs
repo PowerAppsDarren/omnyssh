@@ -31,10 +31,10 @@ use tokio::time;
 use crate::event::CoreEvent;
 use crate::ssh::client::Host;
 use crate::ssh::identity;
-use crate::ssh::password::{self, Prompter};
+use crate::ssh::password;
 use crate::ssh::session::{
-    connect_and_auth, connect_budget, is_refused, passphrase_required, password_required,
-    Passwords, SshConnection,
+    connect_and_auth, connect_budget, is_refused, passphrase_required, waiting_login, Passwords,
+    SshConnection,
 };
 
 // ---------------------------------------------------------------------------
@@ -196,9 +196,6 @@ const STABLE_AFTER: Duration = Duration::from_secs(60);
 /// of its own.
 const AUTH_BUDGET: Duration = Duration::from_secs(20);
 
-/// How long a tunnel the user started waits for its login password to be typed.
-const PROMPT_BUDGET: Duration = Duration::from_secs(600);
-
 /// How often a live tunnel checks that its connection still is. A dead peer
 /// is noticed by the keepalives first; this only picks that up.
 const LIVENESS_CHECK: Duration = Duration::from_secs(1);
@@ -241,37 +238,25 @@ impl TunnelManager {
 
     /// Starts `host`'s tunnel, or restarts it when one is already running. The
     /// new run waits for the old one to release the ports before binding them.
-    /// The user started it, so a login that needs a password asks for one.
     ///
     /// Must be called within a tokio runtime.
     pub fn start(&mut self, host: Host) {
-        self.spawn(host, true);
-    }
-
-    fn spawn(&mut self, host: Host, ask: bool) {
         let previous = self.runs.remove(&host.name).map(|mut run| {
             run.stop();
             run.task
         });
         let (stop, stop_rx) = oneshot::channel();
-        let task = tokio::spawn(run_tunnel(
-            host.clone(),
-            self.tx.clone(),
-            stop_rx,
-            previous,
-            ask,
-        ));
+        let task = tokio::spawn(run_tunnel(host.clone(), self.tx.clone(), stop_rx, previous));
         let stop = Some(stop);
         self.runs
             .insert(host.name.clone(), Run { host, stop, task });
     }
 
-    /// Starts the tunnel of every host marked to start on launch. Nobody asked
-    /// for these, so none of them asks for a password.
+    /// Starts the tunnel of every host marked to start on launch.
     pub fn autostart(&mut self, hosts: &[Host]) {
         for host in hosts {
             if host.tunnel_autostart && !host.local_forwards.is_empty() {
-                self.spawn(host.clone(), false);
+                self.start(host.clone());
             }
         }
     }
@@ -303,7 +288,7 @@ impl TunnelManager {
             match hosts.iter().find(|h| h.name == name) {
                 Some(host) if host.local_forwards.is_empty() => self.stop(&name),
                 Some(host) if self.runs.get(&name).is_some_and(|r| changed(&r.host, host)) => {
-                    self.spawn(host.clone(), false);
+                    self.start(host.clone());
                 }
                 Some(_) => {}
                 None => self.stop(&name),
@@ -339,7 +324,6 @@ async fn run_tunnel(
     tx: mpsc::Sender<CoreEvent>,
     mut stop: oneshot::Receiver<()>,
     previous: Option<JoinHandle<()>>,
-    ask: bool,
 ) {
     // A restart must not race its predecessor for the ports — even when it is
     // stopped first, or the next run would inherit that race. The predecessor has
@@ -350,16 +334,15 @@ async fn run_tunnel(
     let status = tokio::select! {
         biased;
         _ = &mut stop => TunnelStatus::Stopped,
-        status = serve(&host, &tx, ask) => status,
+        status = serve(&host, &tx) => status,
     };
     // `serve` is dropped by now, so the ports are free again.
     send_status(&tx, &host.name, status).await;
 }
 
 /// Holds the ports and keeps the connection up. Returns only once the tunnel
-/// cannot go on. With `ask`, the first login may ask for a password; redials
-/// use the one it got.
-async fn serve(host: &Host, tx: &mpsc::Sender<CoreEvent>, mut ask: bool) -> TunnelStatus {
+/// cannot go on.
+async fn serve(host: &Host, tx: &mpsc::Sender<CoreEvent>) -> TunnelStatus {
     if host.local_forwards.is_empty() {
         return TunnelStatus::Failed(String::from("no port forwards are set up for this host"));
     }
@@ -373,51 +356,47 @@ async fn serve(host: &Host, tx: &mpsc::Sender<CoreEvent>, mut ask: bool) -> Tunn
     send_status(tx, &host.name, TunnelStatus::Connecting).await;
     let mut retry = 0;
     loop {
-        let mut budget = connect_budget(host).await + AUTH_BUDGET;
-        let mut prompter = Prompter::new(tx.clone(), &host.name);
-        let passwords = if std::mem::take(&mut ask) {
-            budget += PROMPT_BUDGET;
-            Passwords::Ask(&mut prompter)
-        } else {
-            Passwords::Remembered
-        };
+        let budget = connect_budget(host).await + AUTH_BUDGET;
         let mut locked = None;
-        let mut no_password = None;
-        let reason = match time::timeout(budget, connect_and_auth(host, passwords)).await {
-            Ok(Ok(conn)) => {
-                send_status(tx, &host.name, TunnelStatus::Up).await;
-                let since = Instant::now();
-                let reason = forward(Arc::new(conn), &listeners, tx, &host.name).await;
-                if since.elapsed() >= STABLE_AFTER {
-                    retry = 0;
+        let mut waiting = None;
+        let reason =
+            match time::timeout(budget, connect_and_auth(host, Passwords::Remembered)).await {
+                Ok(Ok(conn)) => {
+                    send_status(tx, &host.name, TunnelStatus::Up).await;
+                    let since = Instant::now();
+                    let reason = forward(Arc::new(conn), &listeners, tx, &host.name).await;
+                    if since.elapsed() >= STABLE_AFTER {
+                        retry = 0;
+                    }
+                    reason
                 }
-                reason
-            }
-            Ok(Err(e)) if is_refused(&e) => return TunnelStatus::Failed(format!("{e:#}")),
-            Ok(Err(e)) => {
-                locked = passphrase_required(&e).map(str::to_owned);
-                no_password = password_required(&e).map(str::to_owned);
-                format!("{e:#}")
-            }
-            Err(_) => format!(
-                "no answer from {} within {}s",
-                host.hostname,
-                budget.as_secs()
-            ),
-        };
+                Ok(Err(e)) if is_refused(&e) => return TunnelStatus::Failed(format!("{e:#}")),
+                Ok(Err(e)) => {
+                    locked = passphrase_required(&e).map(str::to_owned);
+                    waiting = waiting_login(&e).map(str::to_owned);
+                    format!("{e:#}")
+                }
+                Err(_) => format!(
+                    "no answer from {} within {}s",
+                    host.hostname,
+                    budget.as_secs()
+                ),
+            };
         tracing::debug!(host = %host.name, %reason, "tunnel down");
         send_status(tx, &host.name, TunnelStatus::Retrying(reason)).await;
-        if let Some(path) = locked {
-            // Redialling cannot help until the key is unlocked, and every try is
-            // a failed login on the server: hold the ports and wait for it.
-            identity::ask_passphrase_once(tx, &host.name, &path).await;
-            identity::unlocked(&path).await;
-            continue;
-        }
-        if let Some(login) = no_password {
-            // Likewise until a password for the login is typed elsewhere — in a
-            // terminal, say.
-            password::remembered(&login).await;
+        if let Some(login) = waiting {
+            // Redialling cannot help until the key is unlocked or a password is
+            // typed for the login (in a terminal, say), and every try is a failed
+            // login on the server: hold the ports and wait for either.
+            if let Some(path) = locked {
+                identity::ask_passphrase_once(tx, &host.name, &path).await;
+                tokio::select! {
+                    () = identity::unlocked(&path) => {}
+                    () = password::remembered(&login) => {}
+                }
+            } else {
+                password::remembered(&login).await;
+            }
             continue;
         }
         time::sleep(RETRY_DELAYS[retry]).await;

@@ -425,7 +425,6 @@ keySetupFailed: KeySetupFailed,
 keySetupProgress: KeySetupProgress,
 keySetupRollback: KeySetupRollback,
 metricsUpdated: MetricsUpdated,
-passwordPromptClosed: PasswordPromptClosed,
 passwordRequired: PasswordRequired,
 servicesDetected: ServicesDetected,
 servicesFailed: ServicesFailed,
@@ -449,7 +448,6 @@ keySetupFailed: "key-setup-failed",
 keySetupProgress: "key-setup-progress",
 keySetupRollback: "key-setup-rollback",
 metricsUpdated: "metrics-updated",
-passwordPromptClosed: "password-prompt-closed",
 passwordRequired: "password-required",
 servicesDetected: "services-detected",
 servicesFailed: "services-failed",
@@ -570,16 +568,12 @@ export type MetricsUpdated = { hostName: string; metrics: MetricsDto }
  */
 export type MonitorModeDto = "ssh" | "tcpPort"
 /**
- * The connection behind a `password-required` stopped waiting (a tunnel was
- * stopped); its prompt goes away.
- */
-export type PasswordPromptClosed = { requestId: number }
-/**
  * A connection waits for the login password of `login` (`user@host`). Answered
  * with `answer_password`; the password only ever crosses inbound. `retry` says
- * the previous one was refused.
+ * the previous one was refused; `newHostKey` is the fingerprint of a host key
+ * first seen on this connection, to check before typing.
  */
-export type PasswordRequired = { requestId: number; hostName: string; login: string; retry: boolean }
+export type PasswordRequired = { requestId: number; hostName: string; login: string; retry: boolean; newHostKey: string | null }
 /**
  * A single process in the "top processes" panel (tech-gui.md §4.1).
  */

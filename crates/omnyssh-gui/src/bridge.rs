@@ -69,17 +69,16 @@ pub async fn forward_core_events(app: AppHandle, mut rx: mpsc::Receiver<CoreEven
                 host_name,
                 login,
                 retry,
+                new_host_key,
             } => {
                 let _ = events::PasswordRequired {
                     request_id,
                     host_name,
                     login,
                     retry,
+                    new_host_key,
                 }
                 .emit(&app);
-            }
-            CoreEvent::PasswordPromptClosed(request_id) => {
-                let _ = events::PasswordPromptClosed { request_id }.emit(&app);
             }
             // Remote shell exit / dropped connection. Map the inner PTY id to its
             // public id (dropping routing state); `None` means the user already

@@ -143,7 +143,6 @@ fn specta_builder() -> Builder<tauri::Wry> {
             events::UpdateAvailable,
             events::KeyPassphraseRequired,
             events::PasswordRequired,
-            events::PasswordPromptClosed,
             events::Error
         ])
 }

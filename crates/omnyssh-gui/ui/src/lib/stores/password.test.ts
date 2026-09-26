@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
 import { displayLogin, passwordPrompt, passwordQueue, settlePassword } from './password';
 
-const sftp = { requestId: 1, hostName: 'nas', login: 'admin@10.0.0.5', retry: false };
-const tunnel = { requestId: 2, hostName: 'db', login: 'root@10.0.0.6', retry: false };
+const sftp = { requestId: 1, hostName: 'nas', login: 'admin@10.0.0.5', retry: false, newHostKey: null };
+const tunnel = { requestId: 2, hostName: 'db', login: 'root@10.0.0.6', retry: false, newHostKey: null };
 
 describe('password prompt queue', () => {
   beforeEach(() => passwordQueue.set([]));

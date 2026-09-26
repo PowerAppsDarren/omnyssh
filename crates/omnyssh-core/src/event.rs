@@ -155,15 +155,15 @@ pub enum CoreEvent {
     KeyPassphraseRequired { host_name: HostId, key_path: String },
     /// A connection to `host_name` waits for the login password of `login`
     /// (`user@host`). Frontends answer with [`crate::ssh::password::answer`];
-    /// `retry` says the previous one was refused.
+    /// `retry` says the previous one was refused, and `new_host_key` is the
+    /// fingerprint of a host key first seen on this connection.
     PasswordRequired {
         request_id: u64,
         host_name: HostId,
         login: String,
         retry: bool,
+        new_host_key: Option<String>,
     },
-    /// The connection behind a [`CoreEvent::PasswordRequired`] stopped waiting.
-    PasswordPromptClosed(u64),
 
     // -----------------------------------------------------------------------
     // Update checker events

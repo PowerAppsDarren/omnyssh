@@ -33,7 +33,14 @@ async function boot(page: Page): Promise<void> {
         request += 1;
         const requestId = request;
         setTimeout(
-          () => fire('password-required', { requestId, hostName: 'nas', login: 'admin@nas.example.com', retry }),
+          () =>
+            fire('password-required', {
+              requestId,
+              hostName: 'nas',
+              login: 'admin@nas.example.com',
+              retry,
+              newHostKey: null
+            }),
           0
         );
         return requestId;
@@ -54,6 +61,8 @@ async function boot(page: Page): Promise<void> {
               });
             case 'answer_password': {
               const { requestId, password } = args as { requestId: number; password: string | null };
+              // Only the request the stub issued last is waited on, as in the core.
+              if (requestId !== request) return Promise.reject({ message: 'no login is waiting for this password' });
               answers.push({ requestId, password });
               if (password === null) waiting?.(false);
               else if (password === 'sesame') waiting?.(true);
@@ -129,20 +138,42 @@ test('cancelling ends the login with the reason', async ({ page }) => {
   await expect(page.getByRole('main').getByText('SFTP SSH connect: SSH login cancelled for nas')).toBeVisible();
 });
 
-test('a prompt whose connection stopped waiting goes away by itself', async ({ page }) => {
+test('a server met for the first time shows its host key before the password goes', async ({ page }) => {
   await boot(page);
   await page.evaluate(() => {
     const fire = (window as unknown as { __fire: (e: string, p: unknown) => void }).__fire;
-    fire('password-required', { requestId: 40, hostName: 'nas', login: 'admin@nas.example.com', retry: false });
+    fire('password-required', {
+      requestId: 40,
+      hostName: 'nas',
+      login: 'admin@nas.example.com',
+      retry: false,
+      newHostKey: 'SHA256:abcDEF123'
+    });
   });
   const dialog = page.getByRole('dialog', { name: 'SSH login' });
-  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('SHA256:abcDEF123')).toBeVisible();
+});
 
+test('a prompt its login gave up on closes quietly when answered', async ({ page }) => {
+  await boot(page);
   await page.evaluate(() => {
     const fire = (window as unknown as { __fire: (e: string, p: unknown) => void }).__fire;
-    fire('password-prompt-closed', { requestId: 40 });
+    fire('password-required', { requestId: 41, hostName: 'nas', login: 'admin@nas.example.com', retry: false, newHostKey: null });
   });
+  const dialog = page.getByRole('dialog', { name: 'SSH login' });
+  await dialog.getByLabel('Password').fill('late');
+  await dialog.getByLabel('Password').press('Enter');
   await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByText('no login is waiting')).toHaveCount(0);
+});
+
+test('a click beside the dialog does not cancel the login', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on nas').click();
+  const dialog = page.getByRole('dialog', { name: 'SSH login' });
+  await expect(dialog.getByLabel('Password')).toBeFocused();
+  await page.mouse.click(5, 5);
+  await expect(dialog).toBeVisible();
   expect(await answers(page)).toEqual([]);
 });
 

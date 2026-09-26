@@ -795,7 +795,7 @@ async fn setup_key_internal(
 /// Attempts to rollback sshd_config to the most recent OmnySSH backup.
 /// Connects with the host's keys and nothing else.
 async fn connect_keys_only(host: &Host) -> Result<SshSession> {
-    SshSession::connect_with(host, Passwords::SavedOnly).await
+    SshSession::connect_with(host, Passwords::KeysOnly).await
 }
 
 async fn emergency_rollback(session: &SshSession) -> Result<()> {

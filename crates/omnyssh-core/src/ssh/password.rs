@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -18,10 +19,25 @@ use crate::event::CoreEvent;
 struct State {
     /// Passwords a server accepted, by login key.
     accepted: HashMap<String, String>,
+    /// How each login's password is sent, once a server has shown it.
+    methods: HashMap<String, Method>,
     /// Prompts waiting for an answer, by request id.
     pending: HashMap<u64, oneshot::Sender<Option<String>>>,
     last_request: u64,
 }
+
+/// How a server takes the login password.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Method {
+    /// The `password` method.
+    Password,
+    /// Keyboard-interactive, answering its password prompt.
+    KeyboardInteractive,
+}
+
+/// How long a prompt waits for the user before the login gives up. Nothing
+/// else would end it if the frontend lost the prompt (a reloaded page).
+const PROMPT_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn state() -> MutexGuard<'static, State> {
     static STATE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -60,6 +76,16 @@ pub(crate) fn forget(key: &str, password: &str) {
     }
 }
 
+/// How `key`'s server takes a password, if a login has shown it.
+pub(crate) fn method(key: &str) -> Option<Method> {
+    state().methods.get(key).copied()
+}
+
+/// Records how `key`'s server takes a password.
+pub(crate) fn learn(key: &str, method: Method) {
+    state().methods.insert(key.to_string(), method);
+}
+
 /// Resolves once a password is remembered for `key`.
 pub(crate) async fn remembered(key: &str) {
     // Subscribe before checking, so one remembered in between is not missed.
@@ -93,12 +119,22 @@ pub fn answer(request_id: u64, password: Option<String>) -> Result<(), PasswordE
         .map_err(|_| PasswordError::NotRequested)
 }
 
+/// What a password prompt shows.
+pub(crate) struct Prompt<'a> {
+    /// `user@host` of the server asking.
+    pub login: &'a str,
+    /// The previous password for it was refused.
+    pub retry: bool,
+    /// The fingerprint of the server's host key when this connection is the
+    /// first to see it, so the user can check it before typing.
+    pub new_host_key: Option<&'a str>,
+}
+
 /// Asks the user for a login password while a connection authenticates.
 #[async_trait]
 pub(crate) trait AskPassword: Send {
-    /// The password for `login` (`user@host`), or `None` when the user
-    /// cancelled. `retry` says the previous one was refused.
-    async fn ask(&mut self, login: &str, retry: bool) -> Option<String>;
+    /// The password, or `None` when the user cancelled.
+    async fn ask(&mut self, prompt: Prompt<'_>) -> Option<String>;
 }
 
 /// Asks through the frontends: sends [`CoreEvent::PasswordRequired`] and waits
@@ -120,7 +156,7 @@ impl Prompter {
 
 #[async_trait]
 impl AskPassword for Prompter {
-    async fn ask(&mut self, login: &str, retry: bool) -> Option<String> {
+    async fn ask(&mut self, prompt: Prompt<'_>) -> Option<String> {
         let (reply, answer) = oneshot::channel();
         let request_id = {
             let mut state = state();
@@ -129,50 +165,50 @@ impl AskPassword for Prompter {
             state.pending.insert(id, reply);
             id
         };
-        let _open = OpenPrompt {
-            request_id,
-            tx: self.tx.clone(),
-        };
+        let _pending = Pending(request_id);
         let asked = self
             .tx
             .send(CoreEvent::PasswordRequired {
                 request_id,
                 host_name: self.host_name.clone(),
-                login: login.to_string(),
-                retry,
+                login: prompt.login.to_string(),
+                retry: prompt.retry,
+                new_host_key: prompt.new_host_key.map(str::to_string),
             })
             .await;
         if asked.is_err() {
             return None;
         }
-        answer.await.ok().flatten()
+        // An expired prompt reads as cancelled; answering it later fails with
+        // NotRequested, which frontends take as "close it".
+        tokio::time::timeout(PROMPT_TIMEOUT, answer)
+            .await
+            .ok()?
+            .ok()
+            .flatten()
     }
 }
 
-/// A prompt on screen. Dropped unanswered — the connection gave up, say a
-/// tunnel was stopped — it takes the prompt down again.
-struct OpenPrompt {
-    request_id: u64,
-    tx: mpsc::Sender<CoreEvent>,
-}
+/// A prompt waiting for its answer; unlisted once the login stops waiting, so
+/// a late answer is refused.
+struct Pending(u64);
 
-impl Drop for OpenPrompt {
+impl Drop for Pending {
     fn drop(&mut self) {
-        if state().pending.remove(&self.request_id).is_some() {
-            let _ = self
-                .tx
-                .try_send(CoreEvent::PasswordPromptClosed(self.request_id));
-        }
+        state().pending.remove(&self.0);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
-    fn next(rx: &mut mpsc::Receiver<CoreEvent>) -> Option<CoreEvent> {
-        rx.try_recv().ok()
+    fn prompt(retry: bool) -> Prompt<'static> {
+        Prompt {
+            login: "root@10.0.0.1",
+            retry,
+            new_host_key: None,
+        }
     }
 
     async fn asked(rx: &mut mpsc::Receiver<CoreEvent>) -> u64 {
@@ -186,15 +222,11 @@ mod tests {
     async fn an_answer_reaches_the_connection_that_asked() {
         let (tx, mut rx) = mpsc::channel(8);
         let mut prompter = Prompter::new(tx, "web-1");
-        let asking = tokio::spawn(async move { prompter.ask("root@10.0.0.1", false).await });
+        let asking = tokio::spawn(async move { prompter.ask(prompt(false)).await });
 
         let id = asked(&mut rx).await;
         answer(id, Some(String::from("secret"))).expect("answer");
         assert_eq!(asking.await.expect("ran").as_deref(), Some("secret"));
-        assert!(
-            next(&mut rx).is_none(),
-            "an answered prompt is not closed again"
-        );
         assert!(matches!(answer(id, None), Err(PasswordError::NotRequested)));
     }
 
@@ -202,7 +234,7 @@ mod tests {
     async fn a_cancel_ends_the_login() {
         let (tx, mut rx) = mpsc::channel(8);
         let mut prompter = Prompter::new(tx, "web-1");
-        let asking = tokio::spawn(async move { prompter.ask("root@10.0.0.1", true).await });
+        let asking = tokio::spawn(async move { prompter.ask(prompt(true)).await });
 
         let id = asked(&mut rx).await;
         answer(id, None).expect("cancel");
@@ -210,22 +242,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_connection_that_stops_waiting_takes_its_prompt_down() {
+    async fn a_login_that_stops_waiting_refuses_a_late_answer() {
         let (tx, mut rx) = mpsc::channel(8);
         let mut prompter = Prompter::new(tx, "web-1");
-        let asking = tokio::spawn(async move { prompter.ask("root@10.0.0.1", false).await });
+        let asking = tokio::spawn(async move { prompter.ask(prompt(false)).await });
 
         let id = asked(&mut rx).await;
         asking.abort();
         let _ = asking.await;
-        match next(&mut rx) {
-            Some(CoreEvent::PasswordPromptClosed(closed)) => assert_eq!(closed, id),
-            other => panic!("expected the prompt to close, got {other:?}"),
-        }
         assert!(matches!(
             answer(id, Some(String::from("late"))),
             Err(PasswordError::NotRequested)
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_prompt_gives_up() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut prompter = Prompter::new(tx, "web-1");
+        let asking = tokio::spawn(async move { prompter.ask(prompt(false)).await });
+
+        let id = asked(&mut rx).await;
+        tokio::time::advance(PROMPT_TIMEOUT + Duration::from_secs(1)).await;
+        assert_eq!(asking.await.expect("ran"), None);
+        assert!(matches!(answer(id, None), Err(PasswordError::NotRequested)));
     }
 
     #[tokio::test]
@@ -244,6 +284,14 @@ mod tests {
             .await
             .expect("the waiter wakes")
             .expect("the waiter ran");
+    }
+
+    #[test]
+    fn the_method_a_login_takes_is_remembered() {
+        let key = "method@10.7.7.7:22";
+        assert_eq!(method(key), None);
+        learn(key, Method::KeyboardInteractive);
+        assert_eq!(method(key), Some(Method::KeyboardInteractive));
     }
 
     #[test]

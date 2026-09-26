@@ -188,7 +188,8 @@ pub struct KeyPassphraseRequired {
 
 /// A connection waits for the login password of `login` (`user@host`). Answered
 /// with `answer_password`; the password only ever crosses inbound. `retry` says
-/// the previous one was refused.
+/// the previous one was refused; `newHostKey` is the fingerprint of a host key
+/// first seen on this connection, to check before typing.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
 #[serde(rename_all = "camelCase")]
 pub struct PasswordRequired {
@@ -196,14 +197,7 @@ pub struct PasswordRequired {
     pub host_name: String,
     pub login: String,
     pub retry: bool,
-}
-
-/// The connection behind a `password-required` stopped waiting (a tunnel was
-/// stopped); its prompt goes away.
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, tauri_specta::Event)]
-#[serde(rename_all = "camelCase")]
-pub struct PasswordPromptClosed {
-    pub request_id: u64,
+    pub new_host_key: Option<String>,
 }
 
 /// A background error surfaced to the user.

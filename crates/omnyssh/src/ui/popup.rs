@@ -1063,7 +1063,7 @@ pub fn render_passphrase_prompt(frame: &mut Frame, prompt: &PassphrasePrompt, th
             detail: &prompt.key_path,
             label: "  Passphrase (kept in memory until OmnySSH exits):",
             input,
-            error: prompt.error.as_deref(),
+            error: prompt.error.clone(),
             action: ":unlock  ",
         },
     );
@@ -1081,7 +1081,13 @@ pub fn render_password_prompt(frame: &mut Frame, prompt: &PasswordPrompt, theme:
             input: masked(&prompt.field),
             error: prompt
                 .retry
-                .then_some("Permission denied, please try again."),
+                .then(|| String::from("Permission denied, please try again."))
+                .or_else(|| {
+                    prompt
+                        .new_host_key
+                        .as_ref()
+                        .map(|key| format!("New host key recorded: {key}"))
+                }),
             action: ":log in  ",
         },
     );
@@ -1097,7 +1103,7 @@ struct SecretPrompt<'a> {
     detail: &'a str,
     label: &'a str,
     input: String,
-    error: Option<&'a str>,
+    error: Option<String>,
     /// The Enter hint, e.g. `":unlock  "`.
     action: &'a str,
 }
@@ -1935,6 +1941,7 @@ mod tests {
             host_name: String::from("udm"),
             login: String::from("root@192.168.1.1"),
             retry: true,
+            new_host_key: None,
             field: FormField::with_value("hunter2"),
         };
         let backend = ratatui::backend::TestBackend::new(80, 24);

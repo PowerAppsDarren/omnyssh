@@ -6,10 +6,7 @@
   import { Button, Icon } from '$lib/theme';
   import { displayLogin, passwordPrompt, settlePassword } from '$lib/stores/password';
   import { streamerMode } from '$lib/stores/streamer';
-  import { lastError } from '$lib/stores/notifications';
   import { answerPassword } from '$lib/ipc/commands';
-
-  const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
   let password = $state('');
   let input = $state<HTMLInputElement>();
@@ -40,14 +37,11 @@
     const id = requestId;
     if (id === undefined) return;
     password = '';
-    // Settled first either way: the answer goes once, and a connection that
-    // stopped waiting has nothing to come back with.
+    // Settled first either way: the answer goes once. A login that stopped
+    // waiting (it gave up after a few minutes) refuses it, and then the dialog
+    // simply goes.
     settlePassword(id);
-    try {
-      await answerPassword(id, secret);
-    } catch (e) {
-      lastError.set(message(e));
-    }
+    await answerPassword(id, secret).catch(() => {});
   }
 
   function submit(): void {
@@ -61,7 +55,8 @@
 
 {#if $passwordPrompt}
   {@const prompt = $passwordPrompt}
-  <Modal label="SSH login" onClose={() => void answer(null)}>
+  <!-- A stray click beside it must not cancel the login. -->
+  <Modal label="SSH login" onClose={() => void answer(null)} backdropCloses={false}>
     <form
       class="space-y-4 px-5 py-4"
       onsubmit={(e) => {
@@ -93,6 +88,10 @@
       </p>
       {#if prompt.retry}
         <p class="text-xs text-status-crit">Permission denied, please try again.</p>
+      {:else if prompt.newHostKey}
+        <p class="break-all text-xs text-status-warn">
+          First connection to this server. Its host key was recorded: {prompt.newHostKey}
+        </p>
       {/if}
       <div class="flex justify-end gap-2">
         <Button variant="ghost" type="button" onclick={() => void answer(null)}>Cancel</Button>
