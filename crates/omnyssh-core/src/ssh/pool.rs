@@ -240,8 +240,12 @@ async fn run_ssh_poller(
                     discovery_done = false; // Reset discovery flag on new connection
                 }
                 Err(e) => {
-                    tracing::debug!(host = %host.name, error = %e, "connection failed");
-                    send_status(&tx, &host.name, ConnectionStatus::Failed(e.to_string())).await;
+                    // The whole chain: "SSH connection failed" alone does not say
+                    // whether the port was closed, the name did not resolve or the
+                    // host key changed.
+                    let reason = format!("{e:#}");
+                    tracing::debug!(host = %host.name, error = %reason, "connection failed");
+                    send_status(&tx, &host.name, ConnectionStatus::Failed(reason)).await;
                     let delay = backoff.next_delay();
                     let Some(path) = passphrase_required(&e).map(str::to_owned) else {
                         // Wait with backoff, allowing early refresh.
