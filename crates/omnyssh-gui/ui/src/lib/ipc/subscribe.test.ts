@@ -35,6 +35,7 @@ vi.mock('$lib/bindings', () => {
       keySetupFailed: channel('keySetupFailed'),
       keySetupRollback: channel('keySetupRollback'),
       updateAvailable: channel('updateAvailable'),
+      keyPassphraseRequired: channel('keyPassphraseRequired'),
       error: channel('error')
     }
   };
@@ -48,6 +49,7 @@ import { snippetRun, beginRun, clearRun } from '$lib/stores/snippets';
 import { sessions } from '$lib/stores/sessions';
 import { sftp } from '$lib/stores/sftp';
 import { lastError } from '$lib/stores/notifications';
+import { passphrasePrompt, passphraseQueue } from '$lib/stores/passphrase';
 import { startEventBridge } from './subscribe';
 
 describe('startEventBridge', () => {
@@ -57,6 +59,7 @@ describe('startEventBridge', () => {
     metrics.set(new Map());
     services.set(new Map());
     lastError.set(null);
+    passphraseQueue.set([]);
     clearRun();
   });
 
@@ -80,6 +83,7 @@ describe('startEventBridge', () => {
       payload: { hostName: 'web-1', snippetName: 'deploy', ok: true, output: 'done' }
     });
     listeners.error({ payload: { message: 'nope' } });
+    listeners.keyPassphraseRequired({ payload: { hostName: 'web-1', keyPath: '/k/id_ed25519' } });
 
     expect(get(hosts)).toHaveLength(1);
     expect(get(statuses).get('web-1')).toEqual({ kind: 'connected' });
@@ -87,6 +91,7 @@ describe('startEventBridge', () => {
     expect(get(services).get('web-1')).toEqual({ kind: 'detected', services: [{ kind: 'redis', metrics: [] }] });
     expect(get(snippetRun)?.entries[0]).toEqual({ hostName: 'web-1', pending: false, ok: true, output: 'done' });
     expect(get(lastError)).toBe('nope');
+    expect(get(passphrasePrompt)).toEqual({ hostName: 'web-1', keyPath: '/k/id_ed25519' });
   });
 
   it('terminal-exited closes the tab whose backend id matches', async () => {

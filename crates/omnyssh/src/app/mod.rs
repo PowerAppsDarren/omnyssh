@@ -155,6 +155,8 @@ pub struct ViewState {
     pub tick_count: u64,
     /// Startup update-notification popup, shown when a newer release exists.
     pub update_popup: Option<UpdatePopup>,
+    /// Encrypted keys waiting for a passphrase, one per key; the first is shown.
+    pub passphrase_prompts: Vec<PassphrasePrompt>,
 }
 
 impl ViewState {
@@ -173,6 +175,7 @@ impl ViewState {
             keybindings: ParsedKeybindings::default(),
             tick_count: 0,
             update_popup: None,
+            passphrase_prompts: Vec::new(),
         }
     }
 }
@@ -181,6 +184,16 @@ impl Default for ViewState {
     fn default() -> Self {
         Self::default_inner()
     }
+}
+
+/// In-memory prompt for an encrypted SSH identity file.
+pub struct PassphrasePrompt {
+    pub host_name: String,
+    pub key_path: String,
+    pub field: FormField,
+    pub error: Option<String>,
+    /// Set while the key is being decrypted; input is ignored meanwhile.
+    pub unlocking: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +460,13 @@ impl App {
                     };
                     if on_terminal {
                         self.handle_term_paste(&text);
+                    } else if let Some(prompt) = self.view.passphrase_prompts.first_mut() {
+                        // Typed in, never submitted by a trailing newline.
+                        if !prompt.unlocking {
+                            text.chars()
+                                .filter(|c| !matches!(c, '\r' | '\n'))
+                                .for_each(|c| prompt.field.insert_char(c));
+                        }
                     } else {
                         for key in crate::utils::paste::paste_to_keys(&text) {
                             let action = self.handle_key(key).await?;
@@ -496,6 +516,9 @@ impl App {
                 }
 
                 AppEvent::Core(event) => self.handle_core_event(event).await?,
+                AppEvent::PassphraseUnlocked { key_path, result } => {
+                    self.finish_unlock(key_path, result);
+                }
             }
 
             // ----------------------------------------------------------------
@@ -788,6 +811,34 @@ impl App {
                     "⚠ Key setup rolled back for '{}': {}",
                     host_name, result
                 ));
+            }
+
+            CoreEvent::KeyPassphraseRequired {
+                host_name,
+                key_path,
+            } => {
+                // The terminal screen keeps its keys; the prompt waits until the
+                // user leaves it. Said on every ask, as other messages replace it.
+                if self.state.read().await.screen == Screen::Terminal {
+                    self.view.status_message = Some(format!(
+                        "SSH key needs a passphrase — Ctrl+Q to enter it: {key_path}"
+                    ));
+                }
+                // One prompt per key: a single unlock serves every host using it.
+                if !self
+                    .view
+                    .passphrase_prompts
+                    .iter()
+                    .any(|p| p.key_path == key_path)
+                {
+                    self.view.passphrase_prompts.push(PassphrasePrompt {
+                        host_name,
+                        key_path,
+                        field: FormField::default(),
+                        error: None,
+                        unlocking: false,
+                    });
+                }
             }
 
             // ----------------------------------------------------------------

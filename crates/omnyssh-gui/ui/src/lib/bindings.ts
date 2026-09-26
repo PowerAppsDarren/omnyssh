@@ -335,6 +335,19 @@ async refreshMetrics() : Promise<Result<null, CommandError>> {
 }
 },
 /**
+ * Decrypt `key_path` with `passphrase` and remember it for this process. Only a
+ * key the core reported in `key-passphrase-required` is accepted; connections
+ * waiting on it retry at once.
+ */
+async unlockIdentity(keyPath: string, passphrase: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("unlock_identity", { keyPath, passphrase }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Query GitHub for a newer release (tech-gui.md §4.2). `None` means up to date — the
  * core swallows network/parse errors so a failed check never disrupts.
  */
@@ -393,6 +406,7 @@ error: Error,
 filePreview: FilePreview,
 hostStatusChanged: HostStatusChanged,
 hostsLoaded: HostsLoaded,
+keyPassphraseRequired: KeyPassphraseRequired,
 keySetupComplete: KeySetupComplete,
 keySetupFailed: KeySetupFailed,
 keySetupProgress: KeySetupProgress,
@@ -414,6 +428,7 @@ error: "error",
 filePreview: "file-preview",
 hostStatusChanged: "host-status-changed",
 hostsLoaded: "hosts-loaded",
+keyPassphraseRequired: "key-passphrase-required",
 keySetupComplete: "key-setup-complete",
 keySetupFailed: "key-setup-failed",
 keySetupProgress: "key-setup-progress",
@@ -486,6 +501,11 @@ export type HostStatusChanged = { hostName: string; status: ConnectionStatusDto 
  * cache; the bridge does not map `HostsLoaded` (tech-gui.md §3.4).
  */
 export type HostsLoaded = HostDto[]
+/**
+ * A private key is encrypted and no passphrase is cached yet. Frontends prompt
+ * once per key path; the passphrase never crosses back out of the backend.
+ */
+export type KeyPassphraseRequired = { hostName: string; keyPath: string }
 /**
  * Key setup finished successfully — key auth is configured (tech-gui.md §4.3).
  * `keyPath` is the generated private-key path (a path, never key material, §3.4).

@@ -10,10 +10,12 @@ import { snippetRun, beginRun, clearRun } from '$lib/stores/snippets';
 import { sessions } from '$lib/stores/sessions';
 import { lastError } from '$lib/stores/notifications';
 import { keySetup, dismissKeySetup, beginKeySetup } from '$lib/stores/keySetup';
+import { passphrasePrompt, passphraseQueue } from '$lib/stores/passphrase';
 import {
   applyError,
   applyHostStatusChanged,
   applyHostsLoaded,
+  applyKeyPassphraseRequired,
   applyKeySetupComplete,
   applyKeySetupFailed,
   applyKeySetupProgress,
@@ -35,6 +37,7 @@ describe('ipc event router', () => {
     services.set(new Map());
     tunnels.set(new Map());
     lastError.set(null);
+    passphraseQueue.set([]);
   });
 
   it('routes a hosts-loaded payload into the hosts store', () => {
@@ -205,6 +208,18 @@ describe('ipc event router', () => {
     applyKeySetupRollback({ hostName: 'db-1', result: 'Restored.' });
     expect(get(keySetup)).toEqual({ hostName: 'db-1', phase: { kind: 'rolledBack', result: 'Restored.' } });
     dismissKeySetup();
+  });
+
+  it('queues key-passphrase-required prompts, one per key', () => {
+    applyKeyPassphraseRequired({ hostName: 'web-1', keyPath: '/home/me/.ssh/id_ed25519' });
+    applyKeyPassphraseRequired({ hostName: 'db-1', keyPath: '/home/me/.ssh/other' });
+    applyKeyPassphraseRequired({ hostName: 'web-2', keyPath: '/home/me/.ssh/id_ed25519' });
+
+    expect(get(passphrasePrompt)).toEqual({ hostName: 'web-1', keyPath: '/home/me/.ssh/id_ed25519' });
+    expect(get(passphraseQueue).map((p) => p.keyPath)).toEqual([
+      '/home/me/.ssh/id_ed25519',
+      '/home/me/.ssh/other'
+    ]);
   });
 
   it('keeps each host\'s latest tunnel status and forgets a stopped one', () => {
