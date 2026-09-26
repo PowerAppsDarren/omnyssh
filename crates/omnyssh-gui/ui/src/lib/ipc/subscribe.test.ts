@@ -36,6 +36,8 @@ vi.mock('$lib/bindings', () => {
       keySetupRollback: channel('keySetupRollback'),
       updateAvailable: channel('updateAvailable'),
       keyPassphraseRequired: channel('keyPassphraseRequired'),
+      passwordRequired: channel('passwordRequired'),
+      passwordPromptClosed: channel('passwordPromptClosed'),
       error: channel('error')
     }
   };
@@ -50,6 +52,7 @@ import { sessions } from '$lib/stores/sessions';
 import { sftp } from '$lib/stores/sftp';
 import { lastError } from '$lib/stores/notifications';
 import { passphrasePrompt, passphraseQueue } from '$lib/stores/passphrase';
+import { passwordPrompt, passwordQueue } from '$lib/stores/password';
 import { startEventBridge } from './subscribe';
 
 describe('startEventBridge', () => {
@@ -60,6 +63,7 @@ describe('startEventBridge', () => {
     services.set(new Map());
     lastError.set(null);
     passphraseQueue.set([]);
+    passwordQueue.set([]);
     clearRun();
   });
 
@@ -92,6 +96,16 @@ describe('startEventBridge', () => {
     expect(get(snippetRun)?.entries[0]).toEqual({ hostName: 'web-1', pending: false, ok: true, output: 'done' });
     expect(get(lastError)).toBe('nope');
     expect(get(passphrasePrompt)).toEqual({ hostName: 'web-1', keyPath: '/k/id_ed25519' });
+  });
+
+  it('shows a password prompt and takes it down when its connection stops waiting', async () => {
+    await startEventBridge();
+    const prompt = { requestId: 7, hostName: 'nas', login: 'admin@10.0.0.5', retry: false };
+    listeners.passwordRequired({ payload: prompt });
+    expect(get(passwordPrompt)).toEqual(prompt);
+
+    listeners.passwordPromptClosed({ payload: { requestId: 7 } });
+    expect(get(passwordPrompt)).toBeNull();
   });
 
   it('terminal-exited closes the tab whose backend id matches', async () => {
