@@ -398,8 +398,8 @@ pub(crate) async fn connect_and_auth(host: &Host) -> anyhow::Result<SshConnectio
 }
 
 /// Wall-clock budget one [`SshSession::connect`] needs for `host`: the per-hop
-/// connect timeout once for every bastion in its `ProxyJump` chain, plus the
-/// target.
+/// connect timeout and agent bound once for every bastion in its `ProxyJump`
+/// chain, plus the target.
 ///
 /// Callers that wrap the connect in a timeout of their own must scale it by
 /// this — a fixed budget trips on a bastion chain before the connection has had
@@ -408,7 +408,9 @@ pub(crate) async fn connect_budget(host: &Host) -> Duration {
     // A chain that fails to resolve costs nothing to connect; the caller's own
     // attempt reports why.
     let hops = jump_chain(host).await.map_or(0, |chain| chain.len());
-    CONNECT_TIMEOUT * (hops as u32 + 1)
+    // The agent's bound counts too: a caller that gives up mid-signature drops
+    // russh while it waits for us.
+    (CONNECT_TIMEOUT + AGENT_BUDGET) * (hops as u32 + 1)
 }
 
 /// The shared russh client configuration (timeouts + keepalives).
@@ -668,6 +670,20 @@ async fn try_key_auth(
     Ok(ok)
 }
 
+/// How long the SSH agent gets to answer the connect and the key listing. An
+/// agent that accepts and never replies must not stall the whole login.
+#[cfg(unix)]
+const AGENT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long one agent signature may take. It can wait on the user (a confirm
+/// dialog, Touch ID), so it gets longer than the listing.
+#[cfg(unix)]
+const SIGN_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Upper bound on the agent's share of one hop's login, for callers that time
+/// the whole connect.
+const AGENT_BUDGET: Duration = Duration::from_secs(20);
+
 #[cfg(unix)]
 async fn try_agent_auth(
     handle: &mut Handle<KnownHostsHandler>,
@@ -675,25 +691,95 @@ async fn try_agent_auth(
 ) -> anyhow::Result<bool> {
     use russh::keys::agent::client::AgentClient;
 
-    let mut agent = AgentClient::connect_env()
-        .await
-        .context("connect to SSH agent")?;
+    let (agent, identities) = time::timeout(AGENT_TIMEOUT, async {
+        let mut agent = AgentClient::connect_env()
+            .await
+            .context("connect to SSH agent")?;
+        let identities = agent
+            .request_identities()
+            .await
+            .context("request agent identities")?;
+        Ok::<_, anyhow::Error>((agent, identities))
+    })
+    .await
+    .map_err(|_| anyhow!("SSH agent did not answer"))??;
 
-    let identities = agent
-        .request_identities()
-        .await
-        .context("request agent identities")?;
-
+    let failed = Arc::new(tokio::sync::Notify::new());
+    let mut signer = AgentSigner {
+        agent: Some(agent),
+        failed: Arc::clone(&failed),
+    };
     for pubkey in identities {
-        let (agent_back, result) = handle.authenticate_future(user, pubkey, agent).await;
-        agent = agent_back;
-        match result {
-            Ok(true) => return Ok(true),
-            Ok(false) => continue,
-            Err(_) => continue,
+        let attempt = handle.authenticate_future(user, pubkey, signer);
+        tokio::pin!(attempt);
+        let (back, result) = tokio::select! {
+            biased;
+            done = &mut attempt => done,
+            () = failed.notified() => {
+                // russh got the buffer back unsigned, sent nothing and now waits
+                // for a reply that will not come. Let it finish handing the
+                // buffer over, then leave the agent out of this login.
+                let _ = time::timeout(Duration::from_millis(100), &mut attempt).await;
+                tracing::debug!("SSH agent did not sign; trying other methods");
+                return Ok(false);
+            }
+        };
+        signer = back;
+        if matches!(result, Ok(true)) {
+            return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Signs through the SSH agent without ever leaving russh waiting.
+///
+/// russh 0.46 treats a signer error as final for the connection: it keeps
+/// waiting for the signature and swallows every later auth request, so one
+/// refused or stalled signature hung the login. Handing the buffer back
+/// unchanged makes russh send nothing and carry on, and [`try_agent_auth`] moves
+/// on to the other methods.
+#[cfg(unix)]
+struct AgentSigner {
+    agent: Option<russh::keys::agent::client::AgentClient<tokio::net::UnixStream>>,
+    failed: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(unix)]
+impl russh::Signer for AgentSigner {
+    type Error = russh::AgentAuthError;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = (Self, Result<russh::CryptoVec, Self::Error>)> + Send>,
+    >;
+
+    fn auth_publickey_sign(
+        mut self,
+        key: &russh::keys::key::PublicKey,
+        to_sign: russh::CryptoVec,
+    ) -> Self::Future {
+        let key = key.clone();
+        Box::pin(async move {
+            let mut signed = None;
+            if let Some(agent) = self.agent.take() {
+                // A timed-out request leaves the agent connection mid-reply, so
+                // it is dropped with the future.
+                if let Ok((agent, result)) =
+                    time::timeout(SIGN_TIMEOUT, agent.sign_request(&key, to_sign.clone())).await
+                {
+                    self.agent = Some(agent);
+                    // An agent reply russh cannot read comes back unchanged.
+                    signed = result.ok().filter(|data| data.len() != to_sign.len());
+                }
+            }
+            match signed {
+                Some(data) => (self, Ok(data)),
+                None => {
+                    self.failed.notify_one();
+                    (self, Ok(to_sign))
+                }
+            }
+        })
+    }
 }
 
 /// Try password-based authentication.
