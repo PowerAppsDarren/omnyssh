@@ -2,7 +2,9 @@
 //!
 //! Provides [`SshSession`] — a thin wrapper around a russh client handle that
 //! supports connecting, executing commands, and graceful disconnect.
-//! Authentication order: SSH agent → identity file → default keys → password.
+//! Authentication order: SSH agent → identity file → default keys → password
+//! (by the password method or keyboard-interactive) → asking the user, when the
+//! caller lets it.
 //!
 //! Hosts with a `ProxyJump` are reached through their bastions: each hop is
 //! connected and authenticated in turn, and the next hop rides a
@@ -12,19 +14,26 @@
 //! - Connect timeout: 10 seconds (per hop)
 //! - Command timeout: 30 seconds
 
+#[cfg(unix)]
+use std::collections::HashSet;
 use std::fmt;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+#[cfg(unix)]
+use std::sync::{MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use russh::client::{self, Handle};
 use russh::ChannelMsg;
+use tokio::sync::watch;
 use tokio::time;
 
 use crate::ssh::client::Host;
 use crate::ssh::identity::{self, IdentityError};
+use crate::ssh::password::{self, AskPassword, Method, NoAnswer, Prompt};
 
 // ---------------------------------------------------------------------------
 // russh Handler implementation
@@ -45,6 +54,30 @@ pub(crate) struct KnownHostsHandler {
     /// OpenSSH does after too many failed logins. A link that just dies leaves
     /// it unset.
     hung_up: Arc<AtomicBool>,
+    /// Set when the session ends because the server offers no method russh knows.
+    no_method: Arc<AtomicBool>,
+    /// The fingerprint of a host key first seen, and recorded, on this connection.
+    new_key: Arc<Mutex<Option<String>>>,
+    /// Dropped with the handler when the session ends, which wakes [`Link::ended`].
+    _ended: watch::Sender<()>,
+}
+
+/// What a connection's [`KnownHostsHandler`] reports while it runs.
+struct Link {
+    hung_up: Arc<AtomicBool>,
+    no_method: Arc<AtomicBool>,
+    new_key: Arc<Mutex<Option<String>>>,
+    /// Changes (to closed) once the session is over.
+    ended: watch::Receiver<()>,
+}
+
+impl Link {
+    fn new_key(&self) -> Option<String> {
+        self.new_key
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 #[async_trait]
@@ -84,6 +117,11 @@ impl client::Handler for KnownHostsHandler {
                         "could not record host key in known_hosts"
                     ),
                 }
+                *self
+                    .new_key
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(format!("SHA256:{}", server_public_key.fingerprint()));
                 Ok(true)
             }
             // A previously recorded key changed — refuse; possible MITM.
@@ -117,7 +155,12 @@ impl client::Handler for KnownHostsHandler {
                 self.hung_up.store(true, Ordering::SeqCst);
                 Ok(())
             }
-            client::DisconnectReason::Error(e) => Err(e),
+            client::DisconnectReason::Error(e) => {
+                if matches!(e, russh::Error::NoAuthMethod) {
+                    self.no_method.store(true, Ordering::SeqCst);
+                }
+                Err(e)
+            }
         }
     }
 }
@@ -156,9 +199,19 @@ pub(crate) fn is_refused(e: &anyhow::Error) -> bool {
 /// chain.
 fn at_hop(e: anyhow::Error, context: String) -> anyhow::Error {
     let message = format!("{context}: {e:#}");
-    if let Some(path) = passphrase_required(&e) {
+    if let Some(locked) = e
+        .chain()
+        .find_map(|c| c.downcast_ref::<PassphraseRequired>())
+    {
         PassphraseRequired {
-            path: path.to_owned(),
+            path: locked.path.clone(),
+            login: locked.login.clone(),
+            message,
+        }
+        .into()
+    } else if let Some(login) = no_password(&e) {
+        NoPassword {
+            login: login.to_owned(),
             message,
         }
         .into()
@@ -180,15 +233,21 @@ fn at_hop(e: anyhow::Error, context: String) -> anyhow::Error {
 pub(crate) struct PassphraseRequired {
     /// Canonical path of the encrypted key.
     path: String,
+    /// The login key; a password typed for it helps as much as the passphrase.
+    login: String,
     message: String,
 }
 
 impl PassphraseRequired {
-    fn new(path: String) -> Self {
+    fn new(path: String, login: &str) -> Self {
         // The path goes last: frontends cut messages at the first ':', and a
         // Windows path has one.
         let message = format!("SSH key requires a passphrase: {path}");
-        Self { path, message }
+        Self {
+            path,
+            login: login.to_string(),
+            message,
+        }
     }
 }
 
@@ -205,6 +264,89 @@ pub fn passphrase_required(e: &anyhow::Error) -> Option<&str> {
     e.chain()
         .find_map(|cause| cause.downcast_ref::<PassphraseRequired>())
         .map(|locked| locked.path.as_str())
+}
+
+// ---------------------------------------------------------------------------
+// NoPassword
+// ---------------------------------------------------------------------------
+
+/// No key got in and there was no password to try. Not final either: once one
+/// is typed for the login elsewhere ([`password::remembered`]) the same
+/// connection can go again.
+#[derive(Debug)]
+pub(crate) struct NoPassword {
+    /// The login key the password is remembered under.
+    login: String,
+    message: String,
+}
+
+impl NoPassword {
+    fn new(login: &str, host_name: &str) -> Self {
+        // No ':' — frontends cut messages there, and the hint must survive.
+        let message = format!(
+            "SSH authentication failed for {host_name} (no key was accepted and no password is saved; open a terminal to enter it)"
+        );
+        Self {
+            login: login.to_string(),
+            message,
+        }
+    }
+}
+
+impl fmt::Display for NoPassword {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for NoPassword {}
+
+/// The login a failed connection needs a password for, if that is why it failed.
+pub(crate) fn no_password(e: &anyhow::Error) -> Option<&str> {
+    e.chain()
+        .find_map(|cause| cause.downcast_ref::<NoPassword>())
+        .map(|missing| missing.login.as_str())
+}
+
+/// The login key a connection that stopped for a missing credential waits on:
+/// a password typed for it elsewhere lets it go again.
+pub(crate) fn waiting_login(e: &anyhow::Error) -> Option<&str> {
+    e.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<PassphraseRequired>()
+            .map(|locked| locked.login.as_str())
+            .or_else(|| cause.downcast_ref::<NoPassword>().map(|m| m.login.as_str()))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Passwords
+// ---------------------------------------------------------------------------
+
+/// Which login passwords a connection may use.
+pub(crate) enum Passwords<'a> {
+    /// The host's saved password and one typed for the login this session.
+    /// Background work: pollers, tunnels that retry, snippets.
+    Remembered,
+    /// Keys only. Key setup checks a new key this way; any password would let
+    /// a broken key pass.
+    KeysOnly,
+    /// As [`Passwords::Remembered`], then ask the user. A connection the user
+    /// started and is watching.
+    Ask(&'a mut dyn AskPassword),
+}
+
+/// How many passwords the user may type for one login before it fails.
+const PASSWORD_PROMPTS: usize = 3;
+
+/// The key a typed password is remembered under: the login plus every bastion
+/// on the way, so a private address behind another bastion never gets it.
+fn login_key(host: &Host, via: &[Host]) -> String {
+    let login = |h: &Host| format!("{}@{}:{}", h.user, h.hostname, h.port);
+    std::iter::once(login(host))
+        .chain(via.iter().rev().map(login))
+        .collect::<Vec<_>>()
+        .join(" via ")
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +398,8 @@ impl SshSession {
     /// 1. SSH agent (unix only, via `SSH_AUTH_SOCK`).
     /// 2. Identity file specified in the host config (`identity_file`).
     /// 3. Default key files (`~/.ssh/id_ed25519`, `id_rsa`, etc.).
-    /// 4. Password (if provided in host config).
+    /// 4. Password: one typed for this login earlier in the session, then the
+    ///    one in the host config.
     ///
     /// A host with a `ProxyJump` is reached through its bastion chain; each hop
     /// authenticates the same way.
@@ -269,8 +412,16 @@ impl SshSession {
     /// - Network error
     /// - An unresolvable `ProxyJump` chain (cycle or too many hops)
     pub async fn connect(host: &Host) -> anyhow::Result<Self> {
+        Self::connect_with(host, Passwords::Remembered).await
+    }
+
+    /// [`SshSession::connect`] with a say over which passwords it may use.
+    pub(crate) async fn connect_with(
+        host: &Host,
+        passwords: Passwords<'_>,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
-            handle: Arc::new(connect_and_auth(host).await?),
+            handle: Arc::new(connect_and_auth(host, passwords).await?),
         })
     }
 
@@ -368,27 +519,32 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// # Errors
 /// Connection timeout (> 10 s per hop), host-key rejection, authentication
 /// failure, or an unresolvable `ProxyJump` chain.
-pub(crate) async fn connect_and_auth(host: &Host) -> anyhow::Result<SshConnection> {
+pub(crate) async fn connect_and_auth(
+    host: &Host,
+    mut passwords: Passwords<'_>,
+) -> anyhow::Result<SshConnection> {
     let chain = jump_chain(host).await?;
     let config = client_config();
 
     // Walk the bastions outward: the first is reached directly, every later one
     // through its predecessor. The target then rides the last hop.
     let mut jumps: Vec<Handle<KnownHostsHandler>> = Vec::with_capacity(chain.len());
-    for hop in &chain {
+    for (i, hop) in chain.iter().enumerate() {
+        let key = login_key(hop, &chain[..i]);
         let handle = match jumps.last() {
-            None => connect_direct(&config, hop).await,
-            Some(via) => connect_tunnelled(&config, via, hop).await,
+            None => connect_direct(&config, hop, &key, &mut passwords).await,
+            Some(via) => connect_tunnelled(&config, via, hop, &key, &mut passwords).await,
         }
         .map_err(|e| at_hop(e, format!("ProxyJump via '{}' failed", hop.name)))?;
         jumps.push(handle);
     }
 
+    let key = login_key(host, &chain);
     let handle = match (jumps.last(), chain.last()) {
-        (Some(via), Some(last)) => connect_tunnelled(&config, via, host)
+        (Some(via), Some(last)) => connect_tunnelled(&config, via, host, &key, &mut passwords)
             .await
             .map_err(|e| at_hop(e, format!("connecting via '{}' failed", last.name)))?,
-        _ => connect_direct(&config, host).await?,
+        _ => connect_direct(&config, host, &key, &mut passwords).await?,
     };
 
     Ok(SshConnection {
@@ -398,8 +554,8 @@ pub(crate) async fn connect_and_auth(host: &Host) -> anyhow::Result<SshConnectio
 }
 
 /// Wall-clock budget one [`SshSession::connect`] needs for `host`: the per-hop
-/// connect timeout once for every bastion in its `ProxyJump` chain, plus the
-/// target.
+/// connect timeout and agent bound once for every bastion in its `ProxyJump`
+/// chain, plus the target.
 ///
 /// Callers that wrap the connect in a timeout of their own must scale it by
 /// this — a fixed budget trips on a bastion chain before the connection has had
@@ -408,7 +564,9 @@ pub(crate) async fn connect_budget(host: &Host) -> Duration {
     // A chain that fails to resolve costs nothing to connect; the caller's own
     // attempt reports why.
     let hops = jump_chain(host).await.map_or(0, |chain| chain.len());
-    CONNECT_TIMEOUT * (hops as u32 + 1)
+    // The agent's bound counts too, so a slow but working agent is not taken
+    // for a dead host.
+    (CONNECT_TIMEOUT + AGENT_BUDGET) * (hops as u32 + 1)
 }
 
 /// The shared russh client configuration (timeouts + keepalives).
@@ -443,7 +601,9 @@ async fn jump_chain(host: &Host) -> anyhow::Result<Vec<Host>> {
     let known = tokio::task::spawn_blocking(crate::config::load_all_hosts)
         .await
         .context("host list load panicked")?
-        .map_err(|e| anyhow!("could not load hosts for ProxyJump resolution: {e:#}"))?;
+        // Only the outer error: a parse error quotes the offending line of
+        // hosts.toml, which may be a saved password.
+        .map_err(|e| anyhow!("could not load hosts for ProxyJump resolution: {e}"))?;
 
     let chain = crate::ssh::jump::resolve_chain(host, &known)?;
     tracing::debug!(
@@ -458,22 +618,11 @@ async fn jump_chain(host: &Host) -> anyhow::Result<Vec<Host>> {
 async fn connect_direct(
     config: &Arc<client::Config>,
     host: &Host,
+    key: &str,
+    passwords: &mut Passwords<'_>,
 ) -> anyhow::Result<Handle<KnownHostsHandler>> {
-    let addr = format!("{}:{}", host.hostname, host.port);
-    let hung_up = Arc::new(AtomicBool::new(false));
-    let handle = time::timeout(
-        CONNECT_TIMEOUT,
-        client::connect(
-            Arc::clone(config),
-            addr,
-            known_hosts_handler(host, &hung_up),
-        ),
-    )
-    .await
-    .map_err(|_| anyhow!("SSH connection timed out (10 s)"))?
-    .context("SSH connection failed")?;
-
-    finish_auth(handle, host, &hung_up).await
+    let dial = || dial_direct(config, host);
+    finish_auth(dial().await?, host, key, dial, passwords).await
 }
 
 /// Reaches `host` through the already-connected bastion `via`: a `direct-tcpip`
@@ -483,7 +632,70 @@ async fn connect_tunnelled(
     config: &Arc<client::Config>,
     via: &Handle<KnownHostsHandler>,
     host: &Host,
+    key: &str,
+    passwords: &mut Passwords<'_>,
 ) -> anyhow::Result<Handle<KnownHostsHandler>> {
+    let dial = || dial_tunnelled(config, via, host);
+    finish_auth(dial().await?, host, key, dial, passwords).await
+}
+
+/// A connection that has shaken hands and passed the host-key check, not yet
+/// authenticated.
+struct Dialed {
+    handle: Handle<KnownHostsHandler>,
+    link: Link,
+    /// The session has wound down far enough for `link` to say why it ended.
+    settled: bool,
+    /// A login request here got no answer in time; nothing more is sent on it.
+    broken: bool,
+}
+
+impl Dialed {
+    /// Whether a login request can still go out on this connection.
+    async fn usable(&mut self) -> bool {
+        !self.broken && !self.closed().await
+    }
+
+    /// Whether the connection is gone. The first time, it waits (briefly) for
+    /// the session to finish, so the handler has recorded how it ended.
+    async fn closed(&mut self) -> bool {
+        if !self.handle.is_closed() {
+            return false;
+        }
+        if !self.settled {
+            self.settled = true;
+            let _ = time::timeout(Duration::from_secs(1), &mut self.handle).await;
+        }
+        true
+    }
+}
+
+/// Opens a TCP connection to `host` and verifies its host key.
+async fn dial_direct(config: &Arc<client::Config>, host: &Host) -> anyhow::Result<Dialed> {
+    let addr = format!("{}:{}", host.hostname, host.port);
+    let (handler, link) = known_hosts_handler(host);
+    let handle = time::timeout(
+        CONNECT_TIMEOUT,
+        client::connect(Arc::clone(config), addr, handler),
+    )
+    .await
+    .map_err(|_| anyhow!("SSH connection timed out (10 s)"))?
+    .context("SSH connection failed")?;
+    Ok(Dialed {
+        handle,
+        link,
+        settled: false,
+        broken: false,
+    })
+}
+
+/// Opens a `direct-tcpip` channel to `host` on the bastion `via` and runs the
+/// SSH handshake over it.
+async fn dial_tunnelled(
+    config: &Arc<client::Config>,
+    via: &Handle<KnownHostsHandler>,
+    host: &Host,
+) -> anyhow::Result<Dialed> {
     // The originator address is informational; ssh(1) reports the loopback it
     // forwards from, and servers only log it.
     //
@@ -498,92 +710,404 @@ async fn connect_tunnelled(
     .map_err(|_| anyhow!("SSH connection timed out (10 s)"))?
     .with_context(|| format!("open tunnel to {}:{}", host.hostname, host.port))?;
 
-    let hung_up = Arc::new(AtomicBool::new(false));
+    let (handler, link) = known_hosts_handler(host);
     let handle = time::timeout(
         CONNECT_TIMEOUT,
-        client::connect_stream(
-            Arc::clone(config),
-            channel.into_stream(),
-            known_hosts_handler(host, &hung_up),
-        ),
+        client::connect_stream(Arc::clone(config), channel.into_stream(), handler),
     )
     .await
     .map_err(|_| anyhow!("SSH connection timed out (10 s)"))?
     .context("SSH connection failed")?;
-
-    finish_auth(handle, host, &hung_up).await
+    Ok(Dialed {
+        handle,
+        link,
+        settled: false,
+        broken: false,
+    })
 }
 
-/// The host-key verifier for `host`. The lookup uses the target's own
-/// hostname/port even over a tunnel, so `known_hosts` entries match what an
-/// `ssh -J` would record.
-fn known_hosts_handler(host: &Host, hung_up: &Arc<AtomicBool>) -> KnownHostsHandler {
-    KnownHostsHandler {
+/// The host-key verifier for `host`, and what it will report about the
+/// connection. The lookup uses the target's own hostname/port even over a
+/// tunnel, so `known_hosts` entries match what an `ssh -J` would record.
+fn known_hosts_handler(host: &Host) -> (KnownHostsHandler, Link) {
+    let (ended_tx, ended) = watch::channel(());
+    let link = Link {
+        hung_up: Arc::new(AtomicBool::new(false)),
+        no_method: Arc::new(AtomicBool::new(false)),
+        new_key: Arc::new(Mutex::new(None)),
+        ended,
+    };
+    let handler = KnownHostsHandler {
         host: host.hostname.clone(),
         port: host.port,
-        hung_up: Arc::clone(hung_up),
-    }
+        hung_up: Arc::clone(&link.hung_up),
+        no_method: Arc::clone(&link.no_method),
+        new_key: Arc::clone(&link.new_key),
+        _ended: ended_tx,
+    };
+    (handler, link)
 }
 
-/// Authenticates `handle` as `host`, converting a refusal into an error.
-async fn finish_auth(
-    mut handle: Handle<KnownHostsHandler>,
+/// Authenticates the `first` connection as `host` (remembered passwords under
+/// `key`), converting a refusal into an error. `dial` opens another connection
+/// to the same hop, for keyboard-interactive.
+async fn finish_auth<F, Fut>(
+    first: Dialed,
     host: &Host,
-    hung_up: &AtomicBool,
-) -> anyhow::Result<Handle<KnownHostsHandler>> {
-    match authenticate(&mut handle, host).await? {
-        AuthOutcome::Ok => return Ok(handle),
-        AuthOutcome::PassphraseRequired { path } => {
-            return Err(PassphraseRequired::new(path).into())
-        }
-        AuthOutcome::Failed => {}
+    key: &str,
+    dial: F,
+    passwords: &mut Passwords<'_>,
+) -> anyhow::Result<Handle<KnownHostsHandler>>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = anyhow::Result<Dialed>>,
+{
+    let Dialed { handle, link, .. } = first;
+    let asking = matches!(passwords, Passwords::Ask(_));
+    let (handle, keys) = authenticate(handle, host, asking).await?;
+    let encrypted_key = match keys {
+        KeyAuth::Accepted => return Ok(handle),
+        KeyAuth::Rejected { encrypted_key } => encrypted_key,
+    };
+    let mut first = Dialed {
+        handle,
+        link,
+        settled: false,
+        broken: false,
+    };
+    if first.closed().await && first.link.no_method.load(Ordering::SeqCst) {
+        return Err(Refused(format!(
+            "SSH authentication failed for {}: the server offers no login method OmnySSH supports",
+            host.name
+        ))
+        .into());
     }
-    let message = format!("SSH authentication failed for {}", host.name);
-    // `authenticate` folds a dropped link into "not accepted". A connection
-    // that is gone refused us only if the server hung up itself, as OpenSSH
-    // does after too many failed logins. russh records that as the session
-    // winds down, so let it finish first.
-    if handle.is_closed() {
-        let _ = time::timeout(Duration::from_secs(1), &mut handle).await;
-        if !hung_up.load(Ordering::SeqCst) {
-            return Err(anyhow!(message));
+
+    // The server login password, never a key passphrase, and tried last: keys
+    // are what OmnySSH steers users towards. One typed this session goes first,
+    // as it is newer than a saved one — but never to a host key first seen on
+    // this connection: that is not the server it was typed for.
+    let new_key = first.link.new_key();
+    let typed = match passwords {
+        Passwords::Remembered | Passwords::Ask(_) if new_key.is_none() => password::accepted(key),
+        _ => None,
+    };
+    let saved = match passwords {
+        Passwords::KeysOnly => None,
+        _ => host.password.clone(),
+    }
+    .filter(|p| typed.as_ref() != Some(p));
+    let known = typed.is_some() || saved.is_some();
+    let mut refused = Vec::new();
+    let mut spare = None;
+    for (password, was_typed) in typed
+        .map(|p| (p, true))
+        .into_iter()
+        .chain(saved.map(|p| (p, false)))
+    {
+        match offer(&mut first, &mut spare, &dial, host, key, &password).await {
+            Offer::Here => return Ok(password_login(host, first.handle)),
+            Offer::There(handle) => return Ok(password_login(host, handle)),
+            Offer::Rejected => {
+                if was_typed {
+                    password::forget(key, &password);
+                }
+                refused.push(password);
+            }
+            Offer::Unavailable(e) => return Err(e),
         }
+    }
+
+    // A locked identity file is what the host is set up with: its passphrase
+    // comes before any password (#97). A locked default key does not hold up a
+    // password prompt — it may not be a key this server takes.
+    let locked = match encrypted_key {
+        Some((path, true)) => return Err(PassphraseRequired::new(path, key).into()),
+        Some((path, false)) => Some(path),
+        None => None,
+    };
+
+    if let Passwords::Ask(ask) = passwords {
+        let asked = ask_password(
+            &mut **ask,
+            &mut first,
+            &mut spare,
+            &dial,
+            host,
+            key,
+            &refused,
+            new_key.as_deref(),
+        )
+        .await?;
+        let refusal = match asked {
+            Asked::In(Offer::There(handle)) => return Ok(password_login(host, handle)),
+            Asked::In(_) => return Ok(password_login(host, first.handle)),
+            Asked::Unanswered(NoAnswer::Cancelled) => {
+                format!("SSH login cancelled for {}", host.name)
+            }
+            Asked::Unanswered(NoAnswer::TimedOut) => format!(
+                "SSH login to {} gave up waiting for the password",
+                host.name
+            ),
+            Asked::Refused => format!("SSH authentication failed for {}", host.name),
+        };
+        // No password got in: the key it skipped still may (#97).
+        return Err(match locked {
+            Some(path) => PassphraseRequired::new(path, key).into(),
+            None => Refused(refusal).into(),
+        });
+    }
+
+    if let Some(path) = locked {
+        return Err(PassphraseRequired::new(path, key).into());
+    }
+    if !known && !matches!(passwords, Passwords::KeysOnly) {
+        return Err(NoPassword::new(key, &host.name).into());
+    }
+
+    let message = format!("SSH authentication failed for {}", host.name);
+    // Every attempt folds a dropped link into "not accepted". A connection that
+    // is gone refused us only if the server hung up itself, as OpenSSH does
+    // after too many failed logins.
+    if first.closed().await && !first.link.hung_up.load(Ordering::SeqCst) {
+        return Err(anyhow!(message));
     }
     Err(Refused(message).into())
+}
+
+/// How asking the user went.
+enum Asked {
+    /// A password got in: [`Offer::Here`] or [`Offer::There`].
+    In(Offer),
+    /// Every answer was refused.
+    Refused,
+    Unanswered(NoAnswer),
+}
+
+/// Asks the user for the password, up to [`PASSWORD_PROMPTS`] times.
+#[allow(clippy::too_many_arguments)]
+async fn ask_password<F, Fut>(
+    ask: &mut dyn AskPassword,
+    first: &mut Dialed,
+    spare: &mut Option<Dialed>,
+    dial: &F,
+    host: &Host,
+    key: &str,
+    refused: &[String],
+    new_key: Option<&str>,
+) -> anyhow::Result<Asked>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = anyhow::Result<Dialed>>,
+{
+    let login = format!("{}@{}", host.user, host.hostname);
+    let mut refused = refused.to_vec();
+    let mut retry = false;
+    for _ in 0..PASSWORD_PROMPTS {
+        let prompt = Prompt {
+            login: &login,
+            retry,
+            new_host_key: new_key,
+        };
+        let password = match ask.ask(prompt).await {
+            Ok(password) => password,
+            Err(no_answer) => return Ok(Asked::Unanswered(no_answer)),
+        };
+        retry = true;
+        // Sending it again would only cost another failed login.
+        if refused.contains(&password) {
+            continue;
+        }
+        // Only a hang-up this answer caused ends the asking; one from the key
+        // attempts before it just moves the answers to fresh connections.
+        let first_open = first.usable().await;
+        match offer(first, spare, dial, host, key, &password).await {
+            Offer::Rejected => refused.push(password),
+            Offer::Unavailable(e) => return Err(e),
+            accepted => {
+                password::remember(key, &password);
+                return Ok(Asked::In(accepted));
+            }
+        }
+        // OpenSSH hangs up after too many failed logins; ssh(1) stops there too.
+        if first_open && first.closed().await && first.link.hung_up.load(Ordering::SeqCst) {
+            break;
+        }
+    }
+    Ok(Asked::Refused)
+}
+
+fn password_login(host: &Host, handle: Handle<KnownHostsHandler>) -> Handle<KnownHostsHandler> {
+    tracing::info!(
+        host = %host.name,
+        "Connected via password authentication — consider setting up SSH key"
+    );
+    handle
+}
+
+/// How an offered password went.
+enum Offer {
+    /// Got in on the first connection.
+    Here,
+    /// Got in on a fresh connection.
+    There(Handle<KnownHostsHandler>),
+    /// The server said no.
+    Rejected,
+    /// No verdict: the connection could not be made or went away.
+    Unavailable(anyhow::Error),
+}
+
+/// Offers `password` the way ssh(1) does: by the password method, and by
+/// keyboard-interactive, which is all some servers take (UniFi consoles turn the
+/// password method off). russh 0.46 answers keyboard-interactive only as the
+/// first method of a connection, so that part runs on a fresh one, kept in
+/// `spare` for the next answer. Which of the two a login takes is remembered,
+/// so a wrong password costs one failed login, not two.
+async fn offer<F, Fut>(
+    first: &mut Dialed,
+    spare: &mut Option<Dialed>,
+    dial: &F,
+    host: &Host,
+    key: &str,
+    password: &str,
+) -> Offer
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = anyhow::Result<Dialed>>,
+{
+    let method = password::method(key);
+    let mut tried_password = false;
+    if method != Some(Method::KeyboardInteractive) && first.usable().await {
+        match password_auth(&mut first.handle, &host.user, password).await {
+            Some(true) => {
+                password::learn(key, Method::Password);
+                return Offer::Here;
+            }
+            Some(false) => tried_password = true,
+            // A server that refuses and hangs up (too many failures) gave its
+            // verdict; any other silence is none, and the connection is done.
+            None if first.closed().await && first.link.hung_up.load(Ordering::SeqCst) => {
+                tried_password = true
+            }
+            None => first.broken = true,
+        }
+        if tried_password && method == Some(Method::Password) {
+            return Offer::Rejected;
+        }
+    }
+
+    let fresh = match spare.take() {
+        Some(conn) if !conn.handle.is_closed() => conn,
+        _ => match dial().await {
+            Ok(conn) => conn,
+            Err(e) => return Offer::Unavailable(e),
+        },
+    };
+    // With known_hosts unwritable every connection meets the key anew: this one
+    // must meet the same key as the first, whose fingerprint the user saw.
+    if let (Some(seen), Some(now)) = (first.link.new_key(), fresh.link.new_key()) {
+        if seen != now {
+            return Offer::Unavailable(
+                Refused(format!(
+                    "SSH login to {} stopped: the host key changed between connections",
+                    host.name
+                ))
+                .into(),
+            );
+        }
+    }
+    let mut fresh = if method == Some(Method::Password) {
+        fresh
+    } else {
+        match kbd_login(fresh, &host.user, password).await {
+            (Some(conn), Kbd::Accepted) => {
+                password::learn(key, Method::KeyboardInteractive);
+                return Offer::There(conn.handle);
+            }
+            (conn, Kbd::Refused) => {
+                password::learn(key, Method::KeyboardInteractive);
+                *spare = conn;
+                return Offer::Rejected;
+            }
+            // The password method already turned this password down.
+            (_, Kbd::Broken) if tried_password => return Offer::Rejected,
+            // A second factor is a dead end whatever the password: say so.
+            (_, Kbd::WantsCode) => {
+                return Offer::Unavailable(
+                    Refused(format!(
+                        "SSH login to {} asks for a verification code, which OmnySSH cannot answer",
+                        host.name
+                    ))
+                    .into(),
+                )
+            }
+            (Some(conn), Kbd::NotOffered) => {
+                password::learn(key, Method::Password);
+                conn
+            }
+            _ => return Offer::Unavailable(anyhow!("SSH login to {} broke off", host.name)),
+        }
+    };
+    if tried_password {
+        return Offer::Rejected;
+    }
+    match password_auth(&mut fresh.handle, &host.user, password).await {
+        Some(true) => {
+            password::learn(key, Method::Password);
+            Offer::There(fresh.handle)
+        }
+        Some(false) => Offer::Rejected,
+        None => Offer::Unavailable(anyhow!("SSH login to {} broke off", host.name)),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Authentication helpers
 // ---------------------------------------------------------------------------
 
-enum AuthOutcome {
-    Ok,
-    Failed,
-    PassphraseRequired { path: String },
+/// How long one login request may wait for the server's verdict.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
+
+enum KeyAuth {
+    Accepted,
+    /// No key got in. `encrypted_key` is one skipped for want of its
+    /// passphrase, and whether it is the host's own identity file.
+    Rejected {
+        encrypted_key: Option<(String, bool)>,
+    },
 }
 
+/// Tries the agent, the identity file and the default keys, in that order.
+/// `user_started`: a login the user is watching also retries agent keys the
+/// user turned down before.
 async fn authenticate(
-    handle: &mut Handle<KnownHostsHandler>,
+    handle: Handle<KnownHostsHandler>,
     host: &Host,
-) -> anyhow::Result<AuthOutcome> {
+    user_started: bool,
+) -> anyhow::Result<(Handle<KnownHostsHandler>, KeyAuth)> {
     let user = host.user.clone();
-    let mut encrypted_key: Option<String> = None;
+    let mut encrypted_key: Option<(String, bool)> = None;
 
     // 1. Try SSH agent first — it handles passphrase-protected keys and is the
     //    most common auth method for non-interactive clients.
     #[cfg(unix)]
-    {
-        if try_agent_auth(handle, &user).await.unwrap_or(false) {
-            return Ok(AuthOutcome::Ok);
+    let handle = {
+        let (handle, accepted) = agent_login(handle, &user, user_started).await?;
+        if accepted {
+            return Ok((handle, KeyAuth::Accepted));
         }
-    }
+        handle
+    };
+    #[cfg(not(unix))]
+    let _ = user_started;
+    let mut handle = handle;
 
     // 2. Try explicit identity_file from host config.
     if let Some(key_path) = &host.identity_file {
-        match try_key_auth(handle, &user, key_path).await {
-            Ok(true) => return Ok(AuthOutcome::Ok),
+        match try_key_auth(&mut handle, &user, key_path).await {
+            Ok(true) => return Ok((handle, KeyAuth::Accepted)),
             Ok(false) => {}
-            Err(e) => note_encrypted(&mut encrypted_key, e),
+            Err(e) => note_encrypted(&mut encrypted_key, e, true)?,
         }
     }
 
@@ -593,46 +1117,47 @@ async fn authenticate(
     for key_path in default_key_paths() {
         if key_path.exists() {
             let path_str = key_path.to_string_lossy().into_owned();
-            match try_key_auth(handle, &user, &path_str).await {
-                Ok(true) => return Ok(AuthOutcome::Ok),
+            match try_key_auth(&mut handle, &user, &path_str).await {
+                Ok(true) => return Ok((handle, KeyAuth::Accepted)),
                 Ok(false) => {}
-                Err(e) if host.identity_file.is_none() => note_encrypted(&mut encrypted_key, e),
-                Err(_) => {}
+                Err(e) if host.identity_file.is_none() => {
+                    note_encrypted(&mut encrypted_key, e, false)?
+                }
+                Err(e) => stalled(e)?,
             }
         }
     }
 
-    // 4. Try password authentication if provided.
-    //    Password auth is NOT recommended for production use but is required for
-    //    the initial connection before setting up key-based auth. This is the
-    //    server login password, never the private-key passphrase.
-    if let Some(password) = &host.password {
-        if try_password_auth(handle, &user, password)
-            .await
-            .unwrap_or(false)
-        {
-            tracing::info!(
-                host = %host.name,
-                "Connected via password authentication — consider setting up SSH key"
-            );
-            return Ok(AuthOutcome::Ok);
-        }
-    }
-
-    if let Some(path) = encrypted_key {
-        return Ok(AuthOutcome::PassphraseRequired { path });
-    }
-    Ok(AuthOutcome::Failed)
+    Ok((handle, KeyAuth::Rejected { encrypted_key }))
 }
 
-fn note_encrypted(encrypted_key: &mut Option<String>, err: anyhow::Error) {
+/// A key the server did not answer for in time: the connection is left in an
+/// unknown state, so the login stops here.
+#[derive(Debug, thiserror::Error)]
+#[error("the SSH server did not answer the login in time")]
+struct Stalled;
+
+fn stalled(err: anyhow::Error) -> anyhow::Result<()> {
+    if err.is::<Stalled>() {
+        return Err(err);
+    }
+    tracing::debug!(error = %err, "public-key authentication attempt failed");
+    Ok(())
+}
+
+fn note_encrypted(
+    encrypted_key: &mut Option<(String, bool)>,
+    err: anyhow::Error,
+    identity_file: bool,
+) -> anyhow::Result<()> {
     match err.downcast_ref::<IdentityError>() {
-        Some(IdentityError::Encrypted(path)) if encrypted_key.is_none() => {
-            *encrypted_key = Some(path.clone());
+        Some(IdentityError::Encrypted(path)) => {
+            if encrypted_key.is_none() {
+                *encrypted_key = Some((path.clone(), identity_file));
+            }
+            Ok(())
         }
-        _ => {
-            tracing::debug!(error = %err, "public-key authentication attempt failed");
-        }
+        _ => stalled(err),
     }
 }
 
@@ -661,55 +1186,349 @@ async fn try_key_auth(
         .await
         .context("spawn_blocking panicked")??;
 
-    let ok = handle
-        .authenticate_publickey(user, Arc::new(key_pair))
-        .await
-        .context("authenticate_publickey")?;
+    // russh signs file keys itself, so giving up on the wait leaves it free.
+    let ok = time::timeout(
+        AUTH_TIMEOUT,
+        handle.authenticate_publickey(user, Arc::new(key_pair)),
+    )
+    .await
+    .map_err(|_| Stalled)?
+    .context("authenticate_publickey")?;
     Ok(ok)
+}
+
+/// How long the SSH agent gets to answer the connect and the key listing. An
+/// agent that accepts and never replies must not stall the whole login.
+#[cfg(unix)]
+const AGENT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long one agent signature may take. It can wait on the user (a confirm
+/// dialog, a PIN, Touch ID).
+#[cfg(unix)]
+const SIGN_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Upper bound on the agent's share of one hop's login, for callers that time
+/// the whole connect (so a slow but working agent is not taken for a dead host).
+const AGENT_BUDGET: Duration = Duration::from_secs(70);
+
+/// Agent keys whose signature was turned down or timed out, by fingerprint.
+/// Background logins skip them, so a confirm dialog the user said no to does
+/// not come back every time a poller reconnects.
+#[cfg(unix)]
+fn refused_agent_keys() -> MutexGuard<'static, HashSet<String>> {
+    static REFUSED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    REFUSED
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Runs the agent's keys in a task that owns the connection. A caller that gives
+/// up mid-signature (a poller restarted, a tunnel stopped) then only detaches:
+/// dropping the connection while russh waits for the signature would leave
+/// russh spinning. The task itself ends within the signing bound.
+#[cfg(unix)]
+async fn agent_login(
+    handle: Handle<KnownHostsHandler>,
+    user: &str,
+    user_started: bool,
+) -> anyhow::Result<(Handle<KnownHostsHandler>, bool)> {
+    let user = user.to_string();
+    tokio::spawn(async move {
+        let mut handle = handle;
+        let accepted = try_agent_auth(&mut handle, &user, user_started)
+            .await
+            .unwrap_or(false);
+        (handle, accepted)
+    })
+    .await
+    .context("SSH agent login failed")
 }
 
 #[cfg(unix)]
 async fn try_agent_auth(
     handle: &mut Handle<KnownHostsHandler>,
     user: &str,
+    user_started: bool,
 ) -> anyhow::Result<bool> {
-    use russh::keys::agent::client::AgentClient;
+    let (agent, identities) = time::timeout(AGENT_TIMEOUT, async {
+        let mut agent = connect_agent().await?;
+        let identities = agent
+            .request_identities()
+            .await
+            .context("request agent identities")?;
+        Ok::<_, anyhow::Error>((agent, identities))
+    })
+    .await
+    .map_err(|_| anyhow!("SSH agent did not answer"))??;
 
-    let mut agent = AgentClient::connect_env()
-        .await
-        .context("connect to SSH agent")?;
-
-    let identities = agent
-        .request_identities()
-        .await
-        .context("request agent identities")?;
-
+    let failed = Arc::new(tokio::sync::Notify::new());
+    let stalled = Arc::new(AtomicBool::new(false));
+    let mut signer = AgentSigner {
+        agent: Some(agent),
+        failed: Arc::clone(&failed),
+        stalled: Arc::clone(&stalled),
+    };
     for pubkey in identities {
-        let (agent_back, result) = handle.authenticate_future(user, pubkey, agent).await;
-        agent = agent_back;
-        match result {
-            Ok(true) => return Ok(true),
-            Ok(false) => continue,
-            Err(_) => continue,
+        if !user_started && refused_agent_keys().contains(&pubkey.fingerprint()) {
+            continue;
+        }
+        let attempt = handle.authenticate_future(user, pubkey, signer);
+        tokio::pin!(attempt);
+        let (back, result) = tokio::select! {
+            biased;
+            done = &mut attempt => done,
+            () = failed.notified() => {
+                // russh got the buffer back unsigned, sent nothing and now waits
+                // for a reply that will not come. Let it finish handing the
+                // buffer over; the signer went with it.
+                let _ = time::timeout(Duration::from_millis(100), &mut attempt).await;
+                if stalled.load(Ordering::SeqCst) {
+                    tracing::debug!("SSH agent stopped answering; trying other methods");
+                    return Ok(false);
+                }
+                // Turned down: the agent is fine, and a later key may sign.
+                let agent = time::timeout(AGENT_TIMEOUT, connect_agent()).await;
+                let Ok(Ok(agent)) = agent else { return Ok(false) };
+                signer = AgentSigner {
+                    agent: Some(agent),
+                    failed: Arc::clone(&failed),
+                    stalled: Arc::clone(&stalled),
+                };
+                continue;
+            }
+        };
+        signer = back;
+        if matches!(result, Ok(true)) {
+            return Ok(true);
         }
     }
     Ok(false)
 }
 
-/// Try password-based authentication.
+#[cfg(unix)]
+async fn connect_agent(
+) -> anyhow::Result<russh::keys::agent::client::AgentClient<tokio::net::UnixStream>> {
+    russh::keys::agent::client::AgentClient::connect_env()
+        .await
+        .context("connect to SSH agent")
+}
+
+/// Signs through the SSH agent without ever leaving russh waiting.
 ///
-/// # Errors
-/// Returns an error if the authentication attempt fails.
-async fn try_password_auth(
+/// russh 0.46 treats a signer error as final for the connection: it keeps
+/// waiting for the signature and swallows every later auth request, so one
+/// refused or stalled signature hung the login. Handing the buffer back
+/// unchanged makes russh send nothing and carry on, and [`try_agent_auth`] moves
+/// on to the other methods.
+#[cfg(unix)]
+struct AgentSigner {
+    agent: Option<russh::keys::agent::client::AgentClient<tokio::net::UnixStream>>,
+    failed: Arc<tokio::sync::Notify>,
+    /// Set when a signature timed out: the agent is hung, not just unwilling.
+    stalled: Arc<AtomicBool>,
+}
+
+#[cfg(unix)]
+impl russh::Signer for AgentSigner {
+    type Error = russh::AgentAuthError;
+    type Future = std::pin::Pin<
+        Box<dyn Future<Output = (Self, Result<russh::CryptoVec, Self::Error>)> + Send>,
+    >;
+
+    fn auth_publickey_sign(
+        mut self,
+        key: &russh::keys::key::PublicKey,
+        to_sign: russh::CryptoVec,
+    ) -> Self::Future {
+        let key = key.clone();
+        Box::pin(async move {
+            let mut signed = None;
+            if let Some(agent) = self.agent.take() {
+                // A timed-out request leaves the agent connection mid-reply, so
+                // it is dropped with the future.
+                match time::timeout(SIGN_TIMEOUT, agent.sign_request(&key, to_sign.clone())).await {
+                    Ok((agent, result)) => {
+                        self.agent = Some(agent);
+                        // An agent reply russh cannot read comes back unchanged.
+                        signed = result.ok().filter(|data| data.len() != to_sign.len());
+                    }
+                    Err(_) => self.stalled.store(true, Ordering::SeqCst),
+                }
+            }
+            match signed {
+                Some(data) => {
+                    refused_agent_keys().remove(&key.fingerprint());
+                    (self, Ok(data))
+                }
+                None => {
+                    refused_agent_keys().insert(key.fingerprint());
+                    self.failed.notify_one();
+                    (self, Ok(to_sign))
+                }
+            }
+        })
+    }
+}
+
+/// Password-method login: `Some(verdict)`, or `None` when there is none — the
+/// connection went away or the server took too long, and it is not used again.
+async fn password_auth(
     handle: &mut Handle<KnownHostsHandler>,
     user: &str,
     password: &str,
-) -> anyhow::Result<bool> {
-    let ok = handle
-        .authenticate_password(user, password)
-        .await
-        .context("authenticate with password")?;
-    Ok(ok)
+) -> Option<bool> {
+    // No reply for us to owe here, so giving up on the wait is safe.
+    match time::timeout(AUTH_TIMEOUT, handle.authenticate_password(user, password)).await {
+        Ok(Ok(true)) => Some(true),
+        Ok(Ok(false)) if !handle.is_closed() => Some(false),
+        _ => None,
+    }
+}
+
+/// Rounds of server prompts one keyboard-interactive login may take.
+const KBD_ROUNDS: usize = 4;
+
+/// How long each keyboard-interactive reply may take; a wrong password makes
+/// PAM stall for a few seconds.
+const KBD_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How a keyboard-interactive login went.
+enum Kbd {
+    Accepted,
+    /// The server was sent the password and did not take it.
+    Refused,
+    /// The server does not do keyboard-interactive, or not in a way the
+    /// password can answer.
+    NotOffered,
+    /// The server asked for a one-time code, not a password.
+    WantsCode,
+    /// No clean end (timeout, the session died): the connection is not reused.
+    Broken,
+}
+
+/// Keyboard-interactive login answering the password prompt with `password`,
+/// on a connection where it is the first method (russh 0.46). Runs in a task
+/// that owns the connection, so a caller that gives up cannot leave russh
+/// waiting for our answer. Hands the connection back unless it broke.
+async fn kbd_login(conn: Dialed, user: &str, password: &str) -> (Option<Dialed>, Kbd) {
+    let (user, password) = (user.to_string(), password.to_string());
+    tokio::spawn(async move {
+        let mut conn = conn;
+        match kbd_exchange(&mut conn, &user, &password).await {
+            Kbd::Broken => {
+                release(conn.handle).await;
+                (None, Kbd::Broken)
+            }
+            outcome => (Some(conn), outcome),
+        }
+    })
+    .await
+    .unwrap_or((None, Kbd::Broken))
+}
+
+async fn kbd_exchange(conn: &mut Dialed, user: &str, password: &str) -> Kbd {
+    use russh::client::KeyboardInteractiveAuthResponse as Reply;
+
+    let Dialed { handle, link, .. } = conn;
+    let mut password = Some(password);
+    let mut wants_code = false;
+    let mut reply = kbd_wait(
+        &mut link.ended,
+        handle.authenticate_keyboard_interactive_start(user, None),
+    )
+    .await;
+    for round in 0.. {
+        let prompts = match reply {
+            Some(Ok(Reply::Success)) => return Kbd::Accepted,
+            Some(Ok(Reply::Failure)) if wants_code => return Kbd::WantsCode,
+            // Refused only if the password went out; prompts it could not
+            // answer (a user name, several fields) are as good as no offer.
+            Some(Ok(Reply::Failure)) if password.is_none() => return Kbd::Refused,
+            Some(Ok(Reply::Failure)) => return Kbd::NotOffered,
+            Some(Ok(Reply::InfoRequest { prompts, .. })) if round <= KBD_ROUNDS => prompts,
+            _ => return Kbd::Broken,
+        };
+        // Always answered: russh waits for the answer and swallows everything
+        // else meanwhile. Past the round cap, no answers at all, which makes the
+        // server give up.
+        let answers = if round < KBD_ROUNDS {
+            kbd_answers(&prompts, &mut password, &mut wants_code)
+        } else {
+            Vec::new()
+        };
+        reply = kbd_wait(
+            &mut link.ended,
+            handle.authenticate_keyboard_interactive_respond(answers),
+        )
+        .await;
+    }
+    Kbd::Broken
+}
+
+/// A keyboard-interactive step, given up after [`KBD_TIMEOUT`] or as soon as the
+/// session ends (russh would otherwise spin on the closed channel until then).
+async fn kbd_wait<T>(
+    ended: &mut watch::Receiver<()>,
+    step: impl Future<Output = Result<T, russh::Error>>,
+) -> Option<Result<T, russh::Error>> {
+    tokio::select! {
+        reply = time::timeout(KBD_TIMEOUT, step) => reply.ok(),
+        _ = ended.changed() => None,
+    }
+}
+
+/// Drops a connection that may have a server prompt waiting for us. russh waits
+/// for that answer forever, spinning once the handle is gone, so a blank one is
+/// sent first; a prompt arriving later then finds nobody to hand it to and ends
+/// the session.
+async fn release(mut handle: Handle<KnownHostsHandler>) {
+    let _ = time::timeout(
+        Duration::ZERO,
+        handle.authenticate_keyboard_interactive_respond(Vec::new()),
+    )
+    .await;
+}
+
+/// Answers to one round of keyboard-interactive prompts: the password goes, once,
+/// to a lone hidden prompt; anything else (a visible question, several fields)
+/// gets blanks the server will refuse. A prompt for a one-time code gets a blank
+/// too — the password must not end up at a 2FA service — and is noted in
+/// `wants_code`.
+fn kbd_answers(
+    prompts: &[russh::client::Prompt],
+    password: &mut Option<&str>,
+    wants_code: &mut bool,
+) -> Vec<String> {
+    match prompts {
+        [only] if !only.echo && asks_for_code(&only.prompt) => {
+            *wants_code = true;
+            vec![String::new()]
+        }
+        [only] if !only.echo => vec![password.take().unwrap_or_default().to_string()],
+        _ => vec![String::new(); prompts.len()],
+    }
+}
+
+/// Whether a prompt asks for a one-time code rather than the password. A deny
+/// list, so "Password:" in any language still gets the password. Whole words
+/// only, and never from a `user@host` (OpenSSH puts one in front): a user or
+/// host name is no hint.
+fn asks_for_code(prompt: &str) -> bool {
+    let prompt = prompt.to_lowercase();
+    let words: Vec<&str> = prompt
+        .split_whitespace()
+        .filter(|chunk| !chunk.contains('@'))
+        .flat_map(|chunk| chunk.split(|c: char| !c.is_alphanumeric()))
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.windows(2).any(|pair| pair == ["one", "time"])
+        || words.iter().any(|word| {
+            matches!(
+                *word,
+                "code" | "token" | "otp" | "passcode" | "2fa" | "yubikey" | "duo" | "pin"
+            ) || word.starts_with("verif")
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -753,9 +1572,13 @@ mod tests {
 
     #[test]
     fn a_locked_key_stays_recognisable_through_a_jump_host() {
-        let locked = anyhow::Error::from(PassphraseRequired::new(String::from("/k/id")));
+        let locked = anyhow::Error::from(PassphraseRequired::new(
+            String::from("/k/id"),
+            "root@10.0.0.5:22",
+        ));
         let hop = at_hop(locked, String::from("ProxyJump via 'bastion' failed"));
         assert_eq!(passphrase_required(&hop), Some("/k/id"));
+        assert_eq!(waiting_login(&hop), Some("root@10.0.0.5:22"));
         assert!(!is_refused(&hop));
         assert_eq!(
             hop.to_string(),
@@ -764,8 +1587,107 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_password_stays_recognisable_through_a_jump_host() {
+        let missing = anyhow::Error::from(NoPassword::new("root@10.0.0.5:22", "db"));
+        let hop = at_hop(missing, String::from("connecting via 'bastion' failed"));
+        assert_eq!(no_password(&hop), Some("root@10.0.0.5:22"));
+        assert_eq!(waiting_login(&hop), Some("root@10.0.0.5:22"));
+        assert!(!is_refused(&hop));
+        // Frontends cut at the first ':'; the reason must come before it.
+        assert!(!NoPassword::new("k", "db").to_string().contains(':'));
+    }
+
+    #[test]
+    fn a_password_is_remembered_per_login_and_bastion() {
+        let host = |name: &str, user: &str, hostname: &str| Host {
+            name: name.to_string(),
+            user: user.to_string(),
+            hostname: hostname.to_string(),
+            ..Host::default()
+        };
+        let db = host("db", "root", "10.0.0.5");
+        let via_a = [host("a", "ops", "a.example.com")];
+        let via_b = [host("b", "ops", "b.example.com")];
+        assert_ne!(login_key(&db, &via_a), login_key(&db, &via_b));
+        assert_ne!(login_key(&db, &[]), login_key(&db, &via_a));
+        assert_ne!(
+            login_key(&db, &[]),
+            login_key(&host("db", "admin", "10.0.0.5"), &[])
+        );
+    }
+
+    fn prompt(text: &str, echo: bool) -> russh::client::Prompt {
+        russh::client::Prompt {
+            prompt: text.to_string(),
+            echo,
+        }
+    }
+
+    #[test]
+    fn the_password_answers_one_hidden_prompt_only() {
+        let (mut password, mut code) = (Some("secret"), false);
+        let hidden = [prompt("Password: ", false)];
+        assert_eq!(kbd_answers(&hidden, &mut password, &mut code), ["secret"]);
+        // A second ask (a retry) must not get it again.
+        assert_eq!(kbd_answers(&hidden, &mut password, &mut code), [""]);
+        assert!(!code);
+    }
+
+    #[test]
+    fn other_prompts_are_answered_blank() {
+        let (mut password, mut code) = (Some("secret"), false);
+        assert!(kbd_answers(&[], &mut password, &mut code).is_empty());
+        assert_eq!(
+            kbd_answers(&[prompt("Username: ", true)], &mut password, &mut code),
+            [""]
+        );
+        let two = [prompt("Password: ", false), prompt("Code: ", false)];
+        assert_eq!(kbd_answers(&two, &mut password, &mut code), ["", ""]);
+        assert_eq!(
+            password,
+            Some("secret"),
+            "never spent on a prompt it did not answer"
+        );
+    }
+
+    #[test]
+    fn a_code_prompt_never_gets_the_password() {
+        for text in [
+            "Verification code: ",
+            "Enter PASSCODE:",
+            "One-time password (OATH) for `root':",
+            "Duo two-factor login",
+            "PIN: ",
+        ] {
+            let (mut password, mut code) = (Some("secret"), false);
+            assert_eq!(
+                kbd_answers(&[prompt(text, false)], &mut password, &mut code),
+                [""],
+                "{text}"
+            );
+            assert!(code, "{text}");
+        }
+        // Localised password prompts still get it.
+        for text in [
+            "Password: ",
+            "Passwort: ",
+            "Contraseña: ",
+            "(root@udm) Password:",
+            "(vscode@gitcode) Password:",
+            "Password for duo-admin@host:",
+        ] {
+            let (mut password, mut code) = (Some("secret"), false);
+            assert_eq!(
+                kbd_answers(&[prompt(text, false)], &mut password, &mut code),
+                ["secret"],
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
     fn a_locked_key_is_found_under_added_context() {
-        let e = anyhow::Error::from(PassphraseRequired::new(String::from("/k/id")))
+        let e = anyhow::Error::from(PassphraseRequired::new(String::from("/k/id"), "k"))
             .context("SFTP SSH connect");
         assert_eq!(passphrase_required(&e), Some("/k/id"));
     }

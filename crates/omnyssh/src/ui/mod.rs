@@ -94,6 +94,8 @@ pub fn render(frame: &mut Frame, state: &AppState, view: &ViewState) {
     if !matches!(state.screen, Screen::Terminal) {
         if let Some(prompt) = view.passphrase_prompts.first() {
             popup::render_passphrase_prompt(frame, prompt, &view.theme);
+        } else if let Some(prompt) = view.password_prompts.first() {
+            popup::render_password_prompt(frame, prompt, &view.theme);
         }
     }
 }

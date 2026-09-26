@@ -64,6 +64,22 @@ pub async fn forward_core_events(app: AppHandle, mut rx: mpsc::Receiver<CoreEven
                 }
                 .emit(&app);
             }
+            CoreEvent::PasswordRequired {
+                request_id,
+                host_name,
+                login,
+                retry,
+                new_host_key,
+            } => {
+                let _ = events::PasswordRequired {
+                    request_id,
+                    host_name,
+                    login,
+                    retry,
+                    new_host_key,
+                }
+                .emit(&app);
+            }
             // Remote shell exit / dropped connection. Map the inner PTY id to its
             // public id (dropping routing state); `None` means the user already
             // closed the tab, so nothing is emitted (§3.4).

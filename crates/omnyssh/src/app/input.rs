@@ -18,6 +18,10 @@ impl App {
         if !self.view.passphrase_prompts.is_empty() && !matches!(screen, Screen::Terminal) {
             return Ok(self.handle_passphrase_key(key));
         }
+        // Same rules for a login password.
+        if !self.view.password_prompts.is_empty() && !matches!(screen, Screen::Terminal) {
+            return Ok(self.handle_password_key(key));
+        }
 
         // The update popup is modal — it captures all input until dismissed.
         // Ctrl+C still quits as an escape hatch.
@@ -216,6 +220,25 @@ impl App {
             KeyCode::Char('c') if ctrl => Some(AppAction::DismissPassphrase),
             _ if prompt.unlocking => None,
             KeyCode::Enter => Some(AppAction::SubmitPassphrase),
+            KeyCode::Backspace => {
+                prompt.field.backspace();
+                None
+            }
+            KeyCode::Char(c) if !ctrl => {
+                prompt.field.insert_char(c);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_password_key(&mut self, key: KeyEvent) -> Option<AppAction> {
+        let prompt = self.view.password_prompts.first_mut()?;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => Some(AppAction::DismissPassword),
+            KeyCode::Char('c') if ctrl => Some(AppAction::DismissPassword),
+            KeyCode::Enter => Some(AppAction::SubmitPassword),
             KeyCode::Backspace => {
                 prompt.field.backspace();
                 None

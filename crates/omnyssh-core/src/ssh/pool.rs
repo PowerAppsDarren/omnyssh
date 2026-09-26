@@ -25,7 +25,8 @@ use crate::ssh::metrics::{
     parse_cpu_proc_stat, parse_cpu_top, parse_cpu_top_macos, parse_disk_df, parse_loadavg,
     parse_ram_free, parse_ram_vmstat, parse_top_processes, parse_uptime,
 };
-use crate::ssh::session::{passphrase_required, SshSession};
+use crate::ssh::password;
+use crate::ssh::session::{passphrase_required, waiting_login, SshSession};
 
 // ---------------------------------------------------------------------------
 // Backoff schedule
@@ -240,19 +241,34 @@ async fn run_ssh_poller(
                     discovery_done = false; // Reset discovery flag on new connection
                 }
                 Err(e) => {
-                    tracing::debug!(host = %host.name, error = %e, "connection failed");
-                    send_status(&tx, &host.name, ConnectionStatus::Failed(e.to_string())).await;
+                    // The whole chain: "SSH connection failed" alone does not say
+                    // whether the port was closed, the name did not resolve or the
+                    // host key changed.
+                    let reason = format!("{e:#}");
+                    tracing::debug!(host = %host.name, error = %reason, "connection failed");
+                    send_status(&tx, &host.name, ConnectionStatus::Failed(reason)).await;
                     let delay = backoff.next_delay();
-                    let Some(path) = passphrase_required(&e).map(str::to_owned) else {
+                    let Some(login) = waiting_login(&e).map(str::to_owned) else {
                         // Wait with backoff, allowing early refresh.
                         wait_backoff(delay, &mut refresh_rx).await;
                         continue;
                     };
-                    identity::ask_passphrase_once(&tx, &host.name, &path).await;
-                    // Only an unlock can change the outcome, so it ends the wait.
+                    // A poller never asks for a password, only for a passphrase.
+                    // Unlocking the key, or typing the password elsewhere (a
+                    // terminal), is what changes the outcome, so either ends the wait.
+                    let locked = passphrase_required(&e).map(str::to_owned);
+                    if let Some(path) = &locked {
+                        identity::ask_passphrase_once(&tx, &host.name, path).await;
+                    }
                     tokio::select! {
                         () = wait_backoff(delay, &mut refresh_rx) => {}
-                        () = identity::unlocked(&path) => {}
+                        () = password::remembered(&login) => {}
+                        () = async {
+                            match &locked {
+                                Some(path) => identity::unlocked(path).await,
+                                None => std::future::pending().await,
+                            }
+                        } => {}
                     }
                     continue;
                 }

@@ -229,3 +229,9 @@ export async function unlockIdentity(keyPath: string, passphrase: string): Promi
   const res = await commands.unlockIdentity(keyPath, passphrase);
   if (res.status === 'error') throw new Error(res.error.message);
 }
+
+/** Answer a login's password prompt; `null` cancels the login. */
+export async function answerPassword(requestId: number, password: string | null): Promise<void> {
+  const res = await commands.answerPassword(requestId, password);
+  if (res.status === 'error') throw new Error(res.error.message);
+}

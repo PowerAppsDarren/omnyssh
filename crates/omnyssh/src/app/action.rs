@@ -47,6 +47,10 @@ pub enum AppAction {
     SubmitPassphrase,
     /// Dismiss the passphrase prompt without unlocking the key.
     DismissPassphrase,
+    /// Send the password typed for the login a connection waits on.
+    SubmitPassword,
+    /// Cancel that login.
+    DismissPassword,
 
     // -----------------------------------------------------------------------
     // Detail View actions

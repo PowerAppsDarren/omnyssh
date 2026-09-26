@@ -348,6 +348,19 @@ async unlockIdentity(keyPath: string, passphrase: string) : Promise<Result<null,
 }
 },
 /**
+ * Answer the `password-required` prompt `request_id`: a password to try, or
+ * `null` to cancel that login. The connection checks it with the server and
+ * asks again if it is refused.
+ */
+async answerPassword(requestId: number, password: string | null) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("answer_password", { requestId, password }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Query GitHub for a newer release (tech-gui.md §4.2). `None` means up to date — the
  * core swallows network/parse errors so a failed check never disrupts.
  */
@@ -412,6 +425,7 @@ keySetupFailed: KeySetupFailed,
 keySetupProgress: KeySetupProgress,
 keySetupRollback: KeySetupRollback,
 metricsUpdated: MetricsUpdated,
+passwordRequired: PasswordRequired,
 servicesDetected: ServicesDetected,
 servicesFailed: ServicesFailed,
 sftpConnected: SftpConnected,
@@ -434,6 +448,7 @@ keySetupFailed: "key-setup-failed",
 keySetupProgress: "key-setup-progress",
 keySetupRollback: "key-setup-rollback",
 metricsUpdated: "metrics-updated",
+passwordRequired: "password-required",
 servicesDetected: "services-detected",
 servicesFailed: "services-failed",
 sftpConnected: "sftp-connected",
@@ -552,6 +567,13 @@ export type MetricsUpdated = { hostName: string; metrics: MetricsDto }
  * (tech-gui.md §4.1). `tcpPort` means reachability only — no login, no metrics.
  */
 export type MonitorModeDto = "ssh" | "tcpPort"
+/**
+ * A connection waits for the login password of `login` (`user@host`). Answered
+ * with `answer_password`; the password only ever crosses inbound. `retry` says
+ * the previous one was refused; `newHostKey` is the fingerprint of a host key
+ * first seen on this connection, to check before typing.
+ */
+export type PasswordRequired = { requestId: number; hostName: string; login: string; retry: boolean; newHostKey: string | null }
 /**
  * A single process in the "top processes" panel (tech-gui.md §4.1).
  */

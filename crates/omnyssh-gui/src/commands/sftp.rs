@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 
 use omnyssh_core::event::CoreEvent;
 use omnyssh_core::ssh::identity;
+use omnyssh_core::ssh::password::Prompter;
 use omnyssh_core::ssh::sftp::{
     list_local_dir as core_list_local_dir, preview_local_file as core_preview_local_file,
     SftpCommand, SftpManager,
@@ -39,7 +40,10 @@ pub async fn sftp_open(
     // A dedicated channel per tab: its owner is the session id, so the forwarder can
     // attribute the core's session-less `sftp-*` events to this tab (§3.4).
     let (tx, rx) = mpsc::channel::<CoreEvent>(SFTP_EVENT_BUFFER);
-    let manager = match SftpManager::connect(&host, tx).await {
+    // The prompt goes out on the engine channel: this tab's own channel only
+    // carries `sftp-*` events.
+    let prompter = Prompter::new(state.engine_sender(), &host_name);
+    let manager = match SftpManager::connect(&host, tx, prompter).await {
         Ok(manager) => manager,
         Err(e) => {
             if let Some(path) = omnyssh_core::ssh::session::passphrase_required(&e) {

@@ -30,11 +30,15 @@
   // the last prompt closes. Pre-effect, so it is read before the input takes it.
   const open = $derived($passphrasePrompt !== null);
   let opener: Element | null = null;
+  let form = $state<HTMLFormElement>();
   $effect.pre(() => {
     if (open) {
       opener = document.activeElement;
-    } else if (opener instanceof HTMLElement) {
-      opener.focus();
+    } else {
+      // Only if the keyboard is still here: a dialog opened on top of this one
+      // keeps it, or its keys would go to the opener (often a terminal).
+      const here = document.activeElement === document.body || form?.contains(document.activeElement);
+      if (here && opener instanceof HTMLElement) opener.focus();
       opener = null;
     }
   });
@@ -70,6 +74,7 @@
   {@const prompt = $passphrasePrompt}
   <Modal label="Unlock SSH key" onClose={cancel}>
     <form
+      bind:this={form}
       class="space-y-4 px-5 py-4"
       onsubmit={(e) => {
         e.preventDefault();
