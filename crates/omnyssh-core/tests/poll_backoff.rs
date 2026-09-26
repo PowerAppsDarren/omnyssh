@@ -89,27 +89,6 @@ async fn a_refresh_signal_does_not_shorten_the_reconnect_backoff() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn unlocking_a_key_retries_without_waiting_out_backoff() {
-    let (port, dials) = dead_listener().await;
-    let (tx, rx) = mpsc::channel(64);
-    drain(rx);
-
-    let manager = PollManager::start(vec![unreachable_host(port)], tx, Duration::from_secs(30));
-    assert!(
-        wait_for_dials(&dials, 1, Duration::from_secs(60)).await,
-        "the poller never dialled at all"
-    );
-
-    manager.retry_now();
-    let retried = wait_for_dials(&dials, 2, Duration::from_secs(5)).await;
-    manager.shutdown();
-    assert!(
-        retried,
-        "retry_now should cut the reconnect backoff after a key is unlocked"
-    );
-}
-
-#[tokio::test(start_paused = true)]
 async fn an_unreachable_host_keeps_retrying_on_its_own_schedule() {
     let (port, dials) = dead_listener().await;
     let (tx, rx) = mpsc::channel(64);

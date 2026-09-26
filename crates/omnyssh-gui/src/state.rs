@@ -179,13 +179,6 @@ impl GuiState {
         }
     }
 
-    /// Wake SSH pollers waiting on reconnect backoff after an identity is unlocked.
-    pub fn retry_connections(&self) {
-        if let Some(poll) = self.poll.lock().expect("poll lock poisoned").as_ref() {
-            poll.retry_now();
-        }
-    }
-
     /// Reserve the single key-setup slot for `host`. `Ok` starts the run; `Err` names the
     /// host already running one, so a concurrent start is rejected instead of racing a
     /// second `hosts.toml` write and clobbering the progress panel (§4.2). Paired with

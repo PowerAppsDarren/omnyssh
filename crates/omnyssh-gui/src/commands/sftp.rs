@@ -41,18 +41,18 @@ pub async fn sftp_open(
     let manager = match SftpManager::connect(&host, tx).await {
         Ok(manager) => manager,
         Err(e) => {
-            if let Some((host_name, key_path)) = omnyssh_core::ssh::session::passphrase_required(&e)
-            {
+            if let Some(path) = omnyssh_core::ssh::session::passphrase_required(&e) {
                 let _ = state
                     .engine_sender()
-                    .send(omnyssh_core::event::CoreEvent::KeyPassphraseRequired {
+                    .send(CoreEvent::KeyPassphraseRequired {
                         host_name,
-                        key_path,
+                        key_path: path.to_owned(),
                     })
                     .await;
             }
+            // The whole chain: the core wraps the cause in "SFTP SSH connect".
             return Err(CommandError {
-                message: e.to_string(),
+                message: format!("{e:#}"),
             });
         }
     };

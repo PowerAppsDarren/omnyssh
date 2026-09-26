@@ -152,14 +152,57 @@ pub(crate) fn is_refused(e: &anyhow::Error) -> bool {
 }
 
 /// Prefixes a hop's error with where it failed. The message is flattened, as
-/// before, but a refusal stays recognisable through the jump chain.
+/// before, but a refusal or a locked key stays recognisable through the jump
+/// chain.
 fn at_hop(e: anyhow::Error, context: String) -> anyhow::Error {
     let message = format!("{context}: {e:#}");
-    if is_refused(&e) {
+    if let Some(path) = passphrase_required(&e) {
+        PassphraseRequired {
+            path: path.to_owned(),
+            message,
+        }
+        .into()
+    } else if is_refused(&e) {
         Refused(message).into()
     } else {
         anyhow!(message)
     }
+}
+
+// ---------------------------------------------------------------------------
+// PassphraseRequired
+// ---------------------------------------------------------------------------
+
+/// No credential got in, and an encrypted key was skipped for want of its
+/// passphrase. Unlike [`Refused`] it is not final: once the key is unlocked
+/// ([`crate::ssh::identity::unlock`]) the same login can succeed.
+#[derive(Debug)]
+pub(crate) struct PassphraseRequired {
+    /// Canonical path of the encrypted key.
+    path: String,
+    message: String,
+}
+
+impl PassphraseRequired {
+    fn new(path: String) -> Self {
+        let message = format!("SSH key {path} requires a passphrase");
+        Self { path, message }
+    }
+}
+
+impl fmt::Display for PassphraseRequired {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for PassphraseRequired {}
+
+/// The encrypted key a failed connection is waiting on, if that is why it failed.
+pub fn passphrase_required(e: &anyhow::Error) -> Option<&str> {
+    e.chain()
+        .find_map(|cause| cause.downcast_ref::<PassphraseRequired>())
+        .map(|locked| locked.path.as_str())
 }
 
 // ---------------------------------------------------------------------------
@@ -480,22 +523,6 @@ fn known_hosts_handler(host: &Host, hung_up: &Arc<AtomicBool>) -> KnownHostsHand
     }
 }
 
-/// A private key for `host` is encrypted and has not been unlocked yet.
-#[derive(Debug, thiserror::Error)]
-#[error("SSH key {path} requires a passphrase")]
-pub struct PassphraseRequired {
-    /// Host that needed the key.
-    pub host: String,
-    /// Canonical path of the encrypted private key.
-    pub path: String,
-}
-
-/// If `err` is a [`PassphraseRequired`], return the host name and key path.
-pub fn passphrase_required(err: &anyhow::Error) -> Option<(String, String)> {
-    err.downcast_ref::<PassphraseRequired>()
-        .map(|e| (e.host.clone(), e.path.clone()))
-}
-
 /// Authenticates `handle` as `host`, converting a refusal into an error.
 async fn finish_auth(
     mut handle: Handle<KnownHostsHandler>,
@@ -505,11 +532,7 @@ async fn finish_auth(
     match authenticate(&mut handle, host).await? {
         AuthOutcome::Ok => return Ok(handle),
         AuthOutcome::PassphraseRequired { path } => {
-            return Err(PassphraseRequired {
-                host: host.name.clone(),
-                path,
-            }
-            .into());
+            return Err(PassphraseRequired::new(path).into())
         }
         AuthOutcome::Failed => {}
     }
@@ -564,14 +587,16 @@ async fn authenticate(
     }
 
     // 3. Try default key files — mirrors what the `ssh` binary does when no
-    //    -i flag is given. Skips files that don't exist.
+    //    -i flag is given. Skips files that don't exist. A locked one is worth a
+    //    prompt only without an identity file: ssh(1) would not offer it then.
     for key_path in default_key_paths() {
         if key_path.exists() {
             let path_str = key_path.to_string_lossy().into_owned();
             match try_key_auth(handle, &user, &path_str).await {
                 Ok(true) => return Ok(AuthOutcome::Ok),
                 Ok(false) => {}
-                Err(e) => note_encrypted(&mut encrypted_key, e),
+                Err(e) if host.identity_file.is_none() => note_encrypted(&mut encrypted_key, e),
+                Err(_) => {}
             }
         }
     }
@@ -723,4 +748,28 @@ async fn collect_output(
     let raw = String::from_utf8_lossy(&buf);
     let normalised: String = raw.lines().flat_map(|l| [l, "\n"]).collect();
     Ok((normalised, exit_status))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_locked_key_stays_recognisable_through_a_jump_host() {
+        let locked = anyhow::Error::from(PassphraseRequired::new(String::from("/k/id")));
+        let hop = at_hop(locked, String::from("ProxyJump via 'bastion' failed"));
+        assert_eq!(passphrase_required(&hop), Some("/k/id"));
+        assert!(!is_refused(&hop));
+        assert_eq!(
+            hop.to_string(),
+            "ProxyJump via 'bastion' failed: SSH key /k/id requires a passphrase"
+        );
+    }
+
+    #[test]
+    fn a_locked_key_is_found_under_added_context() {
+        let e = anyhow::Error::from(PassphraseRequired::new(String::from("/k/id")))
+            .context("SFTP SSH connect");
+        assert_eq!(passphrase_required(&e), Some("/k/id"));
+    }
 }

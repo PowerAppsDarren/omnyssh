@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 use crate::event::CoreEvent;
 use crate::ssh::client::Host;
-use crate::ssh::session::{connect_and_auth, SshConnection};
+use crate::ssh::session::{connect_and_auth, passphrase_required, SshConnection};
 
 /// Stable numeric identifier for a PTY session (mirrors [`crate::event::SessionId`]).
 pub type SessionId = u64;
@@ -192,15 +192,14 @@ async fn session_task(
     let (_handle, mut channel) = match result {
         Ok(pair) => pair,
         Err(e) => {
-            if let Some((_, key_path)) = crate::ssh::session::passphrase_required(&e) {
+            let _ = tx.send(CoreEvent::Error(format!("Terminal: {e}"))).await;
+            if let Some(path) = passphrase_required(&e) {
                 let _ = tx
                     .send(CoreEvent::KeyPassphraseRequired {
                         host_name: host.name.clone(),
-                        key_path,
+                        key_path: path.to_owned(),
                     })
                     .await;
-            } else {
-                let _ = tx.send(CoreEvent::Error(format!("Terminal: {e}"))).await;
             }
             let _ = tx.send(CoreEvent::PtyExited(id)).await;
             return;

@@ -335,8 +335,9 @@ async refreshMetrics() : Promise<Result<null, CommandError>> {
 }
 },
 /**
- * Decrypt `key_path` with `passphrase` and remember it for this process.
- * On success, SSH pollers waiting on that key retry immediately.
+ * Decrypt `key_path` with `passphrase` and remember it for this process. Only a
+ * key the core reported in `key-passphrase-required` is accepted; connections
+ * waiting on it retry at once.
  */
 async unlockIdentity(keyPath: string, passphrase: string) : Promise<Result<null, CommandError>> {
     try {

@@ -20,11 +20,12 @@ use tokio::time;
 
 use crate::event::{CoreEvent, Metrics, ProcessInfo};
 use crate::ssh::client::{ConnectionStatus, Host, MonitorMode};
+use crate::ssh::identity;
 use crate::ssh::metrics::{
     parse_cpu_proc_stat, parse_cpu_top, parse_cpu_top_macos, parse_disk_df, parse_loadavg,
     parse_ram_free, parse_ram_vmstat, parse_top_processes, parse_uptime,
 };
-use crate::ssh::session::SshSession;
+use crate::ssh::session::{passphrase_required, SshSession};
 
 // ---------------------------------------------------------------------------
 // Backoff schedule
@@ -80,8 +81,6 @@ pub struct PollManager {
     task_handles: Vec<JoinHandle<()>>,
     /// Per-host channel to send an immediate-refresh signal.
     refresh_txs: HashMap<String, mpsc::Sender<()>>,
-    /// Per-host channel that interrupts reconnect backoff after a key is unlocked.
-    retry_txs: HashMap<String, mpsc::Sender<()>>,
 }
 
 impl PollManager {
@@ -89,7 +88,6 @@ impl PollManager {
     pub fn start(hosts: Vec<Host>, tx: mpsc::Sender<CoreEvent>, poll_interval: Duration) -> Self {
         let mut task_handles = Vec::with_capacity(hosts.len());
         let mut refresh_txs = HashMap::with_capacity(hosts.len());
-        let mut retry_txs = HashMap::with_capacity(hosts.len());
 
         for host in hosts {
             let (refresh_tx, refresh_rx) = mpsc::channel::<()>(4);
@@ -97,25 +95,13 @@ impl PollManager {
 
             let event_tx = tx.clone();
             let interval = poll_interval;
-            let handle = match host.monitoring {
-                MonitorMode::Ssh => {
-                    let (retry_tx, retry_rx) = mpsc::channel::<()>(4);
-                    retry_txs.insert(host.name.clone(), retry_tx);
-                    tokio::spawn(run_ssh_poller(
-                        host, event_tx, interval, refresh_rx, retry_rx,
-                    ))
-                }
-                MonitorMode::TcpPort => {
-                    tokio::spawn(run_tcp_poller(host, event_tx, interval, refresh_rx))
-                }
-            };
+            let handle = tokio::spawn(run_host_poller(host, event_tx, interval, refresh_rx));
             task_handles.push(handle);
         }
 
         Self {
             task_handles,
             refresh_txs,
-            retry_txs,
         }
     }
 
@@ -124,16 +110,6 @@ impl PollManager {
         for (name, tx) in &self.refresh_txs {
             if tx.try_send(()).is_err() {
                 tracing::debug!(host = %name, "refresh signal dropped — channel full or closed");
-            }
-        }
-    }
-
-    /// Wake SSH pollers that are sitting in reconnect backoff, so a just-unlocked
-    /// identity is tried immediately instead of waiting out the schedule.
-    pub fn retry_now(&self) {
-        for (name, tx) in &self.retry_txs {
-            if tx.try_send(()).is_err() {
-                tracing::debug!(host = %name, "retry signal dropped — channel full or closed");
             }
         }
     }
@@ -151,6 +127,18 @@ impl PollManager {
 // ---------------------------------------------------------------------------
 // Per-host poller task
 // ---------------------------------------------------------------------------
+
+async fn run_host_poller(
+    host: Host,
+    tx: mpsc::Sender<CoreEvent>,
+    poll_interval: Duration,
+    refresh_rx: mpsc::Receiver<()>,
+) {
+    match host.monitoring {
+        MonitorMode::Ssh => run_ssh_poller(host, tx, poll_interval, refresh_rx).await,
+        MonitorMode::TcpPort => run_tcp_poller(host, tx, poll_interval, refresh_rx).await,
+    }
+}
 
 /// How long a reachability probe waits for the port to answer.
 const TCP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -226,7 +214,7 @@ async fn run_tcp_poller(
             // Same restraint as the SSH poller: a device that is down should not
             // be re-dialled on every refresh tick.
             let delay = backoff.next_delay().max(poll_interval);
-            wait_backoff(delay, &mut refresh_rx, None).await;
+            wait_backoff(delay, &mut refresh_rx).await;
         }
     }
 }
@@ -236,11 +224,13 @@ async fn run_ssh_poller(
     tx: mpsc::Sender<CoreEvent>,
     poll_interval: Duration,
     mut refresh_rx: mpsc::Receiver<()>,
-    mut retry_rx: mpsc::Receiver<()>,
 ) {
     let mut backoff = BackoffState::new();
     let mut session: Option<SshSession> = None;
     let mut discovery_done = false; // Track if we've done Quick Scan
+                                    // The locked key this host last asked about: one prompt per key rather than
+                                    // one per retry, so a dismissed prompt stays dismissed.
+    let mut asked: Option<String> = None;
 
     loop {
         // Ensure we have a live session.
@@ -251,27 +241,33 @@ async fn run_ssh_poller(
                     send_status(&tx, &host.name, ConnectionStatus::Connected).await;
                     session = Some(s);
                     discovery_done = false; // Reset discovery flag on new connection
+                    asked = None;
                 }
                 Err(e) => {
                     tracing::debug!(host = %host.name, error = %e, "connection failed");
-                    if let Some((_, key_path)) = crate::ssh::session::passphrase_required(&e) {
+                    send_status(&tx, &host.name, ConnectionStatus::Failed(e.to_string())).await;
+                    let delay = backoff.next_delay();
+                    let Some(path) = passphrase_required(&e).map(str::to_owned) else {
+                        // Wait with backoff, allowing early refresh.
+                        wait_backoff(delay, &mut refresh_rx).await;
+                        continue;
+                    };
+                    if asked.as_ref() != Some(&path) && !identity::is_unlocked(&path) {
                         let _ = tx
                             .send(CoreEvent::KeyPassphraseRequired {
                                 host_name: host.name.clone(),
-                                key_path,
+                                key_path: path.clone(),
                             })
                             .await;
-                        send_status(
-                            &tx,
-                            &host.name,
-                            ConnectionStatus::Failed(String::from("key requires a passphrase")),
-                        )
-                        .await;
-                    } else {
-                        send_status(&tx, &host.name, ConnectionStatus::Failed(e.to_string())).await;
                     }
-                    let delay = backoff.next_delay();
-                    wait_backoff(delay, &mut refresh_rx, Some(&mut retry_rx)).await;
+                    // Only an unlock can change the outcome, so it ends the wait.
+                    let unlocked = tokio::select! {
+                        () = wait_backoff(delay, &mut refresh_rx) => false,
+                        () = identity::unlocked(&path) => true,
+                    };
+                    // A key that fails again after an unlock was re-encrypted on
+                    // disk: that is worth a new prompt.
+                    asked = (!unlocked).then_some(path);
                     continue;
                 }
             }
@@ -335,7 +331,7 @@ async fn run_ssh_poller(
                 session.take();
                 send_status(&tx, &host.name, ConnectionStatus::Failed(e.to_string())).await;
                 let delay = backoff.next_delay();
-                wait_backoff(delay, &mut refresh_rx, Some(&mut retry_rx)).await;
+                wait_backoff(delay, &mut refresh_rx).await;
                 continue;
             }
         }
@@ -366,41 +362,19 @@ async fn wait_or_refresh(delay: Duration, refresh_rx: &mut mpsc::Receiver<()>) {
 /// A reconnect must never dial faster than the backoff schedule: the GUI drives
 /// `refresh_all` on its own timer, which is indistinguishable from a keypress
 /// here and would otherwise retry a failing host every few seconds.
-async fn wait_backoff(
-    delay: Duration,
-    refresh_rx: &mut mpsc::Receiver<()>,
-    retry_rx: Option<&mut mpsc::Receiver<()>>,
-) {
+async fn wait_backoff(delay: Duration, refresh_rx: &mut mpsc::Receiver<()>) {
     let sleep = tokio::time::sleep(delay);
     tokio::pin!(sleep);
-    if let Some(retry_rx) = retry_rx {
-        loop {
-            tokio::select! {
-                () = &mut sleep => return,
-                signal = refresh_rx.recv() => {
-                    if signal.is_none() {
-                        sleep.await;
-                        return;
-                    }
-                }
-                signal = retry_rx.recv() => {
-                    if signal.is_some() {
-                        return;
-                    }
+    loop {
+        tokio::select! {
+            () = &mut sleep => return,
+            signal = refresh_rx.recv() => {
+                // `None` means every sender is gone and `recv` will return it
+                // immediately from now on — stop selecting on it, or the task
+                // spins without ever yielding.
+                if signal.is_none() {
                     sleep.await;
                     return;
-                }
-            }
-        }
-    } else {
-        loop {
-            tokio::select! {
-                () = &mut sleep => return,
-                signal = refresh_rx.recv() => {
-                    if signal.is_none() {
-                        sleep.await;
-                        return;
-                    }
                 }
             }
         }
@@ -607,7 +581,7 @@ mod tests {
         }
 
         let start = tokio::time::Instant::now();
-        wait_backoff(Duration::from_secs(300), &mut rx, None).await;
+        wait_backoff(Duration::from_secs(300), &mut rx).await;
 
         assert_eq!(start.elapsed(), Duration::from_secs(300));
     }
@@ -618,7 +592,7 @@ mod tests {
         drop(tx);
 
         let start = tokio::time::Instant::now();
-        wait_backoff(Duration::from_secs(300), &mut rx, None).await;
+        wait_backoff(Duration::from_secs(300), &mut rx).await;
 
         assert_eq!(start.elapsed(), Duration::from_secs(300));
     }

@@ -342,13 +342,12 @@ impl App {
                                 .await;
                         }
                         Err(e) => {
-                            if let Some((host_name, key_path)) =
-                                omnyssh_core::ssh::session::passphrase_required(&e)
+                            if let Some(path) = omnyssh_core::ssh::session::passphrase_required(&e)
                             {
                                 let _ = tx
                                     .send(CoreEvent::KeyPassphraseRequired {
-                                        host_name,
-                                        key_path,
+                                        host_name: host_clone.name.clone(),
+                                        key_path: path.to_owned(),
                                     })
                                     .await;
                             }

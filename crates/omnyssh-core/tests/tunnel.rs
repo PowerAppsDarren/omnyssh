@@ -515,6 +515,62 @@ async fn a_server_that_hangs_up_after_a_rejection_is_not_redialled() {
     assert_eq!(link.dials(), 1, "a refused login must not be retried");
 }
 
+/// A locked key is not a refusal: the tunnel asks for the passphrase once and
+/// holds its ports without redialling until the key is unlocked.
+#[tokio::test]
+async fn a_locked_key_waits_for_its_passphrase() {
+    isolate_home();
+    let (server, _) = ssh_server().await;
+    let link = Link::to(server).await;
+    let local = free_port().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = dir.path().join("locked");
+    let key_path = key.to_str().expect("utf-8 path").to_string();
+    let keygen = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-f", &key_path, "-N", "sesame"])
+        .status()
+        .expect("this test needs ssh-keygen on PATH");
+    assert!(keygen.success());
+
+    let (mut tunnels, mut statuses) = Statuses::manager();
+    let mut locked = host("locked", link.port, "wrong", vec![forward(local, 9)]);
+    locked.identity_file = Some(key_path.clone());
+    tunnels.start(locked);
+
+    assert_eq!(statuses.next("locked").await, TunnelStatus::Connecting);
+    match statuses.next("locked").await {
+        TunnelStatus::Retrying(reason) => {
+            assert!(reason.contains("requires a passphrase"), "{reason}")
+        }
+        other => panic!("expected Retrying, got {other:?}"),
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(link.dials(), 1, "a locked key must not be redialled");
+    assert!(
+        is_bound(local).await,
+        "the tunnel keeps its ports while it waits"
+    );
+    let canonical = std::fs::canonicalize(&key).expect("canonical path");
+    match statuses.rx.try_recv() {
+        Ok(CoreEvent::KeyPassphraseRequired {
+            host_name,
+            key_path,
+        }) => {
+            assert_eq!(host_name, "locked");
+            assert_eq!(key_path, canonical.to_string_lossy());
+        }
+        other => panic!("expected a passphrase prompt, got {other:?}"),
+    }
+    assert!(statuses.rx.try_recv().is_err(), "the prompt is sent once");
+
+    omnyssh_core::ssh::identity::unlock(&key_path, "sesame").expect("unlock");
+    // The server turns every key down and hangs up, so this dial is refused.
+    statuses
+        .until("locked", |s| matches!(s, TunnelStatus::Failed(_)))
+        .await;
+    assert_eq!(link.dials(), 2, "the unlock redials at once");
+}
+
 /// A host key that no longer matches `known_hosts` is refused for good.
 #[tokio::test]
 async fn a_changed_host_key_fails_without_a_retry() {

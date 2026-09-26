@@ -298,11 +298,7 @@ impl App {
                 .context("passphrase unlock task panicked")?;
                 match result {
                     Ok(()) => {
-                        if let Some(mgr) = &self.poll_manager {
-                            mgr.retry_now();
-                        }
-                        self.view.status_message =
-                            Some(format!("Unlocked {}. Reconnecting…", prompt.key_path));
+                        self.view.status_message = Some(format!("Unlocked {}", prompt.key_path));
                     }
                     Err(e) => {
                         prompt.error = Some(e.to_string());
