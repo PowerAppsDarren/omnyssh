@@ -16,6 +16,7 @@ function host(name: string, extra: Partial<HostDto> = {}): HostDto {
     monitoring: 'ssh',
     localForwards: [],
     tunnelAutostart: false,
+    forwardAgent: false,
     ...extra
   };
 }

@@ -58,8 +58,14 @@ pub(crate) struct KnownHostsHandler {
     no_method: Arc<AtomicBool>,
     /// The fingerprint of a host key first seen, and recorded, on this connection.
     new_key: Arc<Mutex<Option<String>>>,
-    /// Dropped with the handler when the session ends, which wakes [`Link::ended`].
-    _ended: watch::Sender<()>,
+    /// Whether this connection lends the local agent (`ssh -A`). Only a
+    /// terminal's target does; any other gets its agent channels closed.
+    lends_agent: bool,
+    /// Dropped with the handler when the session ends, which wakes [`Link::ended`]
+    /// and any agent channel still being carried. Only unix lends the agent, so
+    /// elsewhere it is only ever dropped.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    ended: watch::Sender<()>,
 }
 
 /// What a connection's [`KnownHostsHandler`] reports while it runs.
@@ -162,6 +168,59 @@ impl client::Handler for KnownHostsHandler {
                 Err(e)
             }
         }
+    }
+
+    // russh has already confirmed the channel, so refusing means closing it.
+    // Never an Err: that would end the whole connection, terminal and all.
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        if self.lends_agent {
+            // The proxy needs the session loop this callback is holding up.
+            #[cfg(unix)]
+            tokio::spawn(lend_agent(channel, self.ended.subscribe()));
+        } else {
+            // ssh(1) refuses these too: a server that asks for an agent nobody
+            // offered may be after the keys in it.
+            tracing::warn!(host = %self.host, "server opened an agent channel that was not offered; closed it");
+            session.close(channel.id());
+        }
+        Ok(())
+    }
+}
+
+/// Carries one forwarded agent channel to the local agent, as `ssh -A` does, for
+/// no longer than the session lasts: an agent that never answers would otherwise
+/// hold the task and its socket until it quits.
+///
+/// Ends with an EOF, never a close: the server closes once it has seen it, and
+/// a close of ours racing its window adjust would end the whole connection.
+#[cfg(unix)]
+async fn lend_agent(mut channel: russh::Channel<client::Msg>, mut ended: watch::Receiver<()>) {
+    let agent = match std::env::var_os("SSH_AUTH_SOCK") {
+        Some(path) => tokio::net::UnixStream::connect(path).await,
+        None => Err(std::io::ErrorKind::NotFound.into()),
+    };
+    let carried = match agent {
+        Ok(mut agent) => {
+            let writer = channel.make_writer();
+            let mut remote = tokio::io::join(channel.make_reader(), writer);
+            tokio::select! {
+                carried = tokio::io::copy_bidirectional(&mut remote, &mut agent) => {
+                    carried.map(drop)
+                }
+                // The session is gone, and the channel with it.
+                _ = ended.changed() => return,
+            }
+        }
+        Err(e) => Err(e),
+    };
+    // A clean copy has already sent its EOF.
+    if let Err(e) = carried {
+        tracing::debug!(error = %e, "could not lend the SSH agent");
+        let _ = channel.eof().await;
     }
 }
 
@@ -510,18 +569,57 @@ impl SshSession {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Connect to `host`, verify its host key, and authenticate — through the
-/// host's `ProxyJump` chain when it has one.
-///
-/// Shared by [`SshSession::connect`] (metrics/SFTP) and the terminal so every
-/// native SSH path honors the same keys, agent, passwords, known_hosts policy,
-/// and bastions.
+/// host's `ProxyJump` chain when it has one. Everything but the terminal comes
+/// through here: [`SshSession::connect`] (metrics, SFTP, key setup) and tunnels.
 ///
 /// # Errors
 /// Connection timeout (> 10 s per hop), host-key rejection, authentication
 /// failure, or an unresolvable `ProxyJump` chain.
 pub(crate) async fn connect_and_auth(
     host: &Host,
+    passwords: Passwords<'_>,
+) -> anyhow::Result<SshConnection> {
+    connect_chain(host, passwords, false).await
+}
+
+/// [`connect_and_auth`] for an interactive shell, whose target lends the local
+/// agent when `lends_agent` — decided once by the caller, which also offers it.
+/// Bastions never do, as with `ssh -J -A`.
+pub(crate) async fn connect_for_shell(
+    host: &Host,
+    passwords: Passwords<'_>,
+    lends_agent: bool,
+) -> anyhow::Result<SshConnection> {
+    connect_chain(host, passwords, lends_agent).await
+}
+
+/// Whether a terminal to `host` lends the local agent. With no agent running there
+/// is nothing to lend, and offering one anyway would leave the remote shell an
+/// `SSH_AUTH_SOCK` that leads nowhere.
+pub(crate) fn forwards_agent(host: &Host) -> bool {
+    host.forward_agent && agent_running()
+}
+
+/// Whether an agent answers at `SSH_AUTH_SOCK`: the variable outlives an agent that
+/// has stopped. A local connect, so it costs nothing to ask.
+#[cfg(unix)]
+fn agent_running() -> bool {
+    std::env::var_os("SSH_AUTH_SOCK")
+        .is_some_and(|path| std::os::unix::net::UnixStream::connect(path).is_ok())
+}
+
+/// Agent authentication is unix-only, and so is lending the agent.
+#[cfg(not(unix))]
+fn agent_running() -> bool {
+    false
+}
+
+/// Both entry points share it, so every native SSH path honors the same keys,
+/// agent, passwords, known_hosts policy and bastions.
+async fn connect_chain(
+    host: &Host,
     mut passwords: Passwords<'_>,
+    lends_agent: bool,
 ) -> anyhow::Result<SshConnection> {
     let chain = jump_chain(host).await?;
     let config = client_config();
@@ -532,8 +630,8 @@ pub(crate) async fn connect_and_auth(
     for (i, hop) in chain.iter().enumerate() {
         let key = login_key(hop, &chain[..i]);
         let handle = match jumps.last() {
-            None => connect_direct(&config, hop, &key, &mut passwords).await,
-            Some(via) => connect_tunnelled(&config, via, hop, &key, &mut passwords).await,
+            None => connect_direct(&config, hop, &key, &mut passwords, false).await,
+            Some(via) => connect_tunnelled(&config, via, hop, &key, &mut passwords, false).await,
         }
         .map_err(|e| at_hop(e, format!("ProxyJump via '{}' failed", hop.name)))?;
         jumps.push(handle);
@@ -541,10 +639,12 @@ pub(crate) async fn connect_and_auth(
 
     let key = login_key(host, &chain);
     let handle = match (jumps.last(), chain.last()) {
-        (Some(via), Some(last)) => connect_tunnelled(&config, via, host, &key, &mut passwords)
-            .await
-            .map_err(|e| at_hop(e, format!("connecting via '{}' failed", last.name)))?,
-        _ => connect_direct(&config, host, &key, &mut passwords).await?,
+        (Some(via), Some(last)) => {
+            connect_tunnelled(&config, via, host, &key, &mut passwords, lends_agent)
+                .await
+                .map_err(|e| at_hop(e, format!("connecting via '{}' failed", last.name)))?
+        }
+        _ => connect_direct(&config, host, &key, &mut passwords, lends_agent).await?,
     };
 
     Ok(SshConnection {
@@ -620,8 +720,9 @@ async fn connect_direct(
     host: &Host,
     key: &str,
     passwords: &mut Passwords<'_>,
+    lends_agent: bool,
 ) -> anyhow::Result<Handle<KnownHostsHandler>> {
-    let dial = || dial_direct(config, host);
+    let dial = || dial_direct(config, host, lends_agent);
     finish_auth(dial().await?, host, key, dial, passwords).await
 }
 
@@ -634,8 +735,9 @@ async fn connect_tunnelled(
     host: &Host,
     key: &str,
     passwords: &mut Passwords<'_>,
+    lends_agent: bool,
 ) -> anyhow::Result<Handle<KnownHostsHandler>> {
-    let dial = || dial_tunnelled(config, via, host);
+    let dial = || dial_tunnelled(config, via, host, lends_agent);
     finish_auth(dial().await?, host, key, dial, passwords).await
 }
 
@@ -671,9 +773,13 @@ impl Dialed {
 }
 
 /// Opens a TCP connection to `host` and verifies its host key.
-async fn dial_direct(config: &Arc<client::Config>, host: &Host) -> anyhow::Result<Dialed> {
+async fn dial_direct(
+    config: &Arc<client::Config>,
+    host: &Host,
+    lends_agent: bool,
+) -> anyhow::Result<Dialed> {
     let addr = format!("{}:{}", host.hostname, host.port);
-    let (handler, link) = known_hosts_handler(host);
+    let (handler, link) = known_hosts_handler(host, lends_agent);
     let handle = time::timeout(
         CONNECT_TIMEOUT,
         client::connect(Arc::clone(config), addr, handler),
@@ -695,6 +801,7 @@ async fn dial_tunnelled(
     config: &Arc<client::Config>,
     via: &Handle<KnownHostsHandler>,
     host: &Host,
+    lends_agent: bool,
 ) -> anyhow::Result<Dialed> {
     // The originator address is informational; ssh(1) reports the loopback it
     // forwards from, and servers only log it.
@@ -710,7 +817,7 @@ async fn dial_tunnelled(
     .map_err(|_| anyhow!("SSH connection timed out (10 s)"))?
     .with_context(|| format!("open tunnel to {}:{}", host.hostname, host.port))?;
 
-    let (handler, link) = known_hosts_handler(host);
+    let (handler, link) = known_hosts_handler(host, lends_agent);
     let handle = time::timeout(
         CONNECT_TIMEOUT,
         client::connect_stream(Arc::clone(config), channel.into_stream(), handler),
@@ -729,7 +836,7 @@ async fn dial_tunnelled(
 /// The host-key verifier for `host`, and what it will report about the
 /// connection. The lookup uses the target's own hostname/port even over a
 /// tunnel, so `known_hosts` entries match what an `ssh -J` would record.
-fn known_hosts_handler(host: &Host) -> (KnownHostsHandler, Link) {
+fn known_hosts_handler(host: &Host, lends_agent: bool) -> (KnownHostsHandler, Link) {
     let (ended_tx, ended) = watch::channel(());
     let link = Link {
         hung_up: Arc::new(AtomicBool::new(false)),
@@ -743,7 +850,8 @@ fn known_hosts_handler(host: &Host) -> (KnownHostsHandler, Link) {
         hung_up: Arc::clone(&link.hung_up),
         no_method: Arc::clone(&link.no_method),
         new_key: Arc::clone(&link.new_key),
-        _ended: ended_tx,
+        lends_agent,
+        ended: ended_tx,
     };
     (handler, link)
 }

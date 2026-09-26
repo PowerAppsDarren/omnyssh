@@ -22,7 +22,9 @@ use crate::event::CoreEvent;
 use crate::ssh::client::Host;
 use crate::ssh::identity;
 use crate::ssh::password::{AskPassword, NoAnswer, Prompt};
-use crate::ssh::session::{connect_and_auth, passphrase_required, Passwords, SshConnection};
+use crate::ssh::session::{
+    connect_for_shell, forwards_agent, passphrase_required, Passwords, SshConnection,
+};
 
 /// Stable numeric identifier for a PTY session (mirrors [`crate::event::SessionId`]).
 pub type SessionId = u64;
@@ -143,6 +145,7 @@ async fn forward_locale(channel: &russh::Channel<russh::client::Msg>) {
 /// Opens a channel and requests a remote PTY + shell (the `ssh -t` equivalent).
 async fn open_shell(
     handle: &SshConnection,
+    lends_agent: bool,
     cols: u16,
     rows: u16,
 ) -> Result<russh::Channel<russh::client::Msg>> {
@@ -152,6 +155,13 @@ async fn open_shell(
         .context("open terminal channel")?;
     // Sent before the shell starts so it inherits the locale.
     forward_locale(&channel).await;
+    // Likewise `SSH_AUTH_SOCK`.
+    if lends_agent {
+        channel
+            .agent_forward(false)
+            .await
+            .context("request agent forwarding")?;
+    }
     // IUTF8 tells the server's line discipline that input is UTF-8, so multibyte
     // (e.g. Cyrillic) editing works in canonical mode. Unknown modes are ignored.
     channel
@@ -198,7 +208,10 @@ async fn session_task(
         asked: false,
         closed: false,
     };
-    let connected = connect_and_auth(&host, Passwords::Ask(&mut prompt)).await;
+    // Asked once: the connection that takes agent channels and the request that
+    // invites them must agree, even if the agent comes or goes during the login.
+    let lends_agent = forwards_agent(&host);
+    let connected = connect_for_shell(&host, Passwords::Ask(&mut prompt), lends_agent).await;
     // Keys typed past a password prompt must not reach the new shell (a
     // password entered twice would be echoed there). Without a prompt they are
     // the user's first command, and stay queued.
@@ -212,7 +225,9 @@ async fn session_task(
         return;
     }
     let result = match connected {
-        Ok(handle) => open_shell(&handle, cols, rows).await.map(|ch| (handle, ch)),
+        Ok(handle) => open_shell(&handle, lends_agent, cols, rows)
+            .await
+            .map(|ch| (handle, ch)),
         Err(e) => Err(e),
     };
     let (_handle, mut channel) = match result {

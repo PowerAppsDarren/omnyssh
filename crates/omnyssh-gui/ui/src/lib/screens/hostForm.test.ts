@@ -18,6 +18,7 @@ function host(partial: Partial<HostDto>): HostDto {
     monitoring: 'ssh',
     localForwards: [],
     tunnelAutostart: false,
+    forwardAgent: false,
     ...partial
   };
 }
@@ -131,8 +132,21 @@ describe('formFromHost', () => {
       monitoring: 'ssh',
       localForwards: [],
       tunnelAutostart: false,
+      forwardAgent: false,
       monitorPort: undefined
     });
+  });
+});
+
+describe('formToInput — agent forwarding', () => {
+  it('sends the switch as set, with no forwards needed', () => {
+    const r = formToInput(fields({ name: 'lab', hostname: 'h', forwardAgent: true }));
+    expect(r.ok && r.input.forwardAgent).toBe(true);
+  });
+
+  it('seeds the edit form from the host, an ssh-config import included', () => {
+    expect(formFromHost(host({ source: 'sshConfig', forwardAgent: true })).forwardAgent).toBe(true);
+    expect(emptyForm().forwardAgent).toBe(false);
   });
 });
 

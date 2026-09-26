@@ -1893,12 +1893,12 @@ mod tests {
 
     #[test]
     fn the_form_window_scrolls_only_past_the_last_slot() {
-        // 11 fields at the 80x24 minimum leave room for 9.
-        assert_eq!(field_window(11, 0, 9), 0..9);
-        assert_eq!(field_window(11, 8, 9), 0..9);
-        assert_eq!(field_window(11, 9, 9), 1..10);
-        assert_eq!(field_window(11, 10, 9), 2..11);
-        assert_eq!(field_window(11, 10, 20), 0..11);
+        // 12 fields at the 80x24 minimum leave room for 9.
+        assert_eq!(field_window(12, 0, 9), 0..9);
+        assert_eq!(field_window(12, 8, 9), 0..9);
+        assert_eq!(field_window(12, 9, 9), 1..10);
+        assert_eq!(field_window(12, 11, 9), 3..12);
+        assert_eq!(field_window(12, 11, 20), 0..12);
     }
 
     #[test]

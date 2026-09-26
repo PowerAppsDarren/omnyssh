@@ -9,6 +9,7 @@ import type {
   HostInputDto,
   SnippetDto,
   TerminalBytes,
+  TraySupportDto,
   UpdateConfigDto,
   UpdateInfoDto
 } from '$lib/bindings';
@@ -189,6 +190,23 @@ export async function tunnelStart(hostName: string): Promise<void> {
 export async function tunnelStop(hostName: string): Promise<void> {
   const res = await commands.tunnelStop(hostName);
   if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Paste into the focused terminal through the webview's own paste, for the Ctrl+Shift+V
+ *  WebKitGTK misses under a non-Latin layout. */
+export async function terminalPaste(): Promise<void> {
+  const res = await commands.terminalPaste();
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
+/** Minimize and close to the tray, or not; resolves to what this desktop allows. */
+export async function setTrayBehavior(
+  minimizeToTray: boolean,
+  closeToTray: boolean
+): Promise<TraySupportDto> {
+  const res = await commands.setTrayBehavior(minimizeToTray, closeToTray);
+  if (res.status === 'error') throw new Error(res.error.message);
+  return res.data;
 }
 
 /** Force an immediate metric poll of every host (tech-gui.md §4.2). */

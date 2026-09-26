@@ -158,6 +158,20 @@ async terminalClose(sessionId: number) : Promise<Result<null, CommandError>> {
 }
 },
 /**
+ * Paste into the focused terminal the way the webview's own Ctrl+Shift+V does.
+ * WebKitGTK binds that chord by its key symbol, so under a non-Latin layout it never
+ * fires and the frontend asks here instead. The other webviews bind it by the
+ * physical key and never need this.
+ */
+async terminalPaste() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("terminal_paste") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Open an SFTP session for `host_name` (tech-gui.md §4.2). Awaits the core connect,
  * registers the manager under a fresh public id, and spawns the per-session
  * forwarder; the `sftp-connected` ack then arrives stamped with that id (§3.4).
@@ -361,6 +375,19 @@ async answerPassword(requestId: number, password: string | null) : Promise<Resul
 }
 },
 /**
+ * Minimize and close to the tray, or not. Resolves to what this desktop allows —
+ * a tray at all, and minimizing into it; what it does not, the window keeps doing
+ * as before.
+ */
+async setTrayBehavior(minimizeToTray: boolean, closeToTray: boolean) : Promise<Result<TraySupportDto, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_tray_behavior", { minimizeToTray, closeToTray }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Query GitHub for a newer release (tech-gui.md §4.2). `None` means up to date — the
  * core swallows network/parse errors so a failed check never disrupts.
  */
@@ -493,7 +520,7 @@ export type FilePreview = { sessionId: number; path: string; content: string }
  * (tech-gui.md §3.4). `hasKey` reports whether an identity file is configured;
  * the key path itself never crosses the boundary.
  */
-export type HostDto = { name: string; hostname: string; user: string; port: number; tags: string[]; notes?: string | null; source: HostSourceDto; hasKey: boolean; passwordAuthDisabled?: boolean | null; monitoring: MonitorModeDto; monitorPort?: number | null; localForwards: LocalForwardDto[]; tunnelAutostart: boolean }
+export type HostDto = { name: string; hostname: string; user: string; port: number; tags: string[]; notes?: string | null; source: HostSourceDto; hasKey: boolean; passwordAuthDisabled?: boolean | null; monitoring: MonitorModeDto; monitorPort?: number | null; localForwards: LocalForwardDto[]; tunnelAutostart: boolean; forwardAgent: boolean }
 /**
  * Inbound host form payload for `save_host` (tech-gui.md §4.1, Stage 4.1). Always
  * builds a **manual** `Host`: editing an SSH-config import saves a copy that shadows
@@ -502,7 +529,7 @@ export type HostDto = { name: string; hostname: string; user: string; port: numb
  * travel back out: the outbound `HostDto` omits both (§3.4). Inbound only, so it
  * derives `Deserialize` (not `Serialize`).
  */
-export type HostInputDto = { name: string; hostname: string; user: string; port: number; identityFile?: string | null; password?: string | null; proxyJump?: string | null; tags: string[]; notes?: string | null; monitoring?: MonitorModeDto | null; monitorPort?: number | null; localForwards: LocalForwardDto[]; tunnelAutostart: boolean }
+export type HostInputDto = { name: string; hostname: string; user: string; port: number; identityFile?: string | null; password?: string | null; proxyJump?: string | null; tags: string[]; notes?: string | null; monitoring?: MonitorModeDto | null; monitorPort?: number | null; localForwards: LocalForwardDto[]; tunnelAutostart: boolean; forwardAgent: boolean }
 /**
  * Host origin, mirrors `omnyssh_core::ssh::client::HostSource`.
  */
@@ -669,6 +696,11 @@ export type TransferProgress = TransferProgressDto
  * remote size could not be determined).
  */
 export type TransferProgressDto = { sessionId: number; transferId: number; done: number; total: number }
+/**
+ * What this desktop allows the tray (tech-gui.md §4.2 `set_tray_behavior`): an icon
+ * at all, and hiding a minimized window into it.
+ */
+export type TraySupportDto = { available: boolean; minimize: boolean }
 /**
  * A host's port-forwarding tunnel changed state (tech-gui.md §4.3).
  */

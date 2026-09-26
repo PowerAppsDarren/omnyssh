@@ -28,6 +28,7 @@ export interface HostFormFields {
   monitorPort: string;
   forwards: ForwardRow[];
   tunnelAutostart: boolean;
+  forwardAgent: boolean;
 }
 
 export function emptyForm(): HostFormFields {
@@ -45,7 +46,8 @@ export function emptyForm(): HostFormFields {
     monitoring: 'ssh',
     monitorPort: '',
     forwards: [],
-    tunnelAutostart: false
+    tunnelAutostart: false,
+    forwardAgent: false
   };
 }
 
@@ -80,7 +82,8 @@ export function formFromHost(h: HostDto): HostFormFields {
     monitoring: h.monitoring,
     monitorPort: h.monitorPort == null ? '' : String(h.monitorPort),
     forwards: h.localForwards.map(rowFromForward),
-    tunnelAutostart: h.tunnelAutostart
+    tunnelAutostart: h.tunnelAutostart,
+    forwardAgent: h.forwardAgent
   };
 }
 
@@ -203,7 +206,8 @@ export function formToInput(f: HostFormFields): HostFormResult {
       monitorPort,
       localForwards,
       // The switch hides with the last row; a flag nobody can see must not linger.
-      tunnelAutostart: f.tunnelAutostart && localForwards.length > 0
+      tunnelAutostart: f.tunnelAutostart && localForwards.length > 0,
+      forwardAgent: f.forwardAgent
     }
   };
 }
