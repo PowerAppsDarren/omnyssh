@@ -7,6 +7,13 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## Unreleased
+
+### Features
+- **The desktop app says which version it is.** Settings had no version anywhere, and a bug report for it has to quote one: the only way to get it was to leave the app and run `omny --version` in the terminal app. An About section in Settings now names the installed build, taken from the same version the terminal app prints, so the two cannot disagree. The number is shown whether or not an update is pending, since it is what a report needs before deciding to install one.
+
+---
+
 ## 1.1.4 — 2026-09-28
 
 ### Bug Fixes

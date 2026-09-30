@@ -3,6 +3,8 @@
   // (§5.1), the metric auto-refresh interval and the tray (tauri-plugin-store UI prefs),
   // and the update preferences (`check_on_startup`) + a manual update check. Update prefs
   // persist to the shared config via `save_update_config`; the rest are frontend prefs.
+  // The installed version rides along with the update preferences (issue 125): it is the
+  // one number a bug report has to quote, and the only place it is ever shown.
   import { onMount } from 'svelte';
   import type { UpdateConfigDto } from '$lib/bindings';
   import { Surface, Icon } from '$lib/theme';
@@ -14,11 +16,13 @@
   import { offerUpdate } from '$lib/stores/update';
   import { lastError } from '$lib/stores/notifications';
   import { checkUpdate, loadUpdateConfig, saveUpdateConfig } from '$lib/ipc/commands';
+  import { installedVersion } from '$lib/ipc/appInfo';
 
   const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
   const formatInterval = (secs: number): string => (secs < 60 ? `${secs}s` : `${secs / 60}m`);
 
   let updateConfig = $state<UpdateConfigDto | null>(null);
+  let version = $state<string | null>(null);
   type CheckState =
     | { kind: 'idle' }
     | { kind: 'checking' }
@@ -28,6 +32,15 @@
   let check = $state<CheckState>({ kind: 'idle' });
 
   onMount(async () => {
+    // Read apart from the update config, so a version that will not read leaves the rest
+    // of the screen working: the About row says "unavailable" and the update preferences
+    // still load. Nothing is raised — the app is running, so it has a version; this is
+    // only the case where the call itself is refused.
+    try {
+      version = await installedVersion();
+    } catch {
+      version = null;
+    }
     try {
       updateConfig = await loadUpdateConfig();
     } catch (e) {
@@ -248,6 +261,23 @@
             Check now
           </button>
         </div>
+      </div>
+    </Surface>
+
+    <!-- About: which build this is. A bug report has to name the version, and the
+         terminal app's `omny --version` is not reachable from the desktop app. The
+         check above already knows the answer is current; the version itself is what a
+         user needs before pressing it. -->
+    <Surface class="p-5">
+      <h2 class="mb-3 text-sm font-semibold">About</h2>
+      <div class="flex items-center justify-between gap-4">
+        <div class="min-w-0">
+          <p class="text-sm">OmnySSH Desktop</p>
+          <p class="text-xs text-muted">Free and open source, with no paid tier.</p>
+        </div>
+        <p class="shrink-0 text-sm tabular-nums text-muted">
+          {version ? `Version ${version}` : 'Version unavailable'}
+        </p>
       </div>
     </Surface>
   </div>
