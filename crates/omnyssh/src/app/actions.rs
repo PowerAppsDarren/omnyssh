@@ -90,9 +90,33 @@ impl App {
                 self.view.host_list.tag_popup_selected = 0;
             }
 
-            AppAction::TagFilterSelected(tag_opt) => {
-                self.view.host_list.tag_filter = tag_opt;
-                self.view.host_list.tag_popup_open = false;
+            AppAction::TagFilterToggled(tag) => {
+                let filter = &mut self.view.host_list.tag_filter;
+                if !filter.remove(&tag) {
+                    filter.insert(tag);
+                }
+                let state = self.state.read().await;
+                self.view.host_list.rebuild_filter(
+                    &state.hosts,
+                    &state.metrics,
+                    &state.connection_statuses,
+                );
+            }
+
+            AppAction::TagFilterCleared => {
+                self.view.host_list.tag_filter.clear();
+                let state = self.state.read().await;
+                self.view.host_list.rebuild_filter(
+                    &state.hosts,
+                    &state.metrics,
+                    &state.connection_statuses,
+                );
+            }
+
+            AppAction::ToggleGroupByTag => {
+                self.view.host_list.group_by_tag = !self.view.host_list.group_by_tag;
+                // Positions change completely; restart from the first card.
+                self.view.host_list.selected = 0;
                 let state = self.state.read().await;
                 self.view.host_list.rebuild_filter(
                     &state.hosts,
@@ -111,17 +135,7 @@ impl App {
                     let w = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
                     ((w + GAP) / (CARD_W + GAP)).max(1) as usize
                 };
-                let len = self.view.host_list.filtered_indices.len();
-                if len == 0 {
-                    return Ok(());
-                }
-                let sel = self.view.host_list.selected;
-                self.view.host_list.selected = match dir {
-                    NavDir::Up => sel.saturating_sub(approx_cols),
-                    NavDir::Down => (sel + approx_cols).min(len - 1),
-                    NavDir::Left => sel.saturating_sub(1),
-                    NavDir::Right => (sel + 1).min(len - 1),
-                };
+                self.view.host_list.navigate(&dir, approx_cols);
             }
 
             // ---------------------------------------------------------------

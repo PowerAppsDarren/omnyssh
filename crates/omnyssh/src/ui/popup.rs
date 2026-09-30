@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use ratatui::{
@@ -140,6 +141,10 @@ pub fn render_help(frame: &mut Frame, theme: &Theme) {
     col1_lines.push(Line::from(vec![
         Span::styled("  t", key_style),
         Span::styled("        Filter tags", desc_style),
+    ]));
+    col1_lines.push(Line::from(vec![
+        Span::styled("  g", key_style),
+        Span::styled("        Group by tag", desc_style),
     ]));
     col1_lines.push(Line::from(vec![
         Span::styled("  /", key_style),
@@ -491,20 +496,20 @@ fn field_window(count: usize, focused: usize, capacity: usize) -> Range<usize> {
 /// Renders the tag filter picker popup.
 ///
 /// `selected_idx` is 0-based within the list (0 = "All", 1+ = tag entries).
-/// `active_filter` is the currently active tag filter (highlighted in title).
+/// `active_filter` holds the selected tags, shown as checked entries.
 pub fn render_tag_filter_popup(
     frame: &mut Frame,
     tags: &[String],
     selected_idx: usize,
-    active_filter: Option<&str>,
+    active_filter: &BTreeSet<String>,
     theme: &Theme,
 ) {
     let area = centred_rect(40, 60, frame.area());
     frame.render_widget(Clear, area);
 
-    let title = match active_filter {
-        Some(t) => format!(" Filter by tag [{}] ", t),
-        None => " Filter by tag ".to_string(),
+    let title = match active_filter.len() {
+        0 => " Filter by tag ".to_string(),
+        n => format!(" Filter by tag [{} selected] ", n),
     };
 
     let block = Block::default()
@@ -529,8 +534,15 @@ pub fn render_tag_filter_popup(
     ]))];
 
     for tag in tags {
+        let checked = active_filter.contains(tag);
+        let (mark, mark_style) = if checked {
+            ("[x] ", Style::default().fg(theme.text_success))
+        } else {
+            ("[ ] ", Style::default().fg(theme.text_muted))
+        };
         items.push(ListItem::new(Line::from(vec![
             Span::styled("  ", Style::default()),
+            Span::styled(mark, mark_style),
             Span::styled(tag.as_str(), Style::default().fg(theme.text_primary)),
         ])));
     }
@@ -558,12 +570,12 @@ pub fn render_tag_filter_popup(
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    "Enter",
+                    "Space",
                     Style::default()
                         .fg(theme.text_success)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(":select  ", Style::default().fg(theme.text_muted)),
+                Span::styled(":toggle  ", Style::default().fg(theme.text_muted)),
                 Span::styled(
                     "Esc",
                     Style::default()

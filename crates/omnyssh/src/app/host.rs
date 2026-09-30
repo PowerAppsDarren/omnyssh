@@ -1,6 +1,8 @@
 //! Host list state: add/edit form, list view, popups, and the `App` methods
 //! that create, update, delete, and connect to hosts.
 
+use std::collections::BTreeSet;
+use std::ops::Range;
 use std::time::Duration;
 
 use super::*;
@@ -356,20 +358,116 @@ pub struct HostListView {
     // Dashboard additions -----------
     /// Active sort order for the dashboard grid.
     pub sort_order: SortOrder,
-    /// Active tag filter. `None` = show all hosts.
-    pub tag_filter: Option<String>,
+    /// Active tag filter: a host is shown when it carries any of these tags.
+    /// Empty = show all hosts.
+    pub tag_filter: BTreeSet<String>,
     /// Whether the tag-filter popup is open.
     pub tag_popup_open: bool,
     /// Selected index within the tag picker popup.
     pub tag_popup_selected: usize,
     /// All unique tags across all hosts (used by the tag picker popup).
     pub available_tags: Vec<String>,
+    /// When true the grid is split into one section per tag. A host with
+    /// several tags appears in several sections, so `filtered_indices` may
+    /// contain the same host index more than once.
+    pub group_by_tag: bool,
+    /// Sections of `filtered_indices` when `group_by_tag` is on (empty otherwise).
+    pub groups: Vec<GroupHeader>,
+}
+
+/// One section of the grouped dashboard grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupHeader {
+    /// Tag name, or `None` for the "Untagged" section.
+    pub label: Option<String>,
+    /// First position of the section within `filtered_indices`.
+    pub start: usize,
+    /// Number of cards in the section.
+    pub len: usize,
+}
+
+impl GroupHeader {
+    /// Display name of the section.
+    pub fn title(&self) -> &str {
+        self.label.as_deref().unwrap_or("Untagged")
+    }
+}
+
+/// One visual row of the dashboard grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GridRow {
+    /// Section header; the value indexes `HostListView::groups`.
+    Header(usize),
+    /// A row of cards; the range indexes `filtered_indices`.
+    Cards(Range<usize>),
 }
 
 impl HostListView {
     /// Returns the index into `AppState.hosts` for the selected filtered row.
     pub fn selected_host_idx(&self) -> Option<usize> {
         self.filtered_indices.get(self.selected).copied()
+    }
+
+    /// Lays the filtered hosts out in rows of at most `cols` cards, with a
+    /// header row before each section when grouping is on.
+    pub fn grid_rows(&self, cols: usize) -> Vec<GridRow> {
+        let cols = cols.max(1);
+        let chunk = |start: usize, len: usize, rows: &mut Vec<GridRow>| {
+            let end = start + len;
+            let mut s = start;
+            while s < end {
+                let e = (s + cols).min(end);
+                rows.push(GridRow::Cards(s..e));
+                s = e;
+            }
+        };
+        let mut rows = Vec::new();
+        if self.group_by_tag {
+            for (g, group) in self.groups.iter().enumerate() {
+                rows.push(GridRow::Header(g));
+                chunk(group.start, group.len, &mut rows);
+            }
+        } else {
+            chunk(0, self.filtered_indices.len(), &mut rows);
+        }
+        rows
+    }
+
+    /// Moves the selection one step in `dir` over a grid of `cols` columns.
+    /// Up/down jump to the same column of the previous/next card row, across
+    /// section headers, clamping to shorter rows.
+    pub fn navigate(&mut self, dir: &NavDir, cols: usize) {
+        let len = self.filtered_indices.len();
+        if len == 0 {
+            return;
+        }
+        let sel = self.selected.min(len - 1);
+        self.selected = match dir {
+            NavDir::Left => sel.saturating_sub(1),
+            NavDir::Right => (sel + 1).min(len - 1),
+            NavDir::Up | NavDir::Down => {
+                let rows: Vec<Range<usize>> = self
+                    .grid_rows(cols)
+                    .into_iter()
+                    .filter_map(|r| match r {
+                        GridRow::Cards(range) => Some(range),
+                        GridRow::Header(_) => None,
+                    })
+                    .collect();
+                let Some(cur) = rows.iter().position(|r| r.contains(&sel)) else {
+                    return;
+                };
+                let col = sel - rows[cur].start;
+                let target = match dir {
+                    NavDir::Up => cur.checked_sub(1),
+                    _ => Some(cur + 1).filter(|&t| t < rows.len()),
+                };
+                match target.and_then(|t| rows.get(t)) {
+                    Some(row) => (row.start + col).min(row.end - 1),
+                    None => sel,
+                }
+            }
+        };
     }
 
     /// Rebuilds `filtered_indices` applying text search, tag filter, and
@@ -392,10 +490,11 @@ impl HostListView {
         // removal that happened before rebuild_filter was called.
         indices.retain(|&i| i < hosts.len());
 
-        // 2. Tag filter.
-        if let Some(tag) = &self.tag_filter {
-            let tag = tag.clone();
-            indices.retain(|&i| hosts[i].tags.contains(&tag));
+        // 2. Tag filter (any selected tag matches). Tags that no host carries
+        // any more are dropped so a stale filter cannot hide everything.
+        self.tag_filter.retain(|t| hosts.iter().any(|h| h.tags.contains(t)));
+        if !self.tag_filter.is_empty() {
+            indices.retain(|&i| hosts[i].tags.iter().any(|t| self.tag_filter.contains(t)));
         }
 
         // 3. Sort.
@@ -436,6 +535,48 @@ impl HostListView {
                     sa.cmp(&sb)
                 });
             }
+        }
+
+        // 4. Group by tag: expand into sections, keeping the sort order
+        // inside each section.
+        self.groups.clear();
+        if self.group_by_tag {
+            let mut labels: Vec<&String> = indices
+                .iter()
+                .flat_map(|&i| hosts[i].tags.iter())
+                .filter(|t| self.tag_filter.is_empty() || self.tag_filter.contains(*t))
+                .collect();
+            labels.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
+            labels.dedup();
+
+            let mut grouped = Vec::with_capacity(indices.len());
+            let mut push_group =
+                |label: Option<String>, members: Vec<usize>, groups: &mut Vec<GroupHeader>| {
+                    if members.is_empty() {
+                        return;
+                    }
+                    groups.push(GroupHeader {
+                        label,
+                        start: grouped.len(),
+                        len: members.len(),
+                    });
+                    grouped.extend(members);
+                };
+            for label in labels {
+                let members = indices
+                    .iter()
+                    .copied()
+                    .filter(|&i| hosts[i].tags.contains(label))
+                    .collect();
+                push_group(Some(label.clone()), members, &mut self.groups);
+            }
+            let untagged = indices
+                .iter()
+                .copied()
+                .filter(|&i| hosts[i].tags.is_empty())
+                .collect();
+            push_group(None, untagged, &mut self.groups);
+            indices = grouped;
         }
 
         self.filtered_indices = indices;
@@ -1326,11 +1467,210 @@ mod tests {
             host("b", "2", &["dev"], None),
         ];
         let mut view = HostListView {
-            tag_filter: Some("prod".to_string()),
+            tag_filter: tag_set(&["prod"]),
             ..Default::default()
         };
         view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
         assert_eq!(filtered_names(&view, &hosts), ["a"]);
+    }
+
+    fn tag_set(tags: &[&str]) -> BTreeSet<String> {
+        tags.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn rebuild_multi_tag_filter_matches_any_selected_tag() {
+        let hosts = [
+            host("a", "1", &["prod"], None),
+            host("b", "2", &["dev"], None),
+            host("c", "3", &["staging", "prod"], None),
+            host("d", "4", &[], None),
+        ];
+        let mut view = HostListView {
+            tag_filter: tag_set(&["prod", "dev"]),
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(filtered_names(&view, &hosts), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn rebuild_drops_tags_no_host_carries() {
+        let hosts = [host("a", "1", &["prod"], None), host("b", "2", &[], None)];
+        let mut view = HostListView {
+            tag_filter: tag_set(&["gone"]),
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert!(view.tag_filter.is_empty());
+        assert_eq!(view.filtered_indices.len(), 2);
+    }
+
+    fn group_titles(view: &HostListView) -> Vec<(String, usize)> {
+        view.groups
+            .iter()
+            .map(|g| (g.title().to_string(), g.len))
+            .collect()
+    }
+
+    #[test]
+    fn rebuild_group_by_tag_sections_sorted_with_untagged_last() {
+        let hosts = [
+            host("web", "1", &["prod", "Web"], None),
+            host("db", "2", &["prod"], None),
+            host("lab", "3", &[], None),
+            host("dev1", "4", &["dev"], None),
+        ];
+        let mut view = HostListView {
+            group_by_tag: true,
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(
+            group_titles(&view),
+            [
+                ("dev".to_string(), 1),
+                ("prod".to_string(), 2),
+                ("Web".to_string(), 1),
+                ("Untagged".to_string(), 1),
+            ]
+        );
+        // "web" appears in both "prod" and "Web"; sections keep name order.
+        assert_eq!(
+            filtered_names(&view, &hosts),
+            ["dev1", "db", "web", "web", "lab"]
+        );
+    }
+
+    #[test]
+    fn rebuild_group_by_tag_only_shows_filtered_sections() {
+        let hosts = [
+            host("web", "1", &["prod", "web"], None),
+            host("dev1", "2", &["dev"], None),
+            host("lab", "3", &[], None),
+        ];
+        let mut view = HostListView {
+            group_by_tag: true,
+            tag_filter: tag_set(&["prod"]),
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(group_titles(&view), [("prod".to_string(), 1)]);
+        assert_eq!(filtered_names(&view, &hosts), ["web"]);
+    }
+
+    #[test]
+    fn rebuild_without_grouping_has_no_sections() {
+        let hosts = [host("a", "1", &["prod"], None)];
+        let mut view = HostListView::default();
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert!(view.groups.is_empty());
+    }
+
+    /// 3 hosts in "a", 1 in "b", 2 untagged.
+    fn grouped_view() -> (Vec<Host>, HostListView) {
+        let hosts = vec![
+            host("a1", "1", &["a"], None),
+            host("a2", "2", &["a"], None),
+            host("a3", "3", &["a"], None),
+            host("b1", "4", &["b"], None),
+            host("u1", "5", &[], None),
+            host("u2", "6", &[], None),
+        ];
+        let mut view = HostListView {
+            group_by_tag: true,
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        (hosts, view)
+    }
+
+    #[test]
+    fn grid_rows_puts_headers_before_each_section() {
+        let (_, view) = grouped_view();
+        assert_eq!(
+            view.grid_rows(2),
+            [
+                GridRow::Header(0),
+                GridRow::Cards(0..2),
+                GridRow::Cards(2..3),
+                GridRow::Header(1),
+                GridRow::Cards(3..4),
+                GridRow::Header(2),
+                GridRow::Cards(4..6),
+            ]
+        );
+    }
+
+    #[test]
+    fn grid_rows_flat_when_not_grouped() {
+        let view = HostListView {
+            filtered_indices: vec![0, 1, 2],
+            ..Default::default()
+        };
+        assert_eq!(
+            view.grid_rows(2),
+            [GridRow::Cards(0..2), GridRow::Cards(2..3)]
+        );
+    }
+
+    #[test]
+    fn navigate_down_crosses_sections_and_clamps_column() {
+        let (_, mut view) = grouped_view();
+        view.selected = 1; // a2, column 1
+        view.navigate(&NavDir::Down, 2);
+        assert_eq!(view.selected, 2); // a3, short row: clamped to column 0
+        view.navigate(&NavDir::Down, 2);
+        assert_eq!(view.selected, 3); // b1, next section
+        view.navigate(&NavDir::Down, 2);
+        assert_eq!(view.selected, 4); // u1
+        view.navigate(&NavDir::Down, 2);
+        assert_eq!(view.selected, 4); // last row: stays
+    }
+
+    #[test]
+    fn navigate_up_keeps_column_across_sections() {
+        let (_, mut view) = grouped_view();
+        view.selected = 5; // u2, column 1
+        view.navigate(&NavDir::Up, 2);
+        assert_eq!(view.selected, 3); // b1 row has one card
+        view.navigate(&NavDir::Up, 2);
+        assert_eq!(view.selected, 2);
+        view.navigate(&NavDir::Up, 2);
+        assert_eq!(view.selected, 0);
+        view.navigate(&NavDir::Up, 2);
+        assert_eq!(view.selected, 0);
+    }
+
+    #[test]
+    fn navigate_left_right_walk_positions() {
+        let (_, mut view) = grouped_view();
+        view.selected = 2;
+        view.navigate(&NavDir::Right, 2);
+        assert_eq!(view.selected, 3);
+        view.navigate(&NavDir::Left, 2);
+        view.navigate(&NavDir::Left, 2);
+        assert_eq!(view.selected, 1);
+    }
+
+    #[test]
+    fn navigate_flat_grid_moves_by_columns() {
+        let mut view = HostListView {
+            filtered_indices: vec![0, 1, 2, 3, 4],
+            ..Default::default()
+        };
+        view.navigate(&NavDir::Down, 3);
+        assert_eq!(view.selected, 3);
+        view.selected = 2;
+        view.navigate(&NavDir::Down, 3);
+        assert_eq!(view.selected, 4); // clamped to the shorter last row
+    }
+
+    #[test]
+    fn navigate_noop_when_empty() {
+        let mut view = HostListView::default();
+        view.navigate(&NavDir::Down, 3);
+        assert_eq!(view.selected, 0);
     }
 
     #[test]
@@ -1353,7 +1693,7 @@ mod tests {
         ];
         let mut view = HostListView {
             search_query: "web".to_string(),
-            tag_filter: Some("prod".to_string()),
+            tag_filter: tag_set(&["prod"]),
             ..Default::default()
         };
         view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());

@@ -21,15 +21,17 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
     Frame,
 };
 
-use crate::app::{AppAction, AppState, NavDir, ViewState};
+use crate::app::{AppAction, AppState, GridRow, GroupHeader, NavDir, ViewState};
 use crate::ui::card::{render_card, CardData, CARD_HEIGHT, CARD_MIN_WIDTH};
 use crate::ui::{host_list, popup};
 
 const CARD_GAP: u16 = 1;
+/// Height of a section title row when the grid is grouped by tag.
+const GROUP_HEADER_HEIGHT: u16 = 1;
 
 // ---------------------------------------------------------------------------
 // Render
@@ -102,7 +104,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewState)
             frame,
             &hlv.available_tags,
             hlv.tag_popup_selected,
-            hlv.tag_filter.as_deref(),
+            &hlv.tag_filter,
             &view.theme,
         );
     }
@@ -129,11 +131,16 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewSta
         ),
         Span::styled("  ", Style::default()),
     ];
-    if let Some(tag) = &hlv.tag_filter {
+    if !hlv.tag_filter.is_empty() {
+        let tags: Vec<&str> = hlv.tag_filter.iter().map(String::as_str).collect();
         spans.push(Span::styled(
-            format!("[filter: {}]", tag),
+            format!("[filter: {}]", tags.join(",")),
             Style::default().fg(view.theme.text_warning),
         ));
+        spans.push(Span::styled("  ", Style::default()));
+    }
+    if hlv.group_by_tag {
+        spans.push(Span::styled("[grouped]", Style::default().fg(view.theme.accent)));
         spans.push(Span::styled("  ", Style::default()));
     }
     if !hlv.search_query.is_empty() {
@@ -145,7 +152,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewSta
     }
 
     // Build key hints.
-    let mut hints = String::from("r:refresh  s:sort  t:tags  /:search  a:add  x:execute  f:tunnel");
+    let mut hints = String::from("r:refresh  s:sort  t:tags  g:group  /:search  a:add  x:execute  f:tunnel");
 
     // Check if selected host needs SSH key setup.
     // Show "Shift+K:ssh-setup" hint if selected host has password but no identity_file.
@@ -204,21 +211,39 @@ fn render_grid(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewState
     let cols = compute_columns(area.width);
     let card_w = compute_card_width(area.width, cols);
 
-    // Compute scroll: ensure selected card row is visible.
     let selected = hlv.selected;
-    let total = hlv.filtered_indices.len();
-    // Fix: .max(1) must apply to the result of the division, not just to CARD_GAP.
-    let rows_visible = (area.height / (CARD_HEIGHT + CARD_GAP)).max(1);
-    let selected_row = (selected / cols as usize) as u16;
-    // Simple scroll: keep selected row in the first `rows_visible` rows.
-    let scroll_rows = selected_row.saturating_sub(rows_visible.saturating_sub(1));
-    let skip_cards = scroll_rows as usize * cols as usize;
+    let rows = hlv.grid_rows(cols as usize);
+    let row_height = |row: &GridRow| match row {
+        GridRow::Header(_) => GROUP_HEADER_HEIGHT,
+        GridRow::Cards(_) => CARD_HEIGHT + CARD_GAP,
+    };
+
+    // Compute scroll: the first visible row is the earliest one from which
+    // the selected card row still fits (pulling its section header into view
+    // when there is room).
+    let selected_row = rows
+        .iter()
+        .position(|r| matches!(r, GridRow::Cards(range) if range.contains(&selected)))
+        .unwrap_or(0);
+    let mut first_row = selected_row;
+    let mut used = CARD_HEIGHT;
+    while first_row > 0 {
+        let h = row_height(&rows[first_row - 1]);
+        if used + h > area.height {
+            break;
+        }
+        used += h;
+        first_row -= 1;
+    }
 
     // Draw scrollbar if needed.
-    let total_rows = (total as u16).div_ceil(cols);
-    if total_rows > rows_visible {
+    // Saturating: a huge host list must not overflow (render never panics).
+    let total_height = rows
+        .iter()
+        .fold(0u16, |acc, r| acc.saturating_add(row_height(r)));
+    if total_height > area.height {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        let mut sb_state = ScrollbarState::new(total_rows as usize).position(scroll_rows as usize);
+        let mut sb_state = ScrollbarState::new(rows.len()).position(first_row);
         let sb_area = Rect {
             x: area.x + area.width.saturating_sub(1),
             y: area.y,
@@ -228,19 +253,35 @@ fn render_grid(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewState
         frame.render_stateful_widget(scrollbar, sb_area, &mut sb_state);
     }
 
-    // Render visible cards.
+    // Render visible rows.
     let mut y = area.y;
-    let mut card_idx = skip_cards;
-
-    'outer: while y + CARD_HEIGHT <= area.y + area.height {
-        let mut x = area.x;
-        for col in 0..cols {
-            if card_idx >= total {
-                break 'outer;
+    for row in &rows[first_row..] {
+        let range = match row {
+            GridRow::Header(g) => {
+                if y + GROUP_HEADER_HEIGHT > area.y + area.height {
+                    break;
+                }
+                if let Some(group) = hlv.groups.get(*g) {
+                    render_group_header(frame, area, y, group, view);
+                }
+                y += GROUP_HEADER_HEIGHT;
+                continue;
             }
+            GridRow::Cards(range) => range.clone(),
+        };
+        if y + CARD_HEIGHT > area.y + area.height {
+            break;
+        }
 
-            let host_idx = hlv.filtered_indices[card_idx];
-            let host = &state.hosts[host_idx];
+        let mut x = area.x;
+        for card_idx in range {
+            let Some(host) = hlv
+                .filtered_indices
+                .get(card_idx)
+                .and_then(|&i| state.hosts.get(i))
+            else {
+                continue;
+            };
             let metrics = state.metrics.get(&host.name);
             let status = state.connection_statuses.get(&host.name);
             let is_selected = card_idx == selected;
@@ -277,17 +318,43 @@ fn render_grid(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewState
             }
 
             x += card_w + CARD_GAP;
-            card_idx += 1;
-
-            // Last column: don't add trailing gap.
-            let _ = col;
         }
         y += CARD_HEIGHT + CARD_GAP;
     }
+}
 
-    // Empty area below cards: fill with a faint border to separate from
-    // status bar (no widget — just leave it blank for a clean look).
-    let _ = Block::default().borders(Borders::NONE);
+/// Draws a one-line section title (`▾ tag (count) ───`) at row `y`.
+fn render_group_header(
+    frame: &mut Frame,
+    area: Rect,
+    y: u16,
+    group: &GroupHeader,
+    view: &ViewState,
+) {
+    let title = format!("▾ {} ({}) ", group.title(), group.len);
+    let fill = (area.width as usize).saturating_sub(title.chars().count() + 1);
+    let title_style = if group.label.is_some() {
+        Style::default()
+            .fg(view.theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(view.theme.text_muted)
+            .add_modifier(Modifier::BOLD | Modifier::ITALIC)
+    };
+    let line = Line::from(vec![
+        Span::styled(title, title_style),
+        Span::styled("─".repeat(fill), Style::default().fg(view.theme.text_muted)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(line),
+        Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +430,7 @@ pub fn handle_input(key: KeyEvent, view: &mut ViewState) -> Option<AppAction> {
         KeyCode::Char('r') => Some(AppAction::RefreshMetrics),
         KeyCode::Char('s') => Some(AppAction::CycleSortOrder),
         KeyCode::Char('t') => Some(AppAction::OpenTagFilter),
+        KeyCode::Char('g') => Some(AppAction::ToggleGroupByTag),
 
         // Quick-execute snippet on selected host.
         KeyCode::Char('x') => Some(AppAction::OpenQuickExecute),
@@ -405,15 +473,16 @@ pub fn handle_tag_popup_input(key: KeyEvent, view: &mut ViewState) -> Option<App
             hlv.tag_popup_selected = hlv.tag_popup_selected.saturating_sub(1);
             None
         }
-        KeyCode::Enter => {
-            let sel = hlv.tag_popup_selected;
-            let chosen = if sel == 0 {
-                None // "All" = clear filter
-            } else {
-                hlv.available_tags.get(sel - 1).cloned()
-            };
-            Some(AppAction::TagFilterSelected(chosen))
-        }
+        // Space / Enter toggle the highlighted tag; the popup stays open so
+        // several tags can be picked in a row.
+        KeyCode::Enter | KeyCode::Char(' ') => match hlv.tag_popup_selected {
+            0 => Some(AppAction::TagFilterCleared),
+            sel => hlv
+                .available_tags
+                .get(sel - 1)
+                .cloned()
+                .map(AppAction::TagFilterToggled),
+        },
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             hlv.tag_popup_open = false;
             None
