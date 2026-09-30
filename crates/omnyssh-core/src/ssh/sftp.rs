@@ -36,6 +36,50 @@ pub struct FileEntry {
     pub size: u64,
     /// `true` when this entry is a directory.
     pub is_dir: bool,
+    /// Last modification time, in seconds since the Unix epoch, when known.
+    pub modified: Option<i64>,
+    /// Creation time, in seconds since the Unix epoch. Local entries only, and only
+    /// where the file system records it: SFTP v3 has no creation time.
+    pub created: Option<i64>,
+}
+
+impl FileEntry {
+    /// The synthetic `..` entry pointing at `parent`.
+    fn parent(parent: &str) -> Self {
+        Self {
+            name: "..".to_string(),
+            path: parent.to_string(),
+            size: 0,
+            is_dir: true,
+            modified: None,
+            created: None,
+        }
+    }
+}
+
+/// Seconds since the Unix epoch for a file time, or `None` if it is unavailable.
+fn unix_secs(time: std::io::Result<std::time::SystemTime>) -> Option<i64> {
+    let time = time.ok()?;
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).ok(),
+        Err(e) => i64::try_from(e.duration().as_secs()).ok().map(|s| -s),
+    }
+}
+
+/// Builds a local [`FileEntry`] from its path and (possibly unreadable) metadata.
+fn local_entry(path: &std::path::Path, meta: Option<&std::fs::Metadata>) -> FileEntry {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    FileEntry {
+        name,
+        path: path.to_string_lossy().into_owned(),
+        size: meta.map(|m| m.len()).unwrap_or(0),
+        is_dir: meta.map(|m| m.is_dir()).unwrap_or(false),
+        modified: meta.and_then(|m| unix_secs(m.modified())),
+        created: meta.and_then(|m| unix_secs(m.created())),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,12 +293,7 @@ async fn do_list_dir(
         } else {
             &parent_str
         };
-        entries.push(FileEntry {
-            name: "..".to_string(),
-            path: parent_str.to_string(),
-            size: 0,
-            is_dir: true,
-        });
+        entries.push(FileEntry::parent(parent_str));
     }
 
     for entry in read_dir {
@@ -273,6 +312,8 @@ async fn do_list_dir(
             path: full_path,
             size: meta.size.unwrap_or(0),
             is_dir: ft.is_dir(),
+            modified: meta.mtime.map(i64::from),
+            created: None,
         });
     }
 
@@ -436,12 +477,7 @@ pub async fn list_local_dir(path: &str) -> anyhow::Result<Vec<FileEntry>> {
         } else {
             &parent_str
         };
-        entries.push(FileEntry {
-            name: "..".to_string(),
-            path: parent_str.to_string(),
-            size: 0,
-            is_dir: true,
-        });
+        entries.push(FileEntry::parent(parent_str));
     }
 
     while let Some(entry) = read_dir
@@ -452,17 +488,11 @@ pub async fn list_local_dir(path: &str) -> anyhow::Result<Vec<FileEntry>> {
         let file_type = entry.file_type().await.ok();
         let is_dir = file_type.as_ref().map(|ft| ft.is_dir()).unwrap_or(false);
         let meta = entry.metadata().await.ok();
-        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
 
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let path_str = entry.path().to_string_lossy().into_owned();
-
-        entries.push(FileEntry {
-            name,
-            path: path_str,
-            size,
-            is_dir,
-        });
+        let mut file = local_entry(&entry.path(), meta.as_ref());
+        file.name = entry.file_name().to_string_lossy().into_owned();
+        file.is_dir = is_dir;
+        entries.push(file);
     }
 
     // Sort: ".." first, then dirs, then files — case-insensitive alphabetically.
@@ -481,6 +511,18 @@ pub async fn list_local_dir(path: &str) -> anyhow::Result<Vec<FileEntry>> {
     });
 
     Ok(entries)
+}
+
+/// Stats each local path (following symlinks), e.g. files dropped onto the app from
+/// the OS. Paths that cannot be read are left out.
+pub async fn stat_local_paths(paths: &[String]) -> Vec<FileEntry> {
+    let mut entries = Vec::with_capacity(paths.len());
+    for path in paths {
+        if let Ok(meta) = tokio::fs::metadata(path).await {
+            entries.push(local_entry(std::path::Path::new(path), Some(&meta)));
+        }
+    }
+    entries
 }
 
 /// The roots the local file system can be browsed from: every drive letter on
@@ -536,6 +578,64 @@ mod tests {
         assert_eq!(drive_roots(0b1100), ["C:\\", "D:\\"]);
         assert_eq!(drive_roots(1 | 1 << 25), ["A:\\", "Z:\\"]);
         assert!(drive_roots(0).is_empty());
+    }
+
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("omnyssh-sftp-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    #[tokio::test]
+    async fn local_listing_carries_modification_time() {
+        let dir = scratch_dir("list");
+        std::fs::write(dir.join("a.txt"), b"hello").expect("write scratch file");
+
+        let entries = list_local_dir(&dir.to_string_lossy())
+            .await
+            .expect("list scratch dir");
+        let file = entries
+            .iter()
+            .find(|e| e.name == "a.txt")
+            .expect("file listed");
+        assert_eq!(file.size, 5);
+        assert!(!file.is_dir);
+        assert!(file.modified.is_some_and(|t| t > 0));
+        let parent = entries.first().expect("parent entry");
+        assert_eq!(parent.name, "..");
+        assert!(parent.modified.is_none() && parent.created.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stat_local_paths_tells_files_from_dirs_and_skips_missing() {
+        let dir = scratch_dir("stat");
+        let file = dir.join("b.bin");
+        std::fs::write(&file, b"xy").expect("write scratch file");
+        let missing = dir.join("missing");
+
+        let paths = [
+            file.to_string_lossy().into_owned(),
+            dir.to_string_lossy().into_owned(),
+            missing.to_string_lossy().into_owned(),
+        ];
+        let entries = stat_local_paths(&paths).await;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "b.bin");
+        assert!(!entries[0].is_dir);
+        assert_eq!(entries[0].size, 2);
+        assert!(entries[1].is_dir);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unix_secs_handles_times_before_the_epoch() {
+        let before = std::time::UNIX_EPOCH - Duration::from_secs(10);
+        assert_eq!(unix_secs(Ok(before)), Some(-10));
+        assert_eq!(unix_secs(Ok(std::time::UNIX_EPOCH)), Some(0));
+        assert_eq!(unix_secs(Err(std::io::Error::other("no"))), None);
     }
 
     #[cfg(windows)]

@@ -427,13 +427,31 @@ fn render_panel(
                 format_size(entry.size)
             };
 
+            // Modification time, only when the panel is wide enough to keep
+            // the name readable. A fixed width keeps the column aligned.
+            let date_str = if inner.width >= MTIME_MIN_PANEL_WIDTH && entry.name != ".." {
+                format!(
+                    "{:>width$}",
+                    format_mtime(entry.modified),
+                    width = MTIME_WIDTH
+                )
+            } else {
+                String::new()
+            };
+
             // Width budget: cursor(2) + mark(3, with trailing padding) +
-            // icon(1) + space(1) + name + space-before-size(1) + size.
+            // icon(1) + space(1) + name + space-before-size(1) + size +
+            // (space + date, when shown).
             // The nerd-font glyph occupies a single cell even though its
             // codepoint is wide.
+            let date_width = if date_str.is_empty() {
+                0
+            } else {
+                1 + MTIME_WIDTH as u16
+            };
             let name_width = inner
                 .width
-                .saturating_sub(2 + 3 + 1 + 1 + 1 + size_str.len() as u16)
+                .saturating_sub(2 + 3 + 1 + 1 + 1 + size_str.len() as u16 + date_width)
                 as usize;
             let name_display: String = if entry.name.chars().count() > name_width {
                 let truncated = entry
@@ -481,6 +499,13 @@ fn render_panel(
             if !size_str.is_empty() {
                 spans.push(Span::styled(
                     format!(" {}", size_str),
+                    Style::default().fg(theme.text_muted),
+                ));
+            }
+
+            if !date_str.is_empty() {
+                spans.push(Span::styled(
+                    format!(" {}", date_str),
                     Style::default().fg(theme.text_muted),
                 ));
             }
@@ -983,6 +1008,23 @@ fn render_fm_delete_confirm(
 // Utility
 // ---------------------------------------------------------------------------
 
+/// Cells taken by a formatted modification time ("2026-09-30 14:05").
+const MTIME_WIDTH: usize = 16;
+
+/// Narrowest panel interior that still shows the modification-time column.
+const MTIME_MIN_PANEL_WIDTH: u16 = 48;
+
+/// Local-time "YYYY-MM-DD HH:MM" for a Unix timestamp, or blank when unknown.
+fn format_mtime(secs: Option<i64>) -> String {
+    secs.and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
 /// Human-readable file size string (e.g. "45.3K", "1.2M", "3.0G").
 fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -1044,4 +1086,19 @@ fn sanitize_preview_content(content: &str, max_width: usize, max_lines: usize) -
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_mtime_is_fixed_width_or_blank() {
+        assert_eq!(
+            format_mtime(Some(1_700_000_000)).chars().count(),
+            MTIME_WIDTH
+        );
+        assert_eq!(format_mtime(None), "");
+        assert_eq!(format_mtime(Some(i64::MAX)), "");
+    }
 }

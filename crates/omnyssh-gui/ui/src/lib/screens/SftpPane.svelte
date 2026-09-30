@@ -2,34 +2,58 @@
   // One side of the dual-pane SFTP browser (tech-gui.md §3.2): a current-path header
   // with a parent-supplied toolbar, then the entry list. Clicking a directory (or the
   // `..` row) navigates; clicking a file previews; the leading checkbox marks it for a
-  // batch transfer/delete. Semantic tokens only — no colour literals (§5.1).
+  // batch transfer/delete. A press on a row may start a drag (the parent owns the drag
+  // and marks the pane `dropActive` while it is the target); `data-pane` and
+  // `data-dir-path` are how the parent finds the pane and folder under the pointer.
+  // Semantic tokens only — no colour literals (§5.1).
   import type { Snippet } from 'svelte';
   import { Icon } from '$lib/theme';
   import type { FileEntryDto } from '$lib/bindings';
-  import { formatBytes, type Pane } from '$lib/stores/sftp';
+  import { formatBytes, formatDate, type Pane, type PaneSide } from '$lib/stores/sftp';
 
   let {
     title,
+    side,
     pane,
+    showCreated = false,
+    dropActive = false,
+    dropDir,
     onNavigate,
     onToggleMark,
     onPreview,
+    onDragStart,
     toolbar
   }: {
     title: string;
+    side: PaneSide;
     pane: Pane;
+    /** Show the creation-time column (local only: SFTP v3 does not report it). */
+    showCreated?: boolean;
+    /** The pane is the target of a drag in progress. */
+    dropActive?: boolean;
+    /** The folder row under the pointer while this pane is the drop target. */
+    dropDir?: string;
     onNavigate: (entry: FileEntryDto) => void;
     onToggleMark: (path: string) => void;
     onPreview: (entry: FileEntryDto) => void;
+    onDragStart?: (entry: FileEntryDto, event: PointerEvent) => void;
     toolbar?: Snippet;
   } = $props();
 
   const rowBase =
     'flex w-full min-w-0 items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
+  // Date columns appear once the pane is wide enough to keep names readable.
+  const modifiedCol = 'hidden w-36 shrink-0 text-right lg:inline';
+  const createdCol = 'hidden w-36 shrink-0 text-right xl:inline';
 </script>
 
-<section aria-label={title} class="flex min-h-0 min-w-0 flex-1 flex-col">
+<section
+  aria-label={title}
+  data-pane={side}
+  class="flex min-h-0 min-w-0 flex-1 flex-col transition
+    {dropActive ? 'bg-surface-inset ring-2 ring-inset ring-accent' : ''}"
+>
   <header class="shrink-0 border-b border-default px-3 py-2.5">
     <div class="flex items-center justify-between gap-2">
       <h2
@@ -55,11 +79,25 @@
     {:else if pane.entries.length === 0}
       <p class="px-2 py-6 text-center text-sm text-faint">Empty directory</p>
     {:else}
+      <div
+        class="flex items-center gap-2 px-2 pb-1 pl-[2.125rem] text-[0.65rem] font-semibold uppercase
+          tracking-[0.12em] text-faint"
+        aria-hidden="true"
+      >
+        <span class="min-w-0 flex-1 pl-[1.4rem]">Name</span>
+        <span class="shrink-0">Size</span>
+        {#if showCreated}<span class={createdCol}>Created</span>{/if}
+        <span class={modifiedCol}>Modified</span>
+      </div>
       <ul class="space-y-0.5">
         {#each pane.entries as entry, i (i)}
           {@const isParent = entry.name === '..'}
           {@const marked = pane.marked.has(entry.path)}
-          <li class="flex items-center gap-1.5">
+          {@const dropHere = dropActive && entry.isDir && dropDir === entry.path}
+          <li
+            class="flex items-center gap-1.5 rounded {dropHere ? 'ring-2 ring-accent' : ''}"
+            data-dir-path={entry.isDir ? entry.path : undefined}
+          >
             {#if isParent}
               <span class="h-4 w-4 shrink-0"></span>
             {:else}
@@ -81,6 +119,7 @@
               class="{rowBase} text-muted hover:bg-surface-inset hover:text-fg"
               title={entry.name}
               onclick={() => (entry.isDir ? onNavigate(entry) : onPreview(entry))}
+              onpointerdown={(e) => onDragStart?.(entry, e)}
             >
               <Icon name={entry.isDir ? 'folder' : 'file'} size={15} />
               <span class="min-w-0 flex-1 truncate {entry.isDir ? 'font-medium text-fg' : ''}">
@@ -88,6 +127,22 @@
               </span>
               {#if !entry.isDir}
                 <span class="shrink-0 tabular-nums text-xs text-faint">{formatBytes(entry.size)}</span>
+              {/if}
+              {#if !isParent}
+                {#if showCreated}
+                  <span
+                    class="{createdCol} tabular-nums text-xs text-faint"
+                    title={entry.created != null ? `Created ${formatDate(entry.created, true)}` : undefined}
+                  >
+                    {formatDate(entry.created)}
+                  </span>
+                {/if}
+                <span
+                  class="{modifiedCol} tabular-nums text-xs text-faint"
+                  title={entry.modified != null ? `Modified ${formatDate(entry.modified, true)}` : undefined}
+                >
+                  {formatDate(entry.modified)}
+                </span>
               {/if}
             </button>
           </li>

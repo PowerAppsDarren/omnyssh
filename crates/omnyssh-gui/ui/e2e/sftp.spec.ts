@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
 // SFTP dual-pane vertical (tech-gui.md §3.2). e2e runs against the static SPA with
 // Tauri absent, so we stub `__TAURI_INTERNALS__` at the boundary (§6.4). The stub owns
@@ -25,7 +25,16 @@ async function boot(page: Page, windows = false): Promise<void> {
       // is observable mid-flight (the core is sequential — one transfer at a time).
       const completions: Array<() => void> = [];
 
-      type Entry = { name: string; path: string; size: number; isDir: boolean };
+      type Entry = {
+        name: string;
+        path: string;
+        size: number;
+        isDir: boolean;
+        modified?: number | null;
+        created?: number | null;
+      };
+      // 2024-06-15 12:00 UTC: mid-month and midday, so the year shows in any time zone.
+      const JUNE_2024 = 1718452800;
       const home = windows ? 'C:\\Users\\me' : '/home/user';
       const roots = windows ? ['C:\\', 'D:\\', 'E:\\', 'Z:\\'] : ['/'];
       const local: Record<string, Entry[]> = windows
@@ -35,16 +44,27 @@ async function boot(page: Page, windows = false): Promise<void> {
           }
         : {
             [home]: [
-              { name: 'notes.txt', path: '/home/user/notes.txt', size: 24, isDir: false },
+              {
+                name: 'notes.txt',
+                path: '/home/user/notes.txt',
+                size: 24,
+                isDir: false,
+                modified: JUNE_2024,
+                created: JUNE_2024
+              },
               { name: 'work', path: '/home/user/work', size: 0, isDir: true }
             ]
           };
-      // Where each download was sent, for the test to read back.
+      // Where each transfer was sent, for the test to read back.
       const downloads: string[] = [];
+      const uploads: string[] = [];
       (win as { __downloads?: string[] }).__downloads = downloads;
+      (win as { __uploads?: string[] }).__uploads = uploads;
+      (win as { __fireEvent?: unknown }).__fireEvent = (event: string, payload: unknown) =>
+        fireEvent(event, payload);
       const remote: Record<string, Entry[]> = {
         '/': [
-          { name: 'config.yml', path: '/config.yml', size: 64, isDir: false },
+          { name: 'config.yml', path: '/config.yml', size: 64, isDir: false, modified: JUNE_2024 },
           { name: 'var', path: '/var', size: 0, isDir: true }
         ]
       };
@@ -78,6 +98,11 @@ async function boot(page: Page, windows = false): Promise<void> {
       (win as { __completeTransfer?: () => void }).__completeTransfer = () => completions.shift()?.();
 
       (win as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
+        // `getCurrentWebview()` reads these to scope OS drag-drop listeners.
+        metadata: {
+          currentWindow: { label: 'main' },
+          currentWebview: { label: 'main', windowLabel: 'main' }
+        },
         invoke: (cmd: string, args: Record<string, unknown>) => {
           if (cmd.startsWith('plugin:path')) return Promise.resolve(home);
           switch (cmd) {
@@ -112,6 +137,7 @@ async function boot(page: Page, windows = false): Promise<void> {
             }
             case 'sftp_upload': {
               const { sessionId, remote: dest } = args as { sessionId: number; remote: string };
+              uploads.push(dest);
               const tid = ++nextTransfer;
               setTimeout(() => fireEvent('transfer-progress', { sessionId, transferId: tid, done: 4, total: 8 }), 0);
               completions.push(() => {
@@ -133,6 +159,15 @@ async function boot(page: Page, windows = false): Promise<void> {
             }
             case 'sftp_close':
               return Promise.resolve(null);
+            // Files dropped from the OS: a path ending in `/` stands for a folder.
+            case 'stat_local_paths':
+              return Promise.resolve(
+                (args.paths as string[]).map((p) => {
+                  const isDir = p.endsWith('/');
+                  const path = isDir ? p.slice(0, -1) : p;
+                  return { name: baseName(path), path, size: isDir ? 0 : 3, isDir, modified: null, created: null };
+                })
+              );
             case 'plugin:event|listen': {
               const { event, handler } = args as { event: string; handler: number };
               (listeners[event] ||= []).push(handler);
@@ -201,6 +236,102 @@ test('round-trip: upload a local file to the remote, then download a remote file
   await expect(page.getByLabel('transfer progress')).toBeVisible();
   await page.evaluate(() => (window as unknown as { __completeTransfer: () => void }).__completeTransfer());
   await expect(localPane.getByText('config.yml')).toBeVisible();
+});
+
+test('the panes show modification times, and creation times on the local side only', async ({
+  page
+}) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(localPane.getByText('notes.txt')).toBeVisible();
+  await expect(remotePane.getByText('config.yml')).toBeVisible();
+
+  await expect(localPane.getByTitle(/^Modified .*2024/)).toBeVisible();
+  await expect(localPane.getByTitle(/^Created .*2024/)).toBeVisible();
+  await expect(remotePane.getByTitle(/^Modified .*2024/)).toBeVisible();
+  await expect(remotePane.getByText('Created', { exact: true })).toHaveCount(0);
+});
+
+async function dragOnto(page: Page, from: Locator, to: Locator): Promise<void> {
+  const a = await from.boundingBox();
+  const b = await to.boundingBox();
+  if (!a || !b) throw new Error('drag endpoints not laid out');
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  // Several steps: the drag only starts past a small threshold, then tracks the target.
+  await page.mouse.move(a.x + a.width / 2 + 20, a.y + a.height / 2, { steps: 4 });
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 8 });
+  await page.mouse.up();
+}
+
+test('drag and drop: a local file dropped on the remote pane uploads there', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(remotePane.getByText('config.yml')).toBeVisible();
+
+  await dragOnto(page, localPane.getByTitle('notes.txt', { exact: true }), remotePane.getByText('config.yml'));
+  await expect(page.getByLabel('transfer progress')).toBeVisible();
+  const uploads = await page.evaluate(() => (window as unknown as { __uploads: string[] }).__uploads);
+  expect(uploads).toEqual(['/notes.txt']);
+  // The drag ended away from the row it started on, so nothing was previewed.
+  await expect(page.getByRole('dialog', { name: 'File preview' })).toHaveCount(0);
+
+  await page.evaluate(() => (window as unknown as { __completeTransfer: () => void }).__completeTransfer());
+  await expect(remotePane.getByText('notes.txt')).toBeVisible();
+});
+
+test('drag and drop: a remote file dropped on a local folder downloads into it', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(localPane.getByText('work')).toBeVisible();
+
+  await dragOnto(page, remotePane.getByTitle('config.yml', { exact: true }), localPane.getByTitle('work', { exact: true }));
+  await expect(page.getByLabel('transfer progress')).toBeVisible();
+  const downloads = await page.evaluate(() => (window as unknown as { __downloads: string[] }).__downloads);
+  expect(downloads).toEqual(['/home/user/work/config.yml']);
+});
+
+test('drag and drop: dropping back on the same pane transfers nothing', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  await expect(localPane.getByText('work')).toBeVisible();
+
+  await dragOnto(page, localPane.getByTitle('notes.txt', { exact: true }), localPane.getByTitle('work', { exact: true }));
+  await expect(page.getByLabel('transfer progress')).toHaveCount(0);
+  const uploads = await page.evaluate(() => (window as unknown as { __uploads: string[] }).__uploads);
+  expect(uploads).toEqual([]);
+});
+
+test('drag and drop: files dropped from the OS onto the remote pane upload, folders are refused', async ({
+  page
+}) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(remotePane.getByText('config.yml')).toBeVisible();
+
+  const box = await remotePane.getByText('config.yml').boundingBox();
+  if (!box) throw new Error('remote pane not laid out');
+  const position = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.evaluate(
+    ({ position }) => {
+      const fire = (window as unknown as { __fireEvent: (e: string, p: unknown) => void }).__fireEvent;
+      fire('tauri://drag-drop', { paths: ['/tmp/photo.png', '/tmp/album/'], position });
+    },
+    { position }
+  );
+
+  await expect(page.getByLabel('transfer progress')).toBeVisible();
+  const uploads = await page.evaluate(() => (window as unknown as { __uploads: string[] }).__uploads);
+  expect(uploads).toEqual(['/photo.png']);
+  await expect(page.getByText('Folders cannot be uploaded yet')).toBeVisible();
 });
 
 test('an inactive tab’s modal never overlays another entity (§2 exactly-one-active)', async ({

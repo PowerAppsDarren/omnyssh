@@ -92,6 +92,15 @@ export function markedEntries(pane: Pane): FileEntryDto[] {
   return pane.entries.filter((e) => pane.marked.has(e.path));
 }
 
+/** What dragging `entry` carries: every marked file when `entry` is one of them, else
+ *  `entry` alone. Files only, like the Upload/Download buttons: directories and `..`
+ *  are not transferable, so dragging one carries nothing. */
+export function dragPayload(pane: Pane, entry: FileEntryDto): FileEntryDto[] {
+  if (entry.isDir || entry.name === '..') return [];
+  if (pane.marked.has(entry.path)) return markedEntries(pane).filter((e) => !e.isDir);
+  return [entry];
+}
+
 /** The root in `roots` that `path` lies under, or '' for none (a network share).
  *  Drive letters compare case-insensitively, as Windows does. */
 export function rootOf(path: string, roots: string[]): string {
@@ -110,6 +119,27 @@ export function formatBytes(bytes: number): string {
     unit += 1;
   }
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`;
+}
+
+const dateFormat = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit'
+});
+const dateFormatFull = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'full',
+  timeStyle: 'medium'
+});
+
+/** A listing row's date from Unix seconds, or an em dash when the time is unknown.
+ *  `full` gives the long form used in the hover title. */
+export function formatDate(secs: number | null | undefined, full = false): string {
+  if (secs == null || !Number.isFinite(secs)) return '—';
+  const date = new Date(secs * 1000);
+  if (Number.isNaN(date.getTime())) return '—';
+  return (full ? dateFormatFull : dateFormat).format(date);
 }
 
 /** Widen the pending refresh target: two different sides collapse to `both`. */

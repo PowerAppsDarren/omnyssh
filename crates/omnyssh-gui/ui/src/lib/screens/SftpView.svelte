@@ -7,13 +7,21 @@
   // remote uses sftp_list (arrives as an event). Semantic tokens only (§5.1).
   import { onMount, onDestroy } from 'svelte';
   import { homeDir } from '@tauri-apps/api/path';
+  import { getCurrentWebview } from '@tauri-apps/api/webview';
   import { Icon } from '$lib/theme';
   import Modal from '$lib/components/Modal.svelte';
   import Select from '$lib/components/Select.svelte';
   import SftpPane from './SftpPane.svelte';
   import type { FileEntryDto } from '$lib/bindings';
   import { sessions, type Session } from '$lib/stores/sessions';
-  import { sftp, markedEntries, formatBytes, rootOf, type PaneSide } from '$lib/stores/sftp';
+  import {
+    sftp,
+    markedEntries,
+    dragPayload,
+    formatBytes,
+    rootOf,
+    type PaneSide
+  } from '$lib/stores/sftp';
   import { lastError } from '$lib/stores/notifications';
   import {
     sftpOpen,
@@ -27,7 +35,8 @@
     sftpPreview,
     listLocalDir,
     listLocalRoots,
-    previewLocalFile
+    previewLocalFile,
+    statLocalPaths
   } from '$lib/ipc/commands';
 
   let { session, active }: { session: Session; active: boolean } = $props();
@@ -226,28 +235,172 @@
     outbox = [...outbox, ...actions];
   }
 
-  function upload(): void {
+  // `dir` defaults to the other pane's current directory; a drop onto a folder row
+  // passes that folder instead.
+  function upload(files: FileEntryDto[], dir = view?.remote.path): void {
     const id = backendId;
-    if (id == null || !view) return;
-    const dir = view.remote.path;
+    if (id == null || !view || dir == null) return;
     enqueue(
-      ...localMarkedFiles.map((file) => () => {
+      ...files.map((file) => () => {
         sftp.pushOp(id, { kind: 'upload', name: file.name, refresh: 'remote' });
         void sftpUpload(id, file.path, joinRemote(dir, file.name)).catch(onDispatchError(id));
       })
     );
   }
 
-  function download(): void {
+  function download(files: FileEntryDto[], dir = view?.local.path): void {
     const id = backendId;
-    if (id == null || !view) return;
-    const dir = view.local.path;
+    if (id == null || !view || dir == null) return;
     enqueue(
-      ...remoteMarkedFiles.map((file) => () => {
+      ...files.map((file) => () => {
         sftp.pushOp(id, { kind: 'download', name: file.name, refresh: 'local' });
         void sftpDownload(id, joinLocal(dir, file.name), file.path).catch(onDispatchError(id));
       })
     );
+  }
+
+  // --- Drag and drop -----------------------------------------------------------------
+  // Pane to pane uses pointer events, not HTML5 drag and drop: Tauri's native file-drop
+  // handler (on by default, and needed for drops from the OS below) swallows HTML5 drag
+  // events in WebView2. A press becomes a drag only past DRAG_THRESHOLD px, so a click
+  // still navigates or previews.
+  const DRAG_THRESHOLD = 5;
+
+  interface DropTarget {
+    side: PaneSide;
+    /** The directory the drop lands in: a folder row under the pointer, else the
+     *  pane's current directory. */
+    dir: string;
+    /** Set when `dir` is a folder row, for its highlight. */
+    row?: string;
+  }
+
+  let press: { side: PaneSide; entry: FileEntryDto; x: number; y: number } | null = null;
+  let drag = $state<{
+    from: PaneSide;
+    files: FileEntryDto[];
+    x: number;
+    y: number;
+    target: DropTarget | null;
+  } | null>(null);
+  // A drag that ends on the row it started on would otherwise click it.
+  let swallowClick = false;
+  // A drag from the OS hovering this view, for the remote pane's highlight.
+  let osDrop = $state<DropTarget | null>(null);
+
+  /** The pane (and folder row, if any) under a viewport point. */
+  function dropTargetAt(x: number, y: number): DropTarget | null {
+    if (!view) return null;
+    const el = document.elementFromPoint(x, y);
+    const paneEl = el?.closest<HTMLElement>('[data-pane]');
+    const side = paneEl?.dataset.pane;
+    if (side !== 'local' && side !== 'remote') return null;
+    const row = el?.closest<HTMLElement>('[data-dir-path]')?.dataset.dirPath;
+    return { side, dir: row ?? view[side].path, row };
+  }
+
+  function startPress(side: PaneSide, entry: FileEntryDto, e: PointerEvent): void {
+    if (e.button !== 0 || !view) return;
+    press = { side, entry, x: e.clientX, y: e.clientY };
+  }
+
+  function onPointerMove(e: PointerEvent): void {
+    if (drag) {
+      const target = dropTargetAt(e.clientX, e.clientY);
+      drag = {
+        ...drag,
+        x: e.clientX,
+        y: e.clientY,
+        target: target && target.side !== drag.from ? target : null
+      };
+      return;
+    }
+    if (!press || !view) return;
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < DRAG_THRESHOLD) return;
+    const files = dragPayload(view[press.side], press.entry);
+    const from = press.side;
+    press = null;
+    if (files.length === 0) return;
+    drag = { from, files, x: e.clientX, y: e.clientY, target: null };
+  }
+
+  function onPointerUp(): void {
+    press = null;
+    const done = drag;
+    if (!done) return;
+    drag = null;
+    swallowClick = true;
+    setTimeout(() => (swallowClick = false), 0);
+    if (!done.target) return;
+    if (done.from === 'local') upload(done.files, done.target.dir);
+    else download(done.files, done.target.dir);
+  }
+
+  function onKeyDown(e: KeyboardEvent): void {
+    if (e.key === 'Escape' && drag) {
+      drag = null;
+      press = null;
+    }
+  }
+
+  // Drops from the OS (Explorer, Finder): Tauri reports physical pixels and absolute
+  // paths. Only the remote pane accepts them; every SFTP view stays mounted, so only
+  // the visible one reacts.
+  onMount(() => {
+    let unlisten: (() => void) | undefined;
+    let webview: ReturnType<typeof getCurrentWebview>;
+    try {
+      webview = getCurrentWebview();
+    } catch {
+      // Off the Tauri runtime there is no webview to drop onto; pane to pane still works.
+      return;
+    }
+    void webview
+      .onDragDropEvent((event) => {
+        if (!active || !view) return;
+        const p = event.payload;
+        if (p.type === 'leave') {
+          osDrop = null;
+          return;
+        }
+        const ratio = window.devicePixelRatio || 1;
+        const target = dropTargetAt(p.position.x / ratio, p.position.y / ratio);
+        const remote = target?.side === 'remote' ? target : null;
+        if (p.type === 'drop') {
+          osDrop = null;
+          if (remote) void uploadDropped(p.paths, remote.dir);
+        } else {
+          osDrop = remote;
+        }
+      })
+      .then((fn) => {
+        if (destroyed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => unlisten?.();
+  });
+
+  async function uploadDropped(paths: string[], dir: string): Promise<void> {
+    const entries = await statLocalPaths(paths).catch((err) => {
+      lastError.set(errMsg(err));
+      return [] as FileEntryDto[];
+    });
+    const files = entries.filter((e) => !e.isDir);
+    if (files.length < paths.length) {
+      lastError.set(
+        entries.some((e) => e.isDir)
+          ? 'Folders cannot be uploaded yet; only the dropped files were sent.'
+          : 'Some dropped items could not be read.'
+      );
+    }
+    upload(files, dir);
+  }
+
+  function guarded<T>(fn: (arg: T) => void): (arg: T) => void {
+    return (arg) => {
+      if (!swallowClick) fn(arg);
+    };
   }
 
   function remove(): void {
@@ -313,9 +466,36 @@
     'focus-visible:ring-2 focus-visible:ring-focus placeholder:text-faint';
 </script>
 
+<svelte:window
+  onpointermove={onPointerMove}
+  onpointerup={onPointerUp}
+  onpointercancel={() => {
+    press = null;
+    drag = null;
+  }}
+  onkeydown={onKeyDown}
+/>
+
+{#if drag}
+  <!-- Follows the pointer; pointer-events-none so the pane under it stays hit-testable. -->
+  <div
+    class="pointer-events-none fixed z-50 flex items-center gap-1.5 rounded-full border border-default
+      bg-surface px-3 py-1.5 text-xs font-medium text-fg shadow-lg
+      {drag.target ? '' : 'opacity-70'}"
+    style="left: {drag.x + 14}px; top: {drag.y + 14}px"
+    aria-hidden="true"
+  >
+    <Icon name={drag.from === 'local' ? 'upload' : 'download'} size={13} />
+    {drag.files.length === 1 ? drag.files[0].name : `${drag.files.length} files`}
+  </div>
+{/if}
+
 <!-- bg-surface fills behind the macOS traffic lights (no seam); the pt insets the
-     panes below them. -->
-<div class="absolute inset-0 flex flex-col bg-surface pt-[var(--titlebar-h)] {active ? '' : 'hidden'}">
+     panes below them. The select-none while dragging keeps the drag from selecting text. -->
+<div
+  class="absolute inset-0 flex flex-col bg-surface pt-[var(--titlebar-h)]
+    {active ? '' : 'hidden'} {drag ? 'cursor-grabbing select-none' : ''}"
+>
   {#if openError}
     <div class="flex flex-1 flex-col items-center justify-center gap-2 p-10 text-center">
       <p class="font-medium">Could not open SFTP on {session.hostName}</p>
@@ -329,10 +509,15 @@
     <div class="grid min-h-0 flex-1 grid-cols-2 divide-x divide-default">
       <SftpPane
         title="Local"
+        side="local"
         pane={view.local}
-        onNavigate={(e) => navigate('local', e)}
+        showCreated
+        dropActive={drag?.target?.side === 'local'}
+        dropDir={drag?.target?.side === 'local' ? drag.target.row : undefined}
+        onNavigate={guarded((e) => navigate('local', e))}
         onToggleMark={(p) => toggleMark('local', p)}
-        onPreview={(e) => preview('local', e)}
+        onPreview={guarded((e) => preview('local', e))}
+        onDragStart={(entry, e) => startPress('local', entry, e)}
       >
         {#snippet toolbar()}
           {#if roots.length > 1}
@@ -356,7 +541,7 @@
             class={toolBtn}
             title="Upload marked files to the remote directory"
             disabled={localMarkedFiles.length === 0}
-            onclick={upload}
+            onclick={() => upload(localMarkedFiles)}
           >
             <Icon name="upload" size={13} />
             Upload
@@ -379,10 +564,14 @@
 
       <SftpPane
         title={session.hostName}
+        side="remote"
         pane={view.remote}
-        onNavigate={(e) => navigate('remote', e)}
+        dropActive={drag?.target?.side === 'remote' || osDrop != null}
+        dropDir={drag?.target?.side === 'remote' ? drag.target.row : osDrop?.row}
+        onNavigate={guarded((e) => navigate('remote', e))}
         onToggleMark={(p) => toggleMark('remote', p)}
-        onPreview={(e) => preview('remote', e)}
+        onPreview={guarded((e) => preview('remote', e))}
+        onDragStart={(entry, e) => startPress('remote', entry, e)}
       >
         {#snippet toolbar()}
           <button
@@ -390,7 +579,7 @@
             class={toolBtn}
             title="Download marked files to the local directory"
             disabled={remoteMarkedFiles.length === 0}
-            onclick={download}
+            onclick={() => download(remoteMarkedFiles)}
           >
             <Icon name="download" size={13} />
             Download

@@ -458,6 +458,8 @@ mod tests {
             path: format!("/srv/{name}"),
             size: 0,
             is_dir: false,
+            modified: None,
+            created: None,
         }
     }
 

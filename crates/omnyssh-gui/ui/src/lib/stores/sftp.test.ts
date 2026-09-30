@@ -11,6 +11,8 @@ import {
   applyProgress,
   applyOpDone,
   formatBytes,
+  formatDate,
+  dragPayload,
   rootOf,
   type Pane,
   type SftpSession
@@ -20,12 +22,48 @@ import {
 // it is unit-testable without a Tauri runtime (tech-gui.md §3.2, §6.4).
 
 function entry(name: string, isDir = false, size = 0): FileEntryDto {
-  return { name, path: `/srv/${name}`, size, isDir };
+  return { name, path: `/srv/${name}`, size, isDir, modified: null, created: null };
 }
 
 function paneWith(entries: FileEntryDto[], marked: string[] = []): Pane {
   return { path: '/srv', entries, loading: false, marked: new Set(marked) };
 }
+
+describe('formatDate', () => {
+  it('renders unknown times as an em dash', () => {
+    expect(formatDate(null)).toBe('—');
+    expect(formatDate(undefined)).toBe('—');
+    expect(formatDate(Number.NaN)).toBe('—');
+  });
+
+  it('renders a known time with its year, short and long', () => {
+    const secs = Date.UTC(2024, 5, 15, 12, 0) / 1000;
+    expect(formatDate(secs)).toContain('2024');
+    expect(formatDate(secs, true)).toContain('2024');
+    expect(formatDate(secs, true).length).toBeGreaterThan(formatDate(secs).length);
+  });
+});
+
+describe('dragPayload', () => {
+  const a = entry('a.txt');
+  const b = entry('b.txt');
+  const dir = entry('logs', true);
+  const parent = { ...entry('..', true), path: '/' };
+
+  it('carries only the dragged file when it is not marked', () => {
+    expect(dragPayload(paneWith([a, b], [b.path]), a)).toEqual([a]);
+  });
+
+  it('carries every marked file, in listing order, when the dragged file is marked', () => {
+    const pane = paneWith([a, dir, b], [b.path, dir.path, a.path]);
+    expect(dragPayload(pane, b)).toEqual([a, b]);
+  });
+
+  it('carries nothing for a directory or the parent row', () => {
+    expect(dragPayload(paneWith([dir], [dir.path]), dir)).toEqual([]);
+    expect(dragPayload(paneWith([parent]), parent)).toEqual([]);
+  });
+});
 
 describe('sftp reducers', () => {
   it('starts a session connecting with both panes empty and loading', () => {
