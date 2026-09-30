@@ -5,7 +5,10 @@ import type { HostServices } from '$lib/stores/services';
 import {
   deriveCard,
   deriveTunnel,
+  allTags,
+  filterByTags,
   filterHosts,
+  groupByTag,
   forwardListen,
   forwardTarget,
   metricStatus,
@@ -187,6 +190,51 @@ describe('filterHosts — mirrors the TUI host search', () => {
 
   it('returns nothing when no card matches', () => {
     expect(filterHosts(cards, 'nope')).toEqual([]);
+  });
+});
+
+describe('tag filter and group-by-tag — mirror the TUI dashboard', () => {
+  const card = (name: string, tags: string[]) =>
+    deriveCard({ ...host(name), tags }, CONNECTED, undefined, undefined);
+  const cards = [
+    card('web', ['prod', 'Web']),
+    card('db', ['prod']),
+    card('lab', []),
+    card('dev1', ['dev'])
+  ];
+  const names = (cs: { host: HostDto }[]) => cs.map((c) => c.host.name);
+
+  it('keeps every card when no tag is selected', () => {
+    expect(filterByTags(cards, new Set())).toHaveLength(4);
+  });
+
+  it('keeps cards carrying any selected tag', () => {
+    expect(names(filterByTags(cards, new Set(['dev', 'Web'])))).toEqual(['web', 'dev1']);
+    expect(names(filterByTags(cards, new Set(['nope'])))).toEqual([]);
+  });
+
+  it('lists distinct tags case-insensitively sorted', () => {
+    expect(allTags(cards)).toEqual(['dev', 'prod', 'Web']);
+  });
+
+  it('groups by tag, repeating multi-tag cards, with Untagged last', () => {
+    const groups = groupByTag(cards);
+    expect(groups.map((g) => [g.tag, names(g.cards)])).toEqual([
+      ['dev', ['dev1']],
+      ['prod', ['web', 'db']],
+      ['Web', ['web']],
+      [null, ['lab']]
+    ]);
+  });
+
+  it('only builds sections for the selected tags', () => {
+    const selected = new Set(['prod']);
+    const groups = groupByTag(filterByTags(cards, selected), selected);
+    expect(groups.map((g) => [g.tag, names(g.cards)])).toEqual([['prod', ['web', 'db']]]);
+  });
+
+  it('returns no sections for no cards', () => {
+    expect(groupByTag([])).toEqual([]);
   });
 });
 

@@ -7,7 +7,8 @@ import { expect, test, type Page } from '@playwright/test';
 // round-trips into the dashboard grid exactly as the real backend would drive it.
 const HOSTS = [
   { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: ['prod'], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false, forwardAgent: false },
-  { name: 'imported', hostname: 'imported.example.com', user: 'root', port: 22, tags: [], source: 'sshConfig', hasKey: false, localForwards: [], tunnelAutostart: false, forwardAgent: false }
+  { name: 'imported', hostname: 'imported.example.com', user: 'root', port: 22, tags: [], source: 'sshConfig', hasKey: false, localForwards: [], tunnelAutostart: false, forwardAgent: false },
+  { name: 'api-1', hostname: 'api-1.example.com', user: 'deploy', port: 22, tags: ['prod', 'api'], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false, forwardAgent: false }
 ];
 
 async function boot(page: Page): Promise<void> {
@@ -184,6 +185,49 @@ test('an SSH-config host is adopted by editing it', async ({ page }) => {
   await expect(page.getByText('root@adopted.example.com:22')).toBeVisible();
   await expect(page.getByText('ssh config')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Delete imported' })).toHaveCount(1);
+});
+
+test('filters the grid by several tags', async ({ page }) => {
+  await boot(page);
+  const card = (name: string) => page.getByText(name, { exact: true });
+
+  await page.getByRole('button', { name: 'Filter by tag' }).click();
+  const menu = page.getByRole('menu', { name: 'Filter by tag' });
+  await menu.getByRole('menuitemcheckbox', { name: 'api' }).click();
+  await expect(card('api-1')).toBeVisible();
+  await expect(card('web-1')).toHaveCount(0);
+  await expect(card('imported')).toHaveCount(0);
+
+  // Any selected tag matches: adding "prod" brings web-1 back.
+  await menu.getByRole('menuitemcheckbox', { name: 'prod' }).click();
+  await expect(card('web-1')).toBeVisible();
+  await expect(card('imported')).toHaveCount(0);
+
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await page.getByRole('button', { name: 'Remove the api filter' }).click();
+  await page.getByRole('button', { name: 'Remove the prod filter' }).click();
+  await expect(card('imported')).toBeVisible();
+});
+
+test('groups the grid by tag, repeating multi-tag hosts', async ({ page }) => {
+  await boot(page);
+
+  await page.getByRole('button', { name: 'Group by tag' }).click();
+  await expect(page.getByRole('region', { name: 'api hosts' }).getByText('api-1', { exact: true })).toBeVisible();
+  const prod = page.getByRole('region', { name: 'prod hosts' });
+  await expect(prod.getByText('api-1', { exact: true })).toBeVisible();
+  await expect(prod.getByText('web-1', { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: 'Untagged hosts' }).getByText('imported', { exact: true })
+  ).toBeVisible();
+
+  // Collapsing a section hides its cards; `g` switches back to the flat grid.
+  await prod.getByRole('button', { name: /prod/ }).first().click();
+  await expect(prod.getByText('web-1', { exact: true })).toHaveCount(0);
+  await page.keyboard.press('g');
+  await expect(page.getByRole('region', { name: 'prod hosts' })).toHaveCount(0);
+  await expect(page.getByText('api-1', { exact: true })).toHaveCount(1);
 });
 
 test('rejects a new host whose name already exists', async ({ page }) => {
