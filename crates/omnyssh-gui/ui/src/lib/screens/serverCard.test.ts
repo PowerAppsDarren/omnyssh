@@ -194,21 +194,31 @@ describe('filterHosts — mirrors the TUI host search', () => {
 describe('group-by-tag — mirrors the TUI dashboard', () => {
   const card = (name: string, tags: string[]) =>
     deriveCard({ ...host(name), tags }, CONNECTED, undefined, undefined);
-  const cards = [
-    card('web', ['prod', 'Web']),
-    card('db', ['prod']),
-    card('lab', []),
-    card('dev1', ['dev'])
-  ];
   const names = (cs: { host: HostDto }[]) => cs.map((c) => c.host.name);
+  const sections = (cards: ReturnType<typeof card>[]) =>
+    groupByTag(cards).map((g) => [g.tag, names(g.cards)]);
 
-  it('groups by tag, repeating multi-tag cards, with Untagged last', () => {
-    const groups = groupByTag(cards);
-    expect(groups.map((g) => [g.tag, names(g.cards)])).toEqual([
+  it('puts each card under its first tag only, sections case-insensitive, Untagged last', () => {
+    const cards = [
+      card('web', ['prod', 'Web']),
+      card('lab', []),
+      card('db', ['prod']),
+      card('dev1', ['dev']),
+      card('www', ['Web'])
+    ];
+    expect(sections(cards)).toEqual([
       ['dev', ['dev1']],
       ['prod', ['web', 'db']],
-      ['Web', ['web']],
+      ['Web', ['www']],
       [null, ['lab']]
+    ]);
+  });
+
+  it('skips blank tags and trims the one it uses', () => {
+    const cards = [card('a', ['', ' db ']), card('b', ['  ']), card('c', ['db', 'db'])];
+    expect(sections(cards)).toEqual([
+      ['db', ['a', 'c']],
+      [null, ['b']]
     ]);
   });
 

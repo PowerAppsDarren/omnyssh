@@ -247,20 +247,22 @@ const byTagName = (a: string, b: string): number => {
 };
 
 /** One dashboard section; `tag` is `null` for the "Untagged" section. */
-export type CardGroup = { tag: string | null; cards: ServerCard[] };
+type CardGroup = { tag: string | null; cards: ServerCard[] };
 
-// Group-by-tag, mirroring the TUI: one section per tag (a card with several tags shows
-// in each), sorted case-insensitively, then "Untagged" last. Input order is kept inside
-// a section.
+// Group-by-tag, mirroring the TUI's `g`: a card goes under its first non-blank tag, so it
+// shows once. Sections sort case-insensitively, "Untagged" last; input order is kept
+// inside a section.
 export function groupByTag(cards: ServerCard[]): CardGroup[] {
-  const tags = [...new Set(cards.flatMap((c) => c.host.tags))].sort(byTagName);
-  const groups: CardGroup[] = tags.map((tag) => ({
-    tag,
-    cards: cards.filter((c) => c.host.tags.includes(tag))
-  }));
-  const untagged = cards.filter((c) => c.host.tags.length === 0);
-  if (untagged.length) groups.push({ tag: null, cards: untagged });
-  return groups;
+  const sections = new Map<string | null, ServerCard[]>();
+  for (const card of cards) {
+    const tag = card.host.tags.map((t) => t.trim()).find((t) => t !== '') ?? null;
+    const section = sections.get(tag);
+    if (section) section.push(card);
+    else sections.set(tag, [card]);
+  }
+  return [...sections]
+    .map(([tag, cards]) => ({ tag, cards }))
+    .sort((a, b) => (a.tag === null ? 1 : b.tag === null ? -1 : byTagName(a.tag, b.tag)));
 }
 
 // Host-first quick actions (tech-gui.md §2): `sh` opens a terminal, `files` opens

@@ -60,6 +60,8 @@ async function boot(page: Page): Promise<void> {
             case 'delete_host':
               state.hosts = state.hosts.filter((x) => (x as { name: string }).name !== args.name);
               return Promise.resolve(null);
+            case 'list_snippets':
+              return Promise.resolve([]);
             case 'plugin:event|listen': {
               const { event, handler } = args as { event: string; handler: number };
               (listeners[event] ||= []).push(handler);
@@ -187,24 +189,88 @@ test('an SSH-config host is adopted by editing it', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Delete imported' })).toHaveCount(1);
 });
 
-test('groups the grid by tag, repeating multi-tag hosts', async ({ page }) => {
+test('View options groups hosts under their first tag', async ({ page }) => {
   await boot(page);
+  const trigger = page.getByRole('button', { name: 'View options' });
+  const dot = trigger.locator('span.bg-accent');
+  await expect(dot).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Group by tag' }).click();
-  await expect(page.getByRole('region', { name: 'api hosts' }).getByText('api-1', { exact: true })).toBeVisible();
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  const panel = page.getByRole('dialog', { name: 'View options' });
+  const grouping = panel.getByRole('switch', { name: 'Group by tag' });
+  await expect(grouping).toBeFocused();
+  await page.keyboard.press('Space');
+  await expect(grouping).toHaveAttribute('aria-checked', 'true');
+  await expect(dot).toHaveCount(1);
+
+  // api-1 is tagged "prod, api": one card, under its first tag only.
   const prod = page.getByRole('region', { name: 'prod hosts' });
   await expect(prod.getByText('api-1', { exact: true })).toBeVisible();
   await expect(prod.getByText('web-1', { exact: true })).toBeVisible();
-  await expect(
-    page.getByRole('region', { name: 'Untagged hosts' }).getByText('imported', { exact: true })
-  ).toBeVisible();
-
-  // Collapsing a section hides its cards; `g` switches back to the flat grid.
-  await prod.getByRole('button', { name: /prod/ }).first().click();
-  await expect(prod.getByText('web-1', { exact: true })).toHaveCount(0);
-  await page.keyboard.press('g');
-  await expect(page.getByRole('region', { name: 'prod hosts' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'api hosts' })).toHaveCount(0);
   await expect(page.getByText('api-1', { exact: true })).toHaveCount(1);
+  await expect(page.getByRole('heading', { level: 2 })).toHaveText([/prod/, /Untagged/]);
+
+  await page.keyboard.press('Escape');
+  await expect(panel).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  // A press outside closes it too.
+  await trigger.click();
+  await expect(panel).toBeVisible();
+  await page.getByRole('heading', { name: 'Dashboard' }).click();
+  await expect(panel).toHaveCount(0);
+
+  // `g` switches grouping back off.
+  await page.keyboard.press('g');
+  await expect(prod).toHaveCount(0);
+  await expect(dot).toHaveCount(0);
+});
+
+test('folded sections stay folded across navigation and reload', async ({ page }) => {
+  await boot(page);
+  await page.keyboard.press('g');
+  const header = () =>
+    page.getByRole('region', { name: 'prod hosts' }).getByRole('button', { name: /^prod/ });
+
+  await header().click();
+  await expect(header()).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByText('web-1', { exact: true })).toBeHidden();
+  await expect(page.getByText('imported', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Snippets', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Snippets' })).toBeVisible();
+  await page.getByRole('button', { name: 'Dashboard', exact: true }).click();
+  await expect(header()).toHaveAttribute('aria-expanded', 'false');
+
+  await page.reload();
+  await expect(header()).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByText('web-1', { exact: true })).toBeHidden();
+
+  await header().focus();
+  await page.keyboard.press('Enter');
+  await expect(header()).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByText('web-1', { exact: true })).toBeVisible();
+});
+
+test('a host with a repeated tag renders once', async ({ page }) => {
+  const errors: Error[] = [];
+  page.on('pageerror', (e) => errors.push(e));
+  await boot(page);
+
+  await page.getByRole('button', { name: 'Edit web-1' }).click();
+  const editor = page.getByRole('dialog', { name: 'Edit host' });
+  await expect(editor.getByText('The first tag groups the host on the dashboard.')).toBeVisible();
+  await editor.getByLabel('Tags').fill('prod, prod');
+  await editor.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  await page.keyboard.press('g');
+  const prod = page.getByRole('region', { name: 'prod hosts' });
+  await expect(prod.getByText('web-1', { exact: true })).toHaveCount(1);
+  await expect(prod.getByText('api-1', { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
 });
 
 test('g is ignored under a modal and while typing', async ({ page }) => {

@@ -6,6 +6,7 @@
   // (add/edit/delete, §4.1) lives here — there is no separate Hosts screen (§2).
   // Editing an SSH-config host adopts it into hosts.toml; the file itself is never
   // written, so only Delete stays manual-only.
+  import { tick } from 'svelte';
   import { get } from 'svelte/store';
   import type { HostDto, HostInputDto } from '$lib/bindings';
   import { Surface, Chip, StatusDot, Icon, Button, statusToken } from '$lib/theme';
@@ -48,16 +49,32 @@
   let searchOpen = $state(false);
   let searchInput = $state<HTMLInputElement>();
 
-  // Group-by-tag (mirrors the TUI's `g`), persisted in `dashboardView`.
+  // Group-by-tag (mirrors the TUI's `g`) and the folded sections, persisted in
+  // `dashboardView` so they survive leaving the dashboard and restarts.
   const visibleCards = $derived(filterHosts($serverCards, query));
   const groups = $derived($dashboardView.groupByTag ? groupByTag(visibleCards) : []);
-  // Collapsed sections (by tag; '' is "Untagged"); in-memory only.
-  let collapsed = $state(new Set<string>());
 
-  function toggleCollapsed(key: string): void {
-    const next = new Set(collapsed);
-    if (!next.delete(key)) next.add(key);
-    collapsed = next;
+  // View options popover. Focus moves in on open and back to the trigger on Escape or a
+  // press outside; the dot keeps a changed view from going unnoticed.
+  let viewOpen = $state(false);
+  let viewButton = $state<HTMLButtonElement>();
+  let viewPanel = $state<HTMLElement>();
+  const viewChanged = $derived($dashboardView.groupByTag);
+
+  async function openView(): Promise<void> {
+    viewOpen = true;
+    await tick();
+    viewPanel?.querySelector<HTMLElement>('button')?.focus();
+  }
+
+  function closeView(refocus: boolean): void {
+    viewOpen = false;
+    if (refocus) viewButton?.focus();
+  }
+
+  function onPointerDown(e: PointerEvent): void {
+    const target = e.target as Node;
+    if (viewOpen && !viewPanel?.contains(target) && !viewButton?.contains(target)) closeView(true);
   }
 
   function toggleSearch(): void {
@@ -88,7 +105,9 @@
   // This listener only exists while the dashboard is mounted (the selector unmounts when
   // a session is active), so it never reaches terminal input.
   function onKeydown(e: KeyboardEvent): void {
-    if (isRefreshHotkey(e)) {
+    if (viewOpen && e.key === 'Escape') {
+      closeView(true);
+    } else if (isRefreshHotkey(e)) {
       e.preventDefault();
       void refresh();
     } else if (isGroupHotkey(e)) {
@@ -160,7 +179,7 @@
     'placeholder:text-faint focus-visible:ring-2 focus-visible:ring-focus';
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onpointerdown={onPointerDown} />
 
 <section class="min-h-full px-6 pb-8 pt-3">
   <div class="mb-5 flex items-center gap-3">
@@ -193,17 +212,60 @@
           <Icon name={searchOpen ? 'close' : 'search'} size={15} />
         </button>
       </div>
-      <!-- Group by tag (also the `g` hotkey, like the TUI). -->
-      <button
-        type="button"
-        class="{roundBtn} {$dashboardView.groupByTag ? 'border-strong bg-surface-inset text-fg' : ''}"
-        title="Group by tag (G)"
-        aria-label="Group by tag"
-        aria-pressed={$dashboardView.groupByTag}
-        onclick={() => dashboardView.toggleGroupByTag()}
-      >
-        <Icon name="layers" size={15} />
-      </button>
+      <div class="relative">
+        <button
+          bind:this={viewButton}
+          type="button"
+          class="{roundBtn} relative"
+          title="View options"
+          aria-label="View options"
+          aria-haspopup="dialog"
+          aria-expanded={viewOpen}
+          onclick={() => (viewOpen ? closeView(true) : openView())}
+        >
+          <Icon name="layers" size={15} />
+          {#if viewChanged}
+            <span class="absolute right-0 top-0 h-2 w-2 rounded-full bg-accent ring-2 ring-bg"></span>
+          {/if}
+        </button>
+        {#if viewOpen}
+          <div
+            bind:this={viewPanel}
+            role="dialog"
+            aria-label="View options"
+            tabindex="-1"
+            class="absolute right-0 top-10 z-20 w-72 space-y-4 rounded-2xl border border-default bg-glass p-4 shadow-soft backdrop-blur-md"
+            onfocusout={(e) => {
+              const next = e.relatedTarget as Node | null;
+              if (next && !viewPanel?.contains(next) && next !== viewButton) closeView(false);
+            }}
+          >
+            <div class="flex items-center justify-between gap-4">
+              <div class="min-w-0">
+                <p class="text-sm">Group by tag</p>
+                <p class="text-xs text-muted">Each host goes under its first tag.</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={$dashboardView.groupByTag}
+                aria-label="Group by tag"
+                title="Group by tag (G)"
+                onclick={() => dashboardView.toggleGroupByTag()}
+                class="relative h-6 w-11 shrink-0 rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus {$dashboardView.groupByTag
+                  ? 'bg-accent'
+                  : 'bg-surface-inset'}"
+              >
+                <span
+                  class="absolute top-0.5 h-5 w-5 rounded-full bg-surface shadow-soft transition-[left] {$dashboardView.groupByTag
+                    ? 'left-[1.375rem]'
+                    : 'left-0.5'}"
+                ></span>
+              </button>
+            </div>
+          </div>
+        {/if}
+      </div>
       <!-- Force an immediate metric refresh of every host, like the TUI's `r` (also the
            `r` hotkey). Spins while in flight for feedback. -->
       <button
@@ -240,32 +302,36 @@
     </div>
   {:else if $dashboardView.groupByTag}
     <div class="flex flex-col gap-6">
-      {#each groups as group (group.tag ?? '')}
+      {#each groups as group, g (group.tag ?? '')}
         {@const key = group.tag ?? ''}
-        {@const open = !collapsed.has(key)}
+        {@const open = !$dashboardView.collapsed.includes(key)}
         <section aria-label="{group.tag ?? 'Untagged'} hosts">
-          <button
-            type="button"
-            class="mb-3 flex w-full items-center gap-2 text-left"
-            aria-expanded={open}
-            onclick={() => toggleCollapsed(key)}
+          <h2 class="mb-3">
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              aria-expanded={open}
+              aria-controls="dashboard-section-{g}"
+              onclick={() => dashboardView.toggleCollapsed(key)}
+            >
+              <span class="inline-flex text-faint transition-transform {open ? '' : '-rotate-90'}">
+                <Icon name="chevron" size={14} />
+              </span>
+              <span class="truncate text-sm font-semibold {group.tag === null ? 'italic text-muted' : ''}">
+                {group.tag ?? 'Untagged'}
+              </span>
+              <span class="text-xs tabular-nums text-faint">{group.cards.length}</span>
+              <span class="flex-1 border-t border-default"></span>
+            </button>
+          </h2>
+          <div
+            id="dashboard-section-{g}"
+            class="{open ? 'grid' : 'hidden'} gap-4 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]"
           >
-            <span class="inline-flex text-faint transition-transform {open ? '' : '-rotate-90'}">
-              <Icon name="chevron" size={14} />
-            </span>
-            <span class="text-sm font-semibold {group.tag ? '' : 'italic text-muted'}">
-              {group.tag ?? 'Untagged'}
-            </span>
-            <span class="text-xs tabular-nums text-faint">{group.cards.length}</span>
-            <span class="flex-1 border-t border-default"></span>
-          </button>
-          {#if open}
-            <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
-              {#each group.cards as card, i (i)}
-                {@render serverCard(card)}
-              {/each}
-            </div>
-          {/if}
+            {#each group.cards as card, i (i)}
+              {@render serverCard(card)}
+            {/each}
+          </div>
         </section>
       {/each}
     </div>

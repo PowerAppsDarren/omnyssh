@@ -22,54 +22,66 @@ describe('dashboard view prefs', () => {
     backend.save.mockReset().mockResolvedValue(undefined);
   });
 
-  it('starts ungrouped', async () => {
+  it('starts ungrouped with every section open', async () => {
     const view = await fresh();
-    expect(get(view)).toEqual({ groupByTag: false });
+    expect(get(view)).toEqual({ groupByTag: false, collapsed: [] });
+  });
+
+  it('folds and unfolds sections', async () => {
+    const view = await fresh();
+    view.toggleCollapsed('prod');
+    view.toggleCollapsed('');
+    expect(get(view).collapsed).toEqual(['prod', '']);
+    view.toggleCollapsed('prod');
+    expect(get(view).collapsed).toEqual(['']);
   });
 
   it('mirrors changes to localStorage and initialises from it', async () => {
     const view = await fresh();
     view.toggleGroupByTag();
-    expect(JSON.parse(localStorage.getItem(LOCAL_KEY) ?? '{}')).toEqual({ groupByTag: true });
+    view.toggleCollapsed('db');
+    const saved = { groupByTag: true, collapsed: ['db'] };
+    expect(JSON.parse(localStorage.getItem(LOCAL_KEY) ?? '{}')).toEqual(saved);
     const reloaded = await fresh();
-    expect(get(reloaded)).toEqual({ groupByTag: true });
+    expect(get(reloaded)).toEqual(saved);
   });
 
   it('survives a corrupt mirror', async () => {
     localStorage.setItem(LOCAL_KEY, '{not json');
     const view = await fresh();
-    expect(get(view)).toEqual({ groupByTag: false });
+    expect(get(view)).toEqual({ groupByTag: false, collapsed: [] });
   });
 
   it('writes the canonical tauri-plugin-store on a user change', async () => {
     const view = await fresh();
     view.toggleGroupByTag();
     await vi.waitFor(() => {
-      expect(backend.set).toHaveBeenCalledWith('dashboardView', { groupByTag: true });
+      expect(backend.set).toHaveBeenCalledWith('dashboardView', { groupByTag: true, collapsed: [] });
       expect(backend.save).toHaveBeenCalled();
     });
   });
 
   it('hydrate applies the stored value and refreshes the mirror', async () => {
-    backend.get.mockResolvedValue({ groupByTag: true });
+    const saved = { groupByTag: true, collapsed: ['web'] };
+    backend.get.mockResolvedValue(saved);
     const view = await fresh();
     await view.hydrate();
-    expect(get(view)).toEqual({ groupByTag: true });
-    expect(JSON.parse(localStorage.getItem(LOCAL_KEY) ?? '{}')).toEqual({ groupByTag: true });
+    expect(get(view)).toEqual(saved);
+    expect(JSON.parse(localStorage.getItem(LOCAL_KEY) ?? '{}')).toEqual(saved);
   });
 
   it('hydrate does not clobber a fresh user change', async () => {
-    backend.get.mockResolvedValue({ groupByTag: false });
+    backend.get.mockResolvedValue({ groupByTag: false, collapsed: ['web'] });
     const view = await fresh();
     view.toggleGroupByTag(); // user acts before hydrate resolves
     await view.hydrate();
-    expect(get(view)).toEqual({ groupByTag: true });
+    expect(get(view)).toEqual({ groupByTag: true, collapsed: [] });
   });
 
-  it('hydrate falls back to defaults for invalid values', async () => {
-    backend.get.mockResolvedValue({ groupByTag: 'yes' });
+  it('hydrate falls back per field for invalid values', async () => {
+    backend.get.mockResolvedValue({ groupByTag: 'yes', collapsed: ['db', 1, 'db', null] });
     const view = await fresh();
     await view.hydrate();
-    expect(get(view)).toEqual({ groupByTag: false });
+    expect(get(view)).toEqual({ groupByTag: false, collapsed: ['db'] });
   });
 });
