@@ -198,6 +198,8 @@ test('View options groups hosts under their first tag', async ({ page }) => {
   await trigger.focus();
   await page.keyboard.press('Enter');
   const panel = page.getByRole('dialog', { name: 'View options' });
+  // Opaque: with no scrim, cards behind must not show through where blur isn't drawn.
+  expect(await panel.evaluate((el) => getComputedStyle(el).backgroundColor)).toMatch(/^rgb\(/);
   const grouping = panel.getByRole('switch', { name: 'Group by tag' });
   await expect(grouping).toBeFocused();
   await page.keyboard.press('Space');

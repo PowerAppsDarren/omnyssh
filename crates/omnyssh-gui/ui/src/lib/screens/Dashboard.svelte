@@ -448,7 +448,7 @@
             role="dialog"
             aria-label="View options"
             tabindex="-1"
-            class="absolute right-0 top-10 z-20 w-72 space-y-4 rounded-2xl border border-default bg-glass p-4 shadow-soft backdrop-blur-md"
+            class="absolute right-0 top-10 z-20 w-72 space-y-4 rounded-2xl border border-default bg-surface-raised p-4 shadow-soft"
             onfocusout={(e) => {
               const next = e.relatedTarget as Node | null;
               if (next && !viewPanel?.contains(next) && next !== viewButton) closeView(false);
