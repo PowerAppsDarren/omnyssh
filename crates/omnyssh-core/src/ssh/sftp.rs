@@ -319,10 +319,55 @@ fn join_remote(dir: &str, name: &str) -> String {
     }
 }
 
-/// A directory entry name that is safe to join onto a destination: not `.` or `..`
-/// and free of separators, so a hostile server cannot steer a download elsewhere.
-fn is_plain_name(name: &str) -> bool {
-    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
+/// Whether a name the server gave can be created locally as itself: one plain path
+/// component, so it neither climbs out of the destination nor, as Windows' `C:x` does,
+/// replaces it.
+fn is_safe_name(name: &str) -> bool {
+    let mut parts = std::path::Path::new(name).components();
+    let single = matches!(
+        (parts.next(), parts.next()),
+        (Some(std::path::Component::Normal(part)), None) if part == name
+    );
+    single && !name.contains('\0') && (!cfg!(windows) || is_windows_name(name))
+}
+
+/// Windows' own rules: no `:` (drives, alternate streams) or other reserved character,
+/// no trailing dot or space (Win32 drops them, so `a.` would overwrite `a`), and no
+/// device name, with or without an extension (`aux.c` opens the AUX device).
+fn is_windows_name(name: &str) -> bool {
+    if name.chars().any(|c| c < ' ' || "<>:\"/\\|?*".contains(c)) || name.ends_with(['.', ' ']) {
+        return false;
+    }
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    let device = match upper.get(..3) {
+        Some("CON" | "PRN" | "AUX" | "NUL") => upper.len() == 3,
+        Some("COM" | "LPT") => {
+            let port = &upper[3..];
+            port.chars().count() == 1 && "0123456789\u{b9}\u{b2}\u{b3}".contains(port)
+        }
+        _ => false,
+    };
+    !device
+}
+
+/// `name` from the server joined onto the local folder `dir`, unless it would be
+/// anything but a direct child of `dir`.
+fn join_local(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let path = dir.join(name);
+    (is_safe_name(name) && path.parent() == Some(dir)).then_some(path)
+}
+
+/// Rejects a download destination whose own name could not be created as itself: the
+/// frontends build it from the name the server listed.
+fn check_local_name(local: &str) -> anyhow::Result<()> {
+    let name = std::path::Path::new(local)
+        .file_name()
+        .and_then(|n| n.to_str());
+    if !name.is_some_and(is_safe_name) {
+        anyhow::bail!("'{local}' is not a name that can be created here");
+    }
+    Ok(())
 }
 
 /// Rejects a transfer whose local path climbs out with `..` or either path holds a
@@ -409,9 +454,6 @@ async fn plan_local_tree(root: &std::path::Path, dst_root: &str) -> anyhow::Resu
             .with_context(|| format!("read local dir '{}'", src.display()))?
         {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !is_plain_name(&name) {
-                continue;
-            }
             // `DirEntry::file_type` does not follow symlinks.
             let file_type = entry
                 .file_type()
@@ -433,7 +475,7 @@ async fn plan_local_tree(root: &std::path::Path, dst_root: &str) -> anyhow::Resu
 }
 
 /// Walks the remote folder `root`, mapping it onto the local folder `dst_root`.
-/// Symlinks and special files are skipped, as are names that are not plain.
+/// Symlinks and special files are skipped, as are names that cannot be created here.
 async fn plan_remote_tree(
     sftp: &russh_sftp::client::SftpSession,
     root: &str,
@@ -449,16 +491,16 @@ async fn plan_remote_tree(
         plan.dirs.push(dst.to_string_lossy().into_owned());
         for entry in read_dir {
             let name = entry.file_name();
-            if !is_plain_name(&name) {
+            let Some(local) = join_local(&dst, &name) else {
                 continue;
-            }
+            };
             let file_type = entry.file_type();
             if file_type.is_dir() {
-                stack.push((join_remote(&src, &name), dst.join(&name)));
+                stack.push((join_remote(&src, &name), local));
             } else if file_type.is_file() {
                 plan.files.push(PlannedFile {
                     src: join_remote(&src, &name),
-                    dst: dst.join(&name).to_string_lossy().into_owned(),
+                    dst: local.to_string_lossy().into_owned(),
                     size: entry.metadata().size.unwrap_or(0),
                 });
             }
@@ -476,6 +518,7 @@ async fn do_download(
     event_tx: &mpsc::Sender<CoreEvent>,
 ) -> anyhow::Result<()> {
     check_paths(local, remote)?;
+    check_local_name(local)?;
 
     // Size for progress and file-or-folder (best-effort: a failed stat downloads as a
     // file, and the open below reports the real error).
@@ -797,14 +840,94 @@ mod tests {
     }
 
     #[test]
-    fn plain_names_exclude_dots_and_separators() {
-        assert!(is_plain_name("report.txt"));
-        assert!(is_plain_name("..hidden"));
-        for name in ["", ".", "..", "a/b", "a\\b", "a\0b"] {
-            assert!(!is_plain_name(name), "{name:?} should not be plain");
+    fn a_server_name_must_be_one_plain_component() {
+        for name in ["report.txt", "..hidden", "with space", "caf\u{e9}.txt"] {
+            assert!(is_safe_name(name), "{name:?} should be safe");
+        }
+        for name in ["", ".", "..", "a/b", "/abs", "dir/", "a\0b"] {
+            assert!(!is_safe_name(name), "{name:?} should not be safe");
         }
         assert_eq!(join_remote("/", "x"), "/x");
         assert_eq!(join_remote("/srv", "x"), "/srv/x");
+    }
+
+    #[test]
+    fn windows_names_refuse_drives_devices_and_trimmed_endings() {
+        for name in [
+            "C:x",
+            "D:",
+            "a:b",
+            "..\\x",
+            "a\\b",
+            "CON",
+            "aux.c",
+            "NUL.tar.gz",
+            "Com1",
+            "lpt9.txt",
+            "COM\u{b9}",
+            "CON .txt",
+            "a.",
+            "a ",
+            "a<b",
+            "a?b",
+            "a\"b",
+            "tab\tname",
+        ] {
+            assert!(
+                !is_windows_name(name),
+                "{name:?} should be refused on Windows"
+            );
+        }
+        for name in [
+            "report.txt",
+            "CONFIG",
+            "COM10",
+            "lpt",
+            "aux_c",
+            ".hidden",
+            "a.b",
+            "a b",
+        ] {
+            assert!(
+                is_windows_name(name),
+                "{name:?} should be allowed on Windows"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_a_server_name_never_leaves_the_destination() {
+        let dst = std::path::Path::new(r"C:\Users\me\dl");
+        for name in [
+            "C:x", "D:", "a:b", r"..\x", r"\x", r"\\?\x", "CON", "aux.c", "a.",
+        ] {
+            assert!(
+                join_local(dst, name).is_none(),
+                "{name:?} should be refused"
+            );
+        }
+        assert_eq!(join_local(dst, "x.txt"), Some(dst.join("x.txt")));
+        assert!(check_local_name(r"C:\Users\me\D:evil").is_err());
+        assert!(check_local_name(r"C:\Users\me\nul.txt").is_err());
+        assert!(check_local_name(r"C:\Users\me\notes.txt").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn on_unix_backslashes_colons_and_device_names_are_plain() {
+        let dst = std::path::Path::new("/home/me/dl");
+        for name in ["a\\b", "..\\x", "C:x", "a:b", "CON", "a."] {
+            assert_eq!(join_local(dst, name), Some(dst.join(name)), "{name:?}");
+        }
+        for name in ["..", "a/b", ""] {
+            assert!(
+                join_local(dst, name).is_none(),
+                "{name:?} should be refused"
+            );
+        }
+        assert!(check_local_name("/home/me/dl/C:x").is_ok());
+        assert!(check_local_name("/").is_err());
     }
 
     #[test]
