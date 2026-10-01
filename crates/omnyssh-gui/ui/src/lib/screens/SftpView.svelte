@@ -17,7 +17,6 @@
   import {
     sftp,
     markedEntries,
-    markedTransferable,
     dragPayload,
     formatBytes,
     rootOf,
@@ -82,9 +81,8 @@
   const transfer = $derived(view ? transferState(view) : undefined);
 
   // Folders transfer whole, so the Upload/Download buttons take them like files.
-  const localMarkedItems = $derived(view ? markedTransferable(view.local) : []);
+  const localMarked = $derived(view ? markedEntries(view.local) : []);
   const remoteMarked = $derived(view ? markedEntries(view.remote) : []);
-  const remoteMarkedItems = $derived(view ? markedTransferable(view.remote) : []);
   const singleRemoteMark = $derived(remoteMarked.length === 1 ? remoteMarked[0] : undefined);
 
   function errMsg(err: unknown): string {
@@ -556,8 +554,8 @@
             type="button"
             class={toolBtn}
             title="Upload marked files and folders to the remote directory"
-            disabled={localMarkedItems.length === 0}
-            onclick={() => upload(localMarkedItems)}
+            disabled={localMarked.length === 0}
+            onclick={() => upload(localMarked)}
           >
             <Icon name="upload" size={13} />
             Upload
@@ -594,8 +592,8 @@
             type="button"
             class={toolBtn}
             title="Download marked files and folders to the local directory"
-            disabled={remoteMarkedItems.length === 0}
-            onclick={() => download(remoteMarkedItems)}
+            disabled={remoteMarked.length === 0}
+            onclick={() => download(remoteMarked)}
           >
             <Icon name="download" size={13} />
             Download
