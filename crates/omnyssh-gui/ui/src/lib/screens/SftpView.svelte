@@ -21,6 +21,7 @@
     dragPayload,
     formatBytes,
     rootOf,
+    baseName,
     type PaneSide
   } from '$lib/stores/sftp';
   import { lastError } from '$lib/stores/notifications';
@@ -36,8 +37,7 @@
     sftpPreview,
     listLocalDir,
     listLocalRoots,
-    previewLocalFile,
-    statLocalPaths
+    previewLocalFile
   } from '$lib/ipc/commands';
 
   let { session, active }: { session: Session; active: boolean } = $props();
@@ -239,7 +239,7 @@
 
   // `dir` defaults to the other pane's current directory; a drop onto a folder row
   // passes that folder instead.
-  function upload(files: FileEntryDto[], dir = view?.remote.path): void {
+  function upload(files: Array<Pick<FileEntryDto, 'name' | 'path'>>, dir = view?.remote.path): void {
     const id = backendId;
     if (id == null || !view || dir == null) return;
     enqueue(
@@ -370,7 +370,7 @@
         const remote = target?.side === 'remote' ? target : null;
         if (p.type === 'drop') {
           osDrop = null;
-          if (remote) void uploadDropped(p.paths, remote.dir);
+          if (remote) uploadDropped(p.paths, remote.dir);
         } else {
           osDrop = remote;
         }
@@ -383,14 +383,12 @@
     return () => unlisten?.();
   });
 
-  async function uploadDropped(paths: string[], dir: string): Promise<void> {
-    const entries = await statLocalPaths(paths).catch((err) => {
-      lastError.set(errMsg(err));
-      return [] as FileEntryDto[];
-    });
-    // Folders upload whole, contents and all (the core walks them).
-    if (entries.length < paths.length) lastError.set('Some dropped items could not be read.');
-    upload(entries, dir);
+  // Dropped paths upload as they are: the core tells files from folders and walks the
+  // folders.
+  function uploadDropped(paths: string[], dir: string): void {
+    const items = paths.map((path) => ({ path, name: baseName(path) }));
+    if (items.some((item) => !item.name)) lastError.set('A drive or volume cannot be uploaded.');
+    upload(items.filter((item) => item.name), dir);
   }
 
   function guarded<T>(fn: (arg: T) => void): (arg: T) => void {
@@ -507,7 +505,6 @@
         title="Local"
         side="local"
         pane={view.local}
-        showCreated
         dropActive={drag?.target?.side === 'local'}
         dropDir={drag?.target?.side === 'local' ? drag.target.row : undefined}
         onNavigate={guarded((e) => navigate('local', e))}

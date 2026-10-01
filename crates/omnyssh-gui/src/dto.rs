@@ -243,8 +243,7 @@ pub struct SnippetDto {
 
 /// A file or directory in an SFTP panel listing (tech-gui.md §4.1). Maps from the
 /// core `FileEntry`; `path` is the absolute path the frontend marks entries by.
-/// `modified`/`created` are Unix seconds, `null` when unknown; `created` is always
-/// `null` for remote entries, since SFTP v3 does not report it.
+/// `modified` is Unix seconds, `null` when unknown.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct FileEntryDto {
@@ -253,7 +252,6 @@ pub struct FileEntryDto {
     pub size: u64,
     pub is_dir: bool,
     pub modified: Option<i64>,
-    pub created: Option<i64>,
 }
 
 /// Live progress for one SFTP upload/download (tech-gui.md §4.1). The GUI allocates
@@ -566,7 +564,6 @@ impl From<&FileEntry> for FileEntryDto {
             size: entry.size,
             is_dir: entry.is_dir,
             modified: entry.modified,
-            created: entry.created,
         }
     }
 }
@@ -952,7 +949,6 @@ mod tests {
             size: 4096,
             is_dir: false,
             modified: Some(1_700_000_000),
-            created: Some(1_600_000_000),
         };
         let dto = FileEntryDto::from(&file);
         assert_eq!(dto.name, "config.toml");
@@ -960,7 +956,6 @@ mod tests {
         assert_eq!(dto.size, 4096);
         assert!(!dto.is_dir);
         assert_eq!(dto.modified, Some(1_700_000_000));
-        assert_eq!(dto.created, Some(1_600_000_000));
 
         let dir = FileEntry {
             name: "..".to_string(),
@@ -968,30 +963,28 @@ mod tests {
             size: 0,
             is_dir: true,
             modified: None,
-            created: None,
         };
         let dto = FileEntryDto::from(&dir);
         assert!(dto.is_dir);
         assert_eq!(dto.size, 0);
-        assert!(dto.modified.is_none() && dto.created.is_none());
+        assert!(dto.modified.is_none());
     }
 
     #[test]
     fn file_entry_dto_uses_camel_case_is_dir_on_the_wire() {
         // The frontend reads `isDir` (tech-gui.md §4.1); a snake-case leak would
-        // silently render every entry as a file. Unknown times go out as `null`.
+        // silently render every entry as a file.
         let json = serde_json::to_string(&FileEntryDto::from(&FileEntry {
             name: "srv".to_string(),
             path: "/srv".to_string(),
             size: 0,
             is_dir: true,
             modified: Some(1_700_000_000),
-            created: None,
         }))
         .expect("serialise FileEntryDto");
         assert_eq!(
             json,
-            r#"{"name":"srv","path":"/srv","size":0,"isDir":true,"modified":1700000000,"created":null}"#
+            r#"{"name":"srv","path":"/srv","size":0,"isDir":true,"modified":1700000000}"#
         );
     }
 

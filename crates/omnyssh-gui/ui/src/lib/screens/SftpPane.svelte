@@ -15,7 +15,6 @@
     title,
     side,
     pane,
-    showCreated = false,
     dropActive = false,
     dropDir,
     onNavigate,
@@ -27,8 +26,6 @@
     title: string;
     side: PaneSide;
     pane: Pane;
-    /** Show the creation-time column (local only: SFTP v3 does not report it). */
-    showCreated?: boolean;
     /** The pane is the target of a drag in progress. */
     dropActive?: boolean;
     /** The folder row under the pointer while this pane is the drop target. */
@@ -43,9 +40,8 @@
   const rowBase =
     'flex w-full min-w-0 items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
-  // Date columns appear once the pane is wide enough to keep names readable.
+  // The date column appears once the pane is wide enough to keep names readable.
   const modifiedCol = 'hidden w-36 shrink-0 text-right lg:inline';
-  const createdCol = 'hidden w-36 shrink-0 text-right xl:inline';
 </script>
 
 <section
@@ -86,7 +82,6 @@
       >
         <span class="min-w-0 flex-1 pl-[1.4rem]">Name</span>
         <span class="shrink-0">Size</span>
-        {#if showCreated}<span class={createdCol}>Created</span>{/if}
         <span class={modifiedCol}>Modified</span>
       </div>
       <ul class="space-y-0.5">
@@ -129,14 +124,6 @@
                 <span class="shrink-0 tabular-nums text-xs text-faint">{formatBytes(entry.size)}</span>
               {/if}
               {#if !isParent}
-                {#if showCreated}
-                  <span
-                    class="{createdCol} tabular-nums text-xs text-faint"
-                    title={entry.created != null ? `Created ${formatDate(entry.created, true)}` : undefined}
-                  >
-                    {formatDate(entry.created)}
-                  </span>
-                {/if}
                 <span
                   class="{modifiedCol} tabular-nums text-xs text-faint"
                   title={entry.modified != null ? `Modified ${formatDate(entry.modified, true)}` : undefined}

@@ -113,6 +113,15 @@ export function rootOf(path: string, roots: string[]): string {
   return roots.find((root) => lower.startsWith(root.toLowerCase())) ?? '';
 }
 
+/** The name a local path is uploaded under: its last component, or '' for a root
+ *  ('/', 'C:\\'), which has no name to give it on the server. A path with no '/' is a
+ *  Windows one, where '\\' separates; elsewhere '\\' is part of a name. */
+export function baseName(path: string): string {
+  const sep = path.includes('/') ? '/' : '\\';
+  const name = path.split(sep).filter(Boolean).at(-1) ?? '';
+  return sep === '\\' && /^[a-z]:$/i.test(name) ? '' : name;
+}
+
 /** Human-readable byte size for a listing row or a transfer bar. */
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

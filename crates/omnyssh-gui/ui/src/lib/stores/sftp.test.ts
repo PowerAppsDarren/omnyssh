@@ -14,6 +14,7 @@ import {
   formatDate,
   dragPayload,
   rootOf,
+  baseName,
   type Pane,
   type SftpSession
 } from './sftp';
@@ -22,7 +23,7 @@ import {
 // it is unit-testable without a Tauri runtime (tech-gui.md §3.2, §6.4).
 
 function entry(name: string, isDir = false, size = 0): FileEntryDto {
-  return { name, path: `/srv/${name}`, size, isDir, modified: null, created: null };
+  return { name, path: `/srv/${name}`, size, isDir, modified: null };
 }
 
 function paneWith(entries: FileEntryDto[], marked: string[] = []): Pane {
@@ -211,6 +212,20 @@ describe('rootOf', () => {
 
   it('puts every path under / on a single-root system', () => {
     expect(rootOf('/home/me', ['/'])).toBe('/');
+  });
+});
+
+describe('baseName', () => {
+  it('takes the last component of a dropped path', () => {
+    expect(baseName('/tmp/album/')).toBe('album');
+    expect(baseName('/home/me/back\\slash.txt')).toBe('back\\slash.txt');
+    expect(baseName('C:\\Users\\me\\photo.png')).toBe('photo.png');
+  });
+
+  it('has no name for a root', () => {
+    expect(baseName('/')).toBe('');
+    expect(baseName('C:\\')).toBe('');
+    expect(baseName('d:')).toBe('');
   });
 });
 

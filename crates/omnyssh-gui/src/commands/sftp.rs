@@ -12,8 +12,7 @@ use omnyssh_core::ssh::identity;
 use omnyssh_core::ssh::password::Prompter;
 use omnyssh_core::ssh::sftp::{
     list_local_dir as core_list_local_dir, local_roots,
-    preview_local_file as core_preview_local_file, stat_local_paths as core_stat_local_paths,
-    SftpCommand, SftpManager,
+    preview_local_file as core_preview_local_file, SftpCommand, SftpManager,
 };
 
 use crate::bridge;
@@ -185,18 +184,6 @@ pub async fn list_local_dir(path: String) -> Result<Vec<FileEntryDto>, CommandEr
         message: format!("{e:#}"),
     })?;
     Ok(entries.iter().map(FileEntryDto::from).collect())
-}
-
-/// Stat local paths, e.g. files dropped onto a pane from the OS, so the frontend can
-/// tell files from directories. Paths that cannot be read are left out.
-#[tauri::command]
-#[specta::specta]
-pub async fn stat_local_paths(paths: Vec<String>) -> Vec<FileEntryDto> {
-    core_stat_local_paths(&paths)
-        .await
-        .iter()
-        .map(FileEntryDto::from)
-        .collect()
 }
 
 /// The roots the local pane can switch to: every drive letter on Windows, `/`

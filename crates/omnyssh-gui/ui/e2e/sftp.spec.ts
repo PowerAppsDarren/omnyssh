@@ -31,7 +31,6 @@ async function boot(page: Page, windows = false): Promise<void> {
         size: number;
         isDir: boolean;
         modified?: number | null;
-        created?: number | null;
       };
       // 2024-06-15 12:00 UTC: mid-month and midday, so the year shows in any time zone.
       const JUNE_2024 = 1718452800;
@@ -49,8 +48,7 @@ async function boot(page: Page, windows = false): Promise<void> {
                 path: '/home/user/notes.txt',
                 size: 24,
                 isDir: false,
-                modified: JUNE_2024,
-                created: JUNE_2024
+                modified: JUNE_2024
               },
               { name: 'work', path: '/home/user/work', size: 0, isDir: true }
             ]
@@ -159,15 +157,6 @@ async function boot(page: Page, windows = false): Promise<void> {
             }
             case 'sftp_close':
               return Promise.resolve(null);
-            // Files dropped from the OS: a path ending in `/` stands for a folder.
-            case 'stat_local_paths':
-              return Promise.resolve(
-                (args.paths as string[]).map((p) => {
-                  const isDir = p.endsWith('/');
-                  const path = isDir ? p.slice(0, -1) : p;
-                  return { name: baseName(path), path, size: isDir ? 0 : 3, isDir, modified: null, created: null };
-                })
-              );
             case 'plugin:event|listen': {
               const { event, handler } = args as { event: string; handler: number };
               (listeners[event] ||= []).push(handler);
@@ -238,9 +227,7 @@ test('round-trip: upload a local file to the remote, then download a remote file
   await expect(localPane.getByText('config.yml')).toBeVisible();
 });
 
-test('the panes show modification times, and creation times on the local side only', async ({
-  page
-}) => {
+test('the panes show modification times', async ({ page }) => {
   await boot(page);
   await page.getByTitle('files on web-1').click();
   const localPane = page.getByRole('region', { name: 'Local' });
@@ -249,9 +236,7 @@ test('the panes show modification times, and creation times on the local side on
   await expect(remotePane.getByText('config.yml')).toBeVisible();
 
   await expect(localPane.getByTitle(/^Modified .*2024/)).toBeVisible();
-  await expect(localPane.getByTitle(/^Created .*2024/)).toBeVisible();
   await expect(remotePane.getByTitle(/^Modified .*2024/)).toBeVisible();
-  await expect(remotePane.getByText('Created', { exact: true })).toHaveCount(0);
 });
 
 async function dragOnto(page: Page, from: Locator, to: Locator): Promise<void> {
@@ -350,7 +335,6 @@ test('drag and drop: files and folders dropped from the OS onto the remote pane 
   expect(await uploads()).toEqual(['/photo.png']);
   await page.evaluate(() => (window as unknown as { __completeTransfer: () => void }).__completeTransfer());
   await expect.poll(uploads).toEqual(['/photo.png', '/album']);
-  await expect(page.getByText('could not be read')).toHaveCount(0);
 });
 
 test('an inactive tab’s modal never overlays another entity (§2 exactly-one-active)', async ({

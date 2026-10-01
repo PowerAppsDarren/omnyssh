@@ -295,13 +295,6 @@ async listLocalRoots() : Promise<string[]> {
     return await TAURI_INVOKE("list_local_roots");
 },
 /**
- * Stat local paths, e.g. files dropped onto a pane from the OS, so the frontend can
- * tell files from directories. Paths that cannot be read are left out.
- */
-async statLocalPaths(paths: string[]) : Promise<FileEntryDto[]> {
-    return await TAURI_INVOKE("stat_local_paths", { paths });
-},
-/**
  * Read up to 4 KiB of a local file as UTF-8 for preview (tech-gui.md §4.2).
  */
 async previewLocalFile(path: string) : Promise<Result<string, CommandError>> {
@@ -522,10 +515,9 @@ export type Error = { message: string }
 /**
  * A file or directory in an SFTP panel listing (tech-gui.md §4.1). Maps from the
  * core `FileEntry`; `path` is the absolute path the frontend marks entries by.
- * `modified`/`created` are Unix seconds, `null` when unknown; `created` is always
- * `null` for remote entries, since SFTP v3 does not report it.
+ * `modified` is Unix seconds, `null` when unknown.
  */
-export type FileEntryDto = { name: string; path: string; size: number; isDir: boolean; modified: number | null; created: number | null }
+export type FileEntryDto = { name: string; path: string; size: number; isDir: boolean; modified: number | null }
 /**
  * Preview bytes for a remote file (tech-gui.md §4.3). Stamped with `sessionId`; the
  * core `FilePreviewReady` carries only the path + content (§3.4).

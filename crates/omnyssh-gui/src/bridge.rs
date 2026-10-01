@@ -459,7 +459,6 @@ mod tests {
             size: 0,
             is_dir: false,
             modified: None,
-            created: None,
         }
     }
 

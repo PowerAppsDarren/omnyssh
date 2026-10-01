@@ -165,11 +165,6 @@ export async function listLocalDir(path: string): Promise<FileEntryDto[]> {
   return res.data;
 }
 
-/** Stat local paths (e.g. files dropped from the OS); unreadable ones are left out. */
-export async function statLocalPaths(paths: string[]): Promise<FileEntryDto[]> {
-  return commands.statLocalPaths(paths);
-}
-
 /** The roots the local pane can switch to: drive letters on Windows, `/` elsewhere. */
 export async function listLocalRoots(): Promise<string[]> {
   return commands.listLocalRoots();
