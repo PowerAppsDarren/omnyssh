@@ -10,7 +10,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 ## Unreleased
 
 ### Features
-- **The desktop app says which version it is.** Settings had no version anywhere, and a bug report for it has to quote one: the only way to get it was to leave the app and run `omny --version` in the terminal app. An About section in Settings now names the installed build, taken from the same version the terminal app prints, so the two cannot disagree. The number is shown whether or not an update is pending, since it is what a report needs before deciding to install one.
+- **Settings shows the installed version.** On Windows and Linux the desktop app showed its version nowhere. Settings now ends with it, and it can be copied into a bug report.
 
 ### Bug Fixes
 - **Security: a server that offers a host key of another type than the one saved for it is refused.** OmnySSH compared the offered key only with saved keys of the same type. A host saved with its Ed25519 key that suddenly offered only an RSA or ECDSA key was therefore taken for a new host: the key was saved and the login went ahead, password included, and the dashboard did this in the background without anyone connecting. Someone intercepting the connection could get past the saved key this way. Like `ssh`, OmnySSH now refuses any key that matches none of those saved for the host, whatever its type, and says which type is saved. A server that really dropped the type of key it was saved with needs its old key removed once, as `ssh` also asks.
