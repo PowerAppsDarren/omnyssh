@@ -403,10 +403,11 @@ test('the grip moves a card with the keyboard, within its section when grouped',
   await expect.poll(() => cardOrder(page)).toEqual(['web-1', 'imported', 'api-1']);
   await expect(grip).toBeFocused();
 
-  // Grouped, prod holds web-1 and api-1: End moves web-1 to the end of prod only.
+  // Grouped, prod holds web-1 and api-1: End moves web-1 to the end of prod only. The
+  // regroup rebuilds the cards but keeps focus on the same grip.
   await page.keyboard.press('g');
   await expect.poll(() => cardOrder(page)).toEqual(['web-1', 'api-1', 'imported']);
-  await page.getByRole('button', { name: 'Move web-1' }).focus();
+  await expect(page.getByRole('button', { name: 'Move web-1' })).toBeFocused();
   await page.keyboard.press('End');
   await expect.poll(() => cardOrder(page)).toEqual(['api-1', 'web-1', 'imported']);
   await expect(page.locator('[aria-live="polite"]')).toHaveText('web-1 moved to position 2 of 2');

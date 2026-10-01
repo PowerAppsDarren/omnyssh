@@ -297,7 +297,28 @@
       void refresh();
     } else if (isGroupHotkey(e)) {
       e.preventDefault();
-      dashboardView.toggleGroupByTag();
+      void toggleGrouping();
+    }
+  }
+
+  // Regrouping rebuilds every card, so put focus back on the same control of the same
+  // host. Cards sit in the DOM in screen order, folded sections included.
+  async function toggleGrouping(): Promise<void> {
+    const shown = (): ServerCard[] => ($dashboardView.groupByTag ? groups.flatMap((g) => g.cards) : visibleCards);
+    const cardEls = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[data-card]')];
+    const focused = document.activeElement;
+    const cardEl = focused?.closest<HTMLElement>('[data-card]');
+    const host = cardEl && shown()[cardEls().indexOf(cardEl)]?.host;
+    const control = cardEl ? [...cardEl.querySelectorAll('button')].indexOf(focused as HTMLButtonElement) : -1;
+    dashboardView.toggleGroupByTag();
+    if (!host) return;
+    await tick();
+    const next = cardEls()[shown().findIndex((c) => c.host === host)];
+    const target = next?.querySelectorAll('button')[control];
+    target?.focus();
+    // A folded section hides the card: land on its header instead.
+    if (target && document.activeElement !== target) {
+      next?.closest('section')?.querySelector<HTMLElement>('h2 button')?.focus();
     }
   }
 
@@ -577,6 +598,7 @@
 {#snippet serverCard(card: ServerCard, run: ServerCard[], i: number, grid: string | null)}
   {@const lift = lifted && lifted.grid === grid && lifted.index === i ? lifted : null}
   <div
+    data-card
     class="group/card relative {lift ? 'z-20 opacity-90' : ''}"
     style:transform={lift ? `translate(${lift.dx}px, ${lift.dy}px)` : undefined}
   >
