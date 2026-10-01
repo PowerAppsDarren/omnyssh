@@ -28,6 +28,5 @@ export type IconName =
   | 'telegram'
   | 'star'
   | 'tunnel'
-  | 'tag'
   | 'layers'
   | 'chevron';

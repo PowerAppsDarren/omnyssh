@@ -108,9 +108,6 @@
     <path d="M4 7h16" />
     <path d="m16 21 4-4-4-4" />
     <path d="M20 17H4" />
-  {:else if name === 'tag'}
-    <path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
-    <line x1="7" y1="7" x2="7.01" y2="7" />
   {:else if name === 'layers'}
     <polygon points="12 2 2 7 12 12 22 7 12 2" />
     <polyline points="2 17 12 22 22 17" />

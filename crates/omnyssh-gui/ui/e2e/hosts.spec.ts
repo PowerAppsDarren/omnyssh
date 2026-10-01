@@ -187,29 +187,6 @@ test('an SSH-config host is adopted by editing it', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Delete imported' })).toHaveCount(1);
 });
 
-test('filters the grid by several tags', async ({ page }) => {
-  await boot(page);
-  const card = (name: string) => page.getByText(name, { exact: true });
-
-  await page.getByRole('button', { name: 'Filter by tag' }).click();
-  const menu = page.getByRole('menu', { name: 'Filter by tag' });
-  await menu.getByRole('menuitemcheckbox', { name: 'api' }).click();
-  await expect(card('api-1')).toBeVisible();
-  await expect(card('web-1')).toHaveCount(0);
-  await expect(card('imported')).toHaveCount(0);
-
-  // Any selected tag matches: adding "prod" brings web-1 back.
-  await menu.getByRole('menuitemcheckbox', { name: 'prod' }).click();
-  await expect(card('web-1')).toBeVisible();
-  await expect(card('imported')).toHaveCount(0);
-
-  await page.keyboard.press('Escape');
-  await expect(menu).toHaveCount(0);
-  await page.getByRole('button', { name: 'Remove the api filter' }).click();
-  await page.getByRole('button', { name: 'Remove the prod filter' }).click();
-  await expect(card('imported')).toBeVisible();
-});
-
 test('groups the grid by tag, repeating multi-tag hosts', async ({ page }) => {
   await boot(page);
 

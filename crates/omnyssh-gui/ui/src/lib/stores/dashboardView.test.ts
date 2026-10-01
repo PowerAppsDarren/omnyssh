@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { isGroupHotkey, parseView } from './dashboardView';
+import { isGroupHotkey } from './dashboardView';
 
 // Same persistence shape as the sidebar collapse (./ui.test.ts): a fake Tauri store
 // and a fresh module per test to reset the singleton.
@@ -23,70 +23,55 @@ describe('dashboard view prefs', () => {
     backend.save.mockReset().mockResolvedValue(undefined);
   });
 
-  it('starts ungrouped with no tag filter', async () => {
+  it('starts ungrouped', async () => {
     const view = await fresh();
-    expect(get(view)).toEqual({ groupByTag: false, tagFilter: [] });
-  });
-
-  it('toggles tags in and out of the filter', async () => {
-    const view = await fresh();
-    view.toggleTag('prod');
-    view.toggleTag('dev');
-    expect(get(view).tagFilter).toEqual(['prod', 'dev']);
-    view.toggleTag('prod');
-    expect(get(view).tagFilter).toEqual(['dev']);
-    view.clearTags();
-    expect(get(view).tagFilter).toEqual([]);
+    expect(get(view)).toEqual({ groupByTag: false });
   });
 
   it('mirrors changes to localStorage and initialises from it', async () => {
     const view = await fresh();
     view.toggleGroupByTag();
-    view.toggleTag('prod');
-    expect(JSON.parse(localStorage.getItem(LOCAL_KEY) ?? '{}')).toEqual({
-      groupByTag: true,
-      tagFilter: ['prod']
-    });
+    expect(JSON.parse(localStorage.getItem(LOCAL_KEY) ?? '{}')).toEqual({ groupByTag: true });
     const reloaded = await fresh();
-    expect(get(reloaded)).toEqual({ groupByTag: true, tagFilter: ['prod'] });
+    expect(get(reloaded)).toEqual({ groupByTag: true });
   });
 
   it('survives a corrupt mirror', async () => {
     localStorage.setItem(LOCAL_KEY, '{not json');
     const view = await fresh();
-    expect(get(view)).toEqual({ groupByTag: false, tagFilter: [] });
+    expect(get(view)).toEqual({ groupByTag: false });
   });
 
   it('writes the canonical tauri-plugin-store on a user change', async () => {
     const view = await fresh();
     view.toggleGroupByTag();
     await vi.waitFor(() => {
-      expect(backend.set).toHaveBeenCalledWith('dashboardView', { groupByTag: true, tagFilter: [] });
+      expect(backend.set).toHaveBeenCalledWith('dashboardView', { groupByTag: true });
       expect(backend.save).toHaveBeenCalled();
     });
   });
 
-  it('hydrate applies the stored value but never clobbers a fresh user change', async () => {
-    backend.get.mockResolvedValue({ groupByTag: true, tagFilter: ['db'] });
+  it('hydrate applies the stored value and refreshes the mirror', async () => {
+    backend.get.mockResolvedValue({ groupByTag: true });
     const view = await fresh();
     await view.hydrate();
-    expect(get(view)).toEqual({ groupByTag: true, tagFilter: ['db'] });
-
-    backend.get.mockResolvedValue({ groupByTag: true, tagFilter: [] });
-    const other = await fresh();
-    other.toggleTag('web'); // user acts before hydrate resolves
-    await other.hydrate();
-    expect(get(other)).toEqual({ groupByTag: false, tagFilter: ['web'] });
+    expect(get(view)).toEqual({ groupByTag: true });
+    expect(JSON.parse(localStorage.getItem(LOCAL_KEY) ?? '{}')).toEqual({ groupByTag: true });
   });
-});
 
-describe('parseView', () => {
-  it('falls back per field and drops non-string and duplicate tags', () => {
-    expect(parseView(null)).toEqual({ groupByTag: false, tagFilter: [] });
-    expect(parseView({ groupByTag: 'yes', tagFilter: ['a', 1, 'a', 'b'] })).toEqual({
-      groupByTag: false,
-      tagFilter: ['a', 'b']
-    });
+  it('hydrate does not clobber a fresh user change', async () => {
+    backend.get.mockResolvedValue({ groupByTag: false });
+    const view = await fresh();
+    view.toggleGroupByTag(); // user acts before hydrate resolves
+    await view.hydrate();
+    expect(get(view)).toEqual({ groupByTag: true });
+  });
+
+  it('hydrate falls back to defaults for invalid values', async () => {
+    backend.get.mockResolvedValue({ groupByTag: 'yes' });
+    const view = await fresh();
+    await view.hydrate();
+    expect(get(view)).toEqual({ groupByTag: false });
   });
 });
 

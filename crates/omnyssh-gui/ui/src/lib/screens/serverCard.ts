@@ -239,13 +239,6 @@ export function filterHosts(cards: ServerCard[], query: string): ServerCard[] {
   );
 }
 
-// Tag filter, mirroring the TUI (`HostListView::rebuild_filter`): a card is kept when it
-// carries any selected tag. An empty selection keeps every card.
-export function filterByTags(cards: ServerCard[], selected: ReadonlySet<string>): ServerCard[] {
-  if (selected.size === 0) return cards;
-  return cards.filter(({ host }) => host.tags.some((t) => selected.has(t)));
-}
-
 const byTagName = (a: string, b: string): number => {
   const la = a.toLowerCase();
   const lb = b.toLowerCase();
@@ -253,19 +246,14 @@ const byTagName = (a: string, b: string): number => {
   return a < b ? -1 : a > b ? 1 : 0;
 };
 
-/** Every distinct tag across the cards, sorted case-insensitively. */
-export function allTags(cards: ServerCard[]): string[] {
-  return [...new Set(cards.flatMap((c) => c.host.tags))].sort(byTagName);
-}
-
 /** One dashboard section; `tag` is `null` for the "Untagged" section. */
 export type CardGroup = { tag: string | null; cards: ServerCard[] };
 
 // Group-by-tag, mirroring the TUI: one section per tag (a card with several tags shows
-// in each), sorted case-insensitively, then "Untagged" last. With a tag filter active
-// only the selected tags get a section. Input order is kept inside a section.
-export function groupByTag(cards: ServerCard[], selected: ReadonlySet<string> = new Set()): CardGroup[] {
-  const tags = allTags(cards).filter((t) => selected.size === 0 || selected.has(t));
+// in each), sorted case-insensitively, then "Untagged" last. Input order is kept inside
+// a section.
+export function groupByTag(cards: ServerCard[]): CardGroup[] {
+  const tags = [...new Set(cards.flatMap((c) => c.host.tags))].sort(byTagName);
   const groups: CardGroup[] = tags.map((tag) => ({
     tag,
     cards: cards.filter((c) => c.host.tags.includes(tag))

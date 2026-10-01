@@ -12,8 +12,6 @@
   import {
     serverCards,
     filterHosts,
-    filterByTags,
-    allTags,
     groupByTag,
     forwardListen,
     forwardTarget,
@@ -50,13 +48,9 @@
   let searchOpen = $state(false);
   let searchInput = $state<HTMLInputElement>();
 
-  // Tag filter + group-by-tag (mirrors the TUI's `t` / `g`), persisted in `dashboardView`.
-  // A saved tag no host carries any more is ignored rather than erased, so the filter
-  // doesn't wipe itself while the host list is still loading.
-  const tags = $derived(allTags($serverCards));
-  const selectedTags = $derived(new Set($dashboardView.tagFilter.filter((t) => tags.includes(t))));
-  const visibleCards = $derived(filterByTags(filterHosts($serverCards, query), selectedTags));
-  const groups = $derived($dashboardView.groupByTag ? groupByTag(visibleCards, selectedTags) : []);
+  // Group-by-tag (mirrors the TUI's `g`), persisted in `dashboardView`.
+  const visibleCards = $derived(filterHosts($serverCards, query));
+  const groups = $derived($dashboardView.groupByTag ? groupByTag(visibleCards) : []);
   // Collapsed sections (by tag; '' is "Untagged"); in-memory only.
   let collapsed = $state(new Set<string>());
 
@@ -64,14 +58,6 @@
     const next = new Set(collapsed);
     if (!next.delete(key)) next.add(key);
     collapsed = next;
-  }
-
-  let tagMenuOpen = $state(false);
-  let tagMenu = $state<HTMLElement>();
-
-  // Close the tag menu on any press outside it.
-  function onPointerDown(e: PointerEvent): void {
-    if (tagMenuOpen && tagMenu && !tagMenu.contains(e.target as Node)) tagMenuOpen = false;
   }
 
   function toggleSearch(): void {
@@ -98,15 +84,13 @@
     setTimeout(() => (refreshing = false), 500);
   }
 
-  // Dashboard hotkeys (tech-gui.md §2): `r` refreshes metrics, `g` toggles group-by-tag,
-  // Escape closes the tag menu. This listener only exists
-  // while the dashboard is mounted (the selector unmounts when a session is active), so
-  // it never reaches terminal input. Suppressed while a host dialog owns the keyboard.
+  // Dashboard hotkeys (tech-gui.md §2): `r` refreshes metrics, `g` toggles group-by-tag.
+  // This listener only exists while the dashboard is mounted (the selector unmounts when
+  // a session is active), so it never reaches terminal input. Suppressed while a host
+  // dialog owns the keyboard.
   function onKeydown(e: KeyboardEvent): void {
     if (dialog) return;
-    if (tagMenuOpen && e.key === 'Escape') {
-      tagMenuOpen = false;
-    } else if (isRefreshHotkey(e)) {
+    if (isRefreshHotkey(e)) {
       e.preventDefault();
       void refresh();
     } else if (isGroupHotkey(e)) {
@@ -178,7 +162,7 @@
     'placeholder:text-faint focus-visible:ring-2 focus-visible:ring-focus';
 </script>
 
-<svelte:window onkeydown={onKeydown} onpointerdown={onPointerDown} />
+<svelte:window onkeydown={onKeydown} />
 
 <section class="min-h-full px-6 pb-8 pt-3">
   <div class="mb-5 flex items-center gap-3">
@@ -210,66 +194,6 @@
         >
           <Icon name={searchOpen ? 'close' : 'search'} size={15} />
         </button>
-      </div>
-      <!-- Tag filter: a checkbox menu; a card shows when it has any checked tag. -->
-      <div class="relative" bind:this={tagMenu}>
-        <button
-          type="button"
-          class="{roundBtn} relative {selectedTags.size ? 'border-strong text-fg' : ''}"
-          title="Filter by tag"
-          aria-label="Filter by tag"
-          aria-haspopup="true"
-          aria-expanded={tagMenuOpen}
-          disabled={tags.length === 0}
-          onclick={() => (tagMenuOpen = !tagMenuOpen)}
-        >
-          <Icon name="tag" size={15} />
-          {#if selectedTags.size}
-            <span
-              class="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold text-accent-fg"
-            >
-              {selectedTags.size}
-            </span>
-          {/if}
-        </button>
-        {#if tagMenuOpen}
-          <div
-            role="menu"
-            aria-label="Filter by tag"
-            class="absolute right-0 top-10 z-20 max-h-80 w-56 overflow-y-auto rounded-xl border border-default bg-surface p-1.5 shadow-soft"
-          >
-            {#each tags as tag (tag)}
-              <button
-                type="button"
-                role="menuitemcheckbox"
-                aria-checked={selectedTags.has(tag)}
-                class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition hover:bg-surface-inset"
-                onclick={() => dashboardView.toggleTag(tag)}
-              >
-                <span
-                  class="grid h-4 w-4 shrink-0 place-items-center rounded border {selectedTags.has(tag)
-                    ? 'border-accent bg-accent text-accent-fg'
-                    : 'border-default'}"
-                >
-                  {#if selectedTags.has(tag)}<Icon name="check" size={11} />{/if}
-                </span>
-                <span class="truncate">{tag}</span>
-              </button>
-            {/each}
-            {#if selectedTags.size}
-              <div class="mt-1 border-t border-default pt-1">
-                <button
-                  type="button"
-                  role="menuitem"
-                  class="w-full rounded-lg px-2.5 py-1.5 text-left text-xs text-muted transition hover:bg-surface-inset hover:text-fg"
-                  onclick={() => dashboardView.clearTags()}
-                >
-                  Clear filter
-                </button>
-              </div>
-            {/if}
-          </div>
-        {/if}
       </div>
       <!-- Group by tag (also the `g` hotkey, like the TUI). -->
       <button
@@ -303,27 +227,6 @@
     </div>
   </div>
 
-  {#if selectedTags.size}
-    <div class="-mt-2 mb-4 flex flex-wrap items-center gap-1.5" aria-label="Active tag filter">
-      <span class="text-xs text-faint">Tags:</span>
-      {#each [...selectedTags] as tag (tag)}
-        <button
-          type="button"
-          class="inline-flex items-center gap-1 rounded-full bg-accent px-2.5 py-0.5 text-xs font-medium text-accent-fg transition hover:opacity-80"
-          title="Remove the “{tag}” filter"
-          aria-label="Remove the {tag} filter"
-          onclick={() => dashboardView.toggleTag(tag)}
-        >
-          {tag}
-          <Icon name="close" size={10} />
-        </button>
-      {/each}
-      <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => dashboardView.clearTags()}>
-        Clear
-      </button>
-    </div>
-  {/if}
-
   {#if $serverCards.length === 0}
     <div class="flex flex-col items-center justify-center gap-2 py-20 text-center">
       <p class="font-medium">No servers yet</p>
@@ -335,11 +238,7 @@
     </div>
   {:else if visibleCards.length === 0}
     <div class="flex flex-col items-center justify-center gap-2 py-20 text-center">
-      <p class="text-sm text-muted">
-        {query.trim() ? `No hosts match “${query}”` : 'No hosts match'}{selectedTags.size
-          ? ' with the selected tags'
-          : ''}.
-      </p>
+      <p class="text-sm text-muted">No hosts match “{query}”.</p>
     </div>
   {:else if $dashboardView.groupByTag}
     <div class="flex flex-col gap-6">
@@ -425,26 +324,6 @@
             {card.host.user}@{displayHostname(card.host.hostname, $streamerMode)}:{card.host
               .port}
           </div>
-          {#if card.host.tags.length}
-            <div class="mt-1.5 flex flex-wrap gap-1">
-              {#each card.host.tags as tag (tag)}
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] transition hover:border-strong hover:text-fg {selectedTags.has(
-                    tag
-                  )
-                    ? 'border-accent text-fg'
-                    : 'border-default text-faint'}"
-                  title="{selectedTags.has(tag) ? 'Remove' : 'Filter by'} tag “{tag}”"
-                  aria-pressed={selectedTags.has(tag)}
-                  onclick={() => dashboardView.toggleTag(tag)}
-                >
-                  <Icon name="tag" size={9} />
-                  {tag}
-                </button>
-              {/each}
-            </div>
-          {/if}
         </div>
       </div>
       <div class="flex flex-wrap items-center gap-1.5">

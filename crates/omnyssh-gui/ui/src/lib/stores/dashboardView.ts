@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 
-// Dashboard organisation prefs: group-by-tag and the tag filter. Like the sidebar
+// Dashboard organisation prefs: group-by-tag. Like the sidebar
 // collapse (./ui.ts) they survive restarts: persisted canonically via
 // tauri-plugin-store, mirrored to localStorage for first paint and for a plain
 // browser (Playwright, vite preview).
@@ -8,25 +8,15 @@ const LOCAL_KEY = 'omnyssh-dashboard-view';
 const STORE_FILE = 'settings.json';
 const STORE_KEY = 'dashboardView';
 
-export interface DashboardView {
+interface DashboardView {
   /** Split the grid into one section per tag. */
   groupByTag: boolean;
-  /** Selected tags; a card shows when it has any of them. Empty = no filter. */
-  tagFilter: string[];
 }
 
-export const DEFAULT_VIEW: DashboardView = { groupByTag: false, tagFilter: [] };
-
 /** Coerce an untrusted persisted value into a valid view, falling back per field. */
-export function parseView(raw: unknown): DashboardView {
-  if (typeof raw !== 'object' || raw === null) return { ...DEFAULT_VIEW, tagFilter: [] };
-  const v = raw as Record<string, unknown>;
-  return {
-    groupByTag: typeof v.groupByTag === 'boolean' ? v.groupByTag : DEFAULT_VIEW.groupByTag,
-    tagFilter: Array.isArray(v.tagFilter)
-      ? [...new Set(v.tagFilter.filter((t): t is string => typeof t === 'string'))]
-      : []
-  };
+function parseView(raw: unknown): DashboardView {
+  const v = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  return { groupByTag: typeof v.groupByTag === 'boolean' ? v.groupByTag : false };
 }
 
 function mirroredView(): DashboardView {
@@ -78,18 +68,6 @@ function createDashboardView() {
   return {
     subscribe,
     toggleGroupByTag: () => apply({ ...current, groupByTag: !current.groupByTag }, true),
-    /** Add the tag to the filter, or remove it when already selected. */
-    toggleTag: (tag: string) =>
-      apply(
-        {
-          ...current,
-          tagFilter: current.tagFilter.includes(tag)
-            ? current.tagFilter.filter((t) => t !== tag)
-            : [...current.tagFilter, tag]
-        },
-        true
-      ),
-    clearTags: () => apply({ ...current, tagFilter: [] }, true),
     /** Reconcile with the canonical tauri-plugin-store value (called from the layout's onMount). */
     async hydrate(): Promise<void> {
       try {

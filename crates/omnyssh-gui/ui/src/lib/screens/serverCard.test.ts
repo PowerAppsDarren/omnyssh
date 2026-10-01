@@ -5,8 +5,6 @@ import type { HostServices } from '$lib/stores/services';
 import {
   deriveCard,
   deriveTunnel,
-  allTags,
-  filterByTags,
   filterHosts,
   groupByTag,
   forwardListen,
@@ -193,7 +191,7 @@ describe('filterHosts — mirrors the TUI host search', () => {
   });
 });
 
-describe('tag filter and group-by-tag — mirror the TUI dashboard', () => {
+describe('group-by-tag — mirrors the TUI dashboard', () => {
   const card = (name: string, tags: string[]) =>
     deriveCard({ ...host(name), tags }, CONNECTED, undefined, undefined);
   const cards = [
@@ -204,19 +202,6 @@ describe('tag filter and group-by-tag — mirror the TUI dashboard', () => {
   ];
   const names = (cs: { host: HostDto }[]) => cs.map((c) => c.host.name);
 
-  it('keeps every card when no tag is selected', () => {
-    expect(filterByTags(cards, new Set())).toHaveLength(4);
-  });
-
-  it('keeps cards carrying any selected tag', () => {
-    expect(names(filterByTags(cards, new Set(['dev', 'Web'])))).toEqual(['web', 'dev1']);
-    expect(names(filterByTags(cards, new Set(['nope'])))).toEqual([]);
-  });
-
-  it('lists distinct tags case-insensitively sorted', () => {
-    expect(allTags(cards)).toEqual(['dev', 'prod', 'Web']);
-  });
-
   it('groups by tag, repeating multi-tag cards, with Untagged last', () => {
     const groups = groupByTag(cards);
     expect(groups.map((g) => [g.tag, names(g.cards)])).toEqual([
@@ -225,12 +210,6 @@ describe('tag filter and group-by-tag — mirror the TUI dashboard', () => {
       ['Web', ['web']],
       [null, ['lab']]
     ]);
-  });
-
-  it('only builds sections for the selected tags', () => {
-    const selected = new Set(['prod']);
-    const groups = groupByTag(filterByTags(cards, selected), selected);
-    expect(groups.map((g) => [g.tag, names(g.cards)])).toEqual([['prod', ['web', 'db']]]);
   });
 
   it('returns no sections for no cards', () => {
