@@ -90,21 +90,9 @@ impl App {
                 self.view.host_list.tag_popup_selected = 0;
             }
 
-            AppAction::TagFilterToggled(tag) => {
-                let filter = &mut self.view.host_list.tag_filter;
-                if !filter.remove(&tag) {
-                    filter.insert(tag);
-                }
-                let state = self.state.read().await;
-                self.view.host_list.rebuild_filter(
-                    &state.hosts,
-                    &state.metrics,
-                    &state.connection_statuses,
-                );
-            }
-
-            AppAction::TagFilterCleared => {
-                self.view.host_list.tag_filter.clear();
+            AppAction::TagFilterSelected(tag_opt) => {
+                self.view.host_list.tag_filter = tag_opt;
+                self.view.host_list.tag_popup_open = false;
                 let state = self.state.read().await;
                 self.view.host_list.rebuild_filter(
                     &state.hosts,
@@ -114,11 +102,8 @@ impl App {
             }
 
             AppAction::ToggleGroupByTag => {
-                self.view.host_list.group_by_tag = !self.view.host_list.group_by_tag;
-                // Positions change completely; restart from the first card.
-                self.view.host_list.selected = 0;
                 let state = self.state.read().await;
-                self.view.host_list.rebuild_filter(
+                self.view.host_list.toggle_group_by_tag(
                     &state.hosts,
                     &state.metrics,
                     &state.connection_statuses,

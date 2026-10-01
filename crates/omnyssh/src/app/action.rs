@@ -31,10 +31,8 @@ pub enum AppAction {
     CycleSortOrder,
     /// Open or close the tag-filter popup.
     OpenTagFilter,
-    /// Add the tag to the filter, or remove it if already selected.
-    TagFilterToggled(String),
-    /// Clear the tag filter (show all hosts).
-    TagFilterCleared,
+    /// Apply (or clear) the given tag filter. `None` clears the filter.
+    TagFilterSelected(Option<String>),
     /// Toggle grouping the dashboard grid by tag.
     ToggleGroupByTag,
     /// Navigate the dashboard grid.

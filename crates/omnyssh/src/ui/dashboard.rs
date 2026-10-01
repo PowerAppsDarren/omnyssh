@@ -104,7 +104,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewState)
             frame,
             &hlv.available_tags,
             hlv.tag_popup_selected,
-            &hlv.tag_filter,
+            hlv.tag_filter.as_deref(),
             &view.theme,
         );
     }
@@ -131,16 +131,11 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewSta
         ),
         Span::styled("  ", Style::default()),
     ];
-    if !hlv.tag_filter.is_empty() {
-        let tags: Vec<&str> = hlv.tag_filter.iter().map(String::as_str).collect();
+    if let Some(tag) = &hlv.tag_filter {
         spans.push(Span::styled(
-            format!("[filter: {}]", tags.join(",")),
+            format!("[filter: {}]", tag),
             Style::default().fg(view.theme.text_warning),
         ));
-        spans.push(Span::styled("  ", Style::default()));
-    }
-    if hlv.group_by_tag {
-        spans.push(Span::styled("[grouped]", Style::default().fg(view.theme.accent)));
         spans.push(Span::styled("  ", Style::default()));
     }
     if !hlv.search_query.is_empty() {
@@ -152,7 +147,8 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewSta
     }
 
     // Build key hints.
-    let mut hints = String::from("r:refresh  s:sort  t:tags  g:group  /:search  a:add  x:execute  f:tunnel");
+    let mut hints =
+        String::from("r:refresh  s:sort  t:tags  g:group  /:search  a:add  x:execute  f:tunnel");
 
     // Check if selected host needs SSH key setup.
     // Show "Shift+K:ssh-setup" hint if selected host has password but no identity_file.
@@ -258,7 +254,8 @@ fn render_grid(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewState
     for row in &rows[first_row..] {
         let range = match row {
             GridRow::Header(g) => {
-                if y + GROUP_HEADER_HEIGHT > area.y + area.height {
+                // A header only shows with its first row of cards under it.
+                if y + GROUP_HEADER_HEIGHT + CARD_HEIGHT > area.y + area.height {
                     break;
                 }
                 if let Some(group) = hlv.groups.get(*g) {
@@ -323,7 +320,7 @@ fn render_grid(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewState
     }
 }
 
-/// Draws a one-line section title (`▾ tag (count) ───`) at row `y`.
+/// Draws a one-line section title (`tag (count) ───`) at row `y`.
 fn render_group_header(
     frame: &mut Frame,
     area: Rect,
@@ -331,7 +328,7 @@ fn render_group_header(
     group: &GroupHeader,
     view: &ViewState,
 ) {
-    let title = format!("▾ {} ({}) ", group.title(), group.len);
+    let title = format!("{} ({}) ", group.title(), group.len);
     let fill = (area.width as usize).saturating_sub(title.chars().count() + 1);
     let title_style = if group.label.is_some() {
         Style::default()
@@ -473,20 +470,74 @@ pub fn handle_tag_popup_input(key: KeyEvent, view: &mut ViewState) -> Option<App
             hlv.tag_popup_selected = hlv.tag_popup_selected.saturating_sub(1);
             None
         }
-        // Space / Enter toggle the highlighted tag; the popup stays open so
-        // several tags can be picked in a row.
-        KeyCode::Enter | KeyCode::Char(' ') => match hlv.tag_popup_selected {
-            0 => Some(AppAction::TagFilterCleared),
-            sel => hlv
-                .available_tags
-                .get(sel - 1)
-                .cloned()
-                .map(AppAction::TagFilterToggled),
-        },
+        KeyCode::Enter => {
+            let sel = hlv.tag_popup_selected;
+            let chosen = if sel == 0 {
+                None // "All" = clear filter
+            } else {
+                hlv.available_tags.get(sel - 1).cloned()
+            };
+            Some(AppAction::TagFilterSelected(chosen))
+        }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             hlv.tag_popup_open = false;
             None
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omnyssh_core::ssh::client::Host;
+    use std::collections::HashMap;
+
+    /// Draws the grouped grid into a `width`x`height` area and returns its text.
+    fn grouped_screen(selected: usize, width: u16, height: u16) -> String {
+        let hosts = ["alpha", "beta"]
+            .map(|tag| Host {
+                name: format!("{tag}-1"),
+                tags: vec![tag.to_string()],
+                ..Host::default()
+            })
+            .to_vec();
+        let state = AppState {
+            hosts,
+            ..AppState::default()
+        };
+        let mut view = ViewState::default();
+        view.host_list.group_by_tag = true;
+        view.host_list
+            .rebuild_filter(&state.hosts, &HashMap::new(), &HashMap::new());
+        view.host_list.selected = selected;
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_grid(frame, frame.area(), &state, &view))
+            .expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn a_section_header_never_shows_without_its_cards() {
+        // Room for "alpha" and its card, then one spare line: "beta" stays off.
+        let screen = grouped_screen(0, 40, 15);
+        assert!(screen.starts_with("alpha (1) ───"));
+        assert!(!screen.contains("beta (1)"));
+    }
+
+    #[test]
+    fn the_selected_card_shows_with_its_section_header() {
+        let screen = grouped_screen(1, 40, 15);
+        assert!(screen.contains("beta (1)"));
+        assert!(screen.contains("beta-1"));
+        assert!(!screen.contains("alpha-1"));
     }
 }

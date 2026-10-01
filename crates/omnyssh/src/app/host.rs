@@ -1,7 +1,6 @@
 //! Host list state: add/edit form, list view, popups, and the `App` methods
 //! that create, update, delete, and connect to hosts.
 
-use std::collections::BTreeSet;
 use std::ops::Range;
 use std::time::Duration;
 
@@ -358,18 +357,15 @@ pub struct HostListView {
     // Dashboard additions -----------
     /// Active sort order for the dashboard grid.
     pub sort_order: SortOrder,
-    /// Active tag filter: a host is shown when it carries any of these tags.
-    /// Empty = show all hosts.
-    pub tag_filter: BTreeSet<String>,
+    /// Active tag filter. `None` = show all hosts.
+    pub tag_filter: Option<String>,
     /// Whether the tag-filter popup is open.
     pub tag_popup_open: bool,
     /// Selected index within the tag picker popup.
     pub tag_popup_selected: usize,
     /// All unique tags across all hosts (used by the tag picker popup).
     pub available_tags: Vec<String>,
-    /// When true the grid is split into one section per tag. A host with
-    /// several tags appears in several sections, so `filtered_indices` may
-    /// contain the same host index more than once.
+    /// When true the grid is split into sections by each host's first tag.
     pub group_by_tag: bool,
     /// Sections of `filtered_indices` when `group_by_tag` is on (empty otherwise).
     pub groups: Vec<GroupHeader>,
@@ -470,6 +466,21 @@ impl HostListView {
         };
     }
 
+    /// Flips grouping by tag, keeping the cursor on the same host.
+    pub fn toggle_group_by_tag(
+        &mut self,
+        hosts: &[Host],
+        metrics: &HashMap<String, Metrics>,
+        statuses: &HashMap<String, ConnectionStatus>,
+    ) {
+        let kept = self.selected_host_idx();
+        self.group_by_tag = !self.group_by_tag;
+        self.rebuild_filter(hosts, metrics, statuses);
+        if let Some(pos) = kept.and_then(|i| self.filtered_indices.iter().position(|&j| j == i)) {
+            self.selected = pos;
+        }
+    }
+
     /// Rebuilds `filtered_indices` applying text search, tag filter, and
     /// sort order.
     ///
@@ -490,11 +501,10 @@ impl HostListView {
         // removal that happened before rebuild_filter was called.
         indices.retain(|&i| i < hosts.len());
 
-        // 2. Tag filter (any selected tag matches). Tags that no host carries
-        // any more are dropped so a stale filter cannot hide everything.
-        self.tag_filter.retain(|t| hosts.iter().any(|h| h.tags.contains(t)));
-        if !self.tag_filter.is_empty() {
-            indices.retain(|&i| hosts[i].tags.iter().any(|t| self.tag_filter.contains(t)));
+        // 2. Tag filter.
+        if let Some(tag) = &self.tag_filter {
+            let tag = tag.clone();
+            indices.retain(|&i| hosts[i].tags.contains(&tag));
         }
 
         // 3. Sort.
@@ -537,46 +547,25 @@ impl HostListView {
             }
         }
 
-        // 4. Group by tag: expand into sections, keeping the sort order
-        // inside each section.
+        // 4. Group by first tag, Untagged last. The sort is stable, so the
+        // order from step 3 holds inside each section.
         self.groups.clear();
         if self.group_by_tag {
-            let mut labels: Vec<&String> = indices
-                .iter()
-                .flat_map(|&i| hosts[i].tags.iter())
-                .filter(|t| self.tag_filter.is_empty() || self.tag_filter.contains(*t))
-                .collect();
-            labels.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
-            labels.dedup();
-
-            let mut grouped = Vec::with_capacity(indices.len());
-            let mut push_group =
-                |label: Option<String>, members: Vec<usize>, groups: &mut Vec<GroupHeader>| {
-                    if members.is_empty() {
-                        return;
-                    }
-                    groups.push(GroupHeader {
-                        label,
-                        start: grouped.len(),
-                        len: members.len(),
-                    });
-                    grouped.extend(members);
-                };
-            for label in labels {
-                let members = indices
-                    .iter()
-                    .copied()
-                    .filter(|&i| hosts[i].tags.contains(label))
-                    .collect();
-                push_group(Some(label.clone()), members, &mut self.groups);
+            indices.sort_by_cached_key(|&i| {
+                let tag = group_tag(&hosts[i]);
+                (tag.is_none(), tag.map(str::to_lowercase), tag)
+            });
+            for (pos, &i) in indices.iter().enumerate() {
+                let tag = group_tag(&hosts[i]);
+                match self.groups.last_mut() {
+                    Some(group) if group.label.as_deref() == tag => group.len += 1,
+                    _ => self.groups.push(GroupHeader {
+                        label: tag.map(str::to_string),
+                        start: pos,
+                        len: 1,
+                    }),
+                }
             }
-            let untagged = indices
-                .iter()
-                .copied()
-                .filter(|&i| hosts[i].tags.is_empty())
-                .collect();
-            push_group(None, untagged, &mut self.groups);
-            indices = grouped;
         }
 
         self.filtered_indices = indices;
@@ -608,6 +597,11 @@ impl HostListView {
         tags.dedup();
         self.available_tags = tags;
     }
+}
+
+/// The section a host goes under: its first non-blank tag.
+fn group_tag(host: &Host) -> Option<&str> {
+    host.tags.iter().map(|t| t.trim()).find(|t| !t.is_empty())
 }
 
 /// Lower number = higher priority for status sort.
@@ -1467,43 +1461,11 @@ mod tests {
             host("b", "2", &["dev"], None),
         ];
         let mut view = HostListView {
-            tag_filter: tag_set(&["prod"]),
+            tag_filter: Some("prod".to_string()),
             ..Default::default()
         };
         view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
         assert_eq!(filtered_names(&view, &hosts), ["a"]);
-    }
-
-    fn tag_set(tags: &[&str]) -> BTreeSet<String> {
-        tags.iter().map(|t| t.to_string()).collect()
-    }
-
-    #[test]
-    fn rebuild_multi_tag_filter_matches_any_selected_tag() {
-        let hosts = [
-            host("a", "1", &["prod"], None),
-            host("b", "2", &["dev"], None),
-            host("c", "3", &["staging", "prod"], None),
-            host("d", "4", &[], None),
-        ];
-        let mut view = HostListView {
-            tag_filter: tag_set(&["prod", "dev"]),
-            ..Default::default()
-        };
-        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
-        assert_eq!(filtered_names(&view, &hosts), ["a", "b", "c"]);
-    }
-
-    #[test]
-    fn rebuild_drops_tags_no_host_carries() {
-        let hosts = [host("a", "1", &["prod"], None), host("b", "2", &[], None)];
-        let mut view = HostListView {
-            tag_filter: tag_set(&["gone"]),
-            ..Default::default()
-        };
-        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
-        assert!(view.tag_filter.is_empty());
-        assert_eq!(view.filtered_indices.len(), 2);
     }
 
     fn group_titles(view: &HostListView) -> Vec<(String, usize)> {
@@ -1514,12 +1476,13 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_group_by_tag_sections_sorted_with_untagged_last() {
+    fn rebuild_group_by_first_tag_with_untagged_last() {
         let hosts = [
             host("web", "1", &["prod", "Web"], None),
-            host("db", "2", &["prod"], None),
-            host("lab", "3", &[], None),
+            host("lab", "2", &[], None),
+            host("db", "3", &["prod"], None),
             host("dev1", "4", &["dev"], None),
+            host("www", "5", &["Web"], None),
         ];
         let mut view = HostListView {
             group_by_tag: true,
@@ -1535,28 +1498,67 @@ mod tests {
                 ("Untagged".to_string(), 1),
             ]
         );
-        // "web" appears in both "prod" and "Web"; sections keep name order.
+        // One card per host; the name sort holds inside a section.
         assert_eq!(
             filtered_names(&view, &hosts),
-            ["dev1", "db", "web", "web", "lab"]
+            ["dev1", "db", "web", "www", "lab"]
         );
     }
 
     #[test]
-    fn rebuild_group_by_tag_only_shows_filtered_sections() {
+    fn rebuild_group_skips_blank_and_repeated_tags() {
         let hosts = [
-            host("web", "1", &["prod", "web"], None),
-            host("dev1", "2", &["dev"], None),
-            host("lab", "3", &[], None),
+            host("a", "1", &["", " db "], None),
+            host("b", "2", &["  "], None),
+            host("c", "3", &["db", "db"], None),
         ];
         let mut view = HostListView {
             group_by_tag: true,
-            tag_filter: tag_set(&["prod"]),
             ..Default::default()
         };
         view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
-        assert_eq!(group_titles(&view), [("prod".to_string(), 1)]);
-        assert_eq!(filtered_names(&view, &hosts), ["web"]);
+        assert_eq!(
+            group_titles(&view),
+            [("db".to_string(), 2), ("Untagged".to_string(), 1)]
+        );
+        assert_eq!(filtered_names(&view, &hosts), ["a", "c", "b"]);
+    }
+
+    #[test]
+    fn rebuild_group_by_tag_within_the_tag_filter() {
+        let hosts = [
+            host("web", "1", &["web", "prod"], None),
+            host("dev1", "2", &["dev"], None),
+            host("db", "3", &["prod"], None),
+        ];
+        let mut view = HostListView {
+            group_by_tag: true,
+            tag_filter: Some("prod".to_string()),
+            ..Default::default()
+        };
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(
+            group_titles(&view),
+            [("prod".to_string(), 1), ("web".to_string(), 1)]
+        );
+        assert_eq!(filtered_names(&view, &hosts), ["db", "web"]);
+    }
+
+    #[test]
+    fn toggling_group_by_tag_keeps_the_selected_host() {
+        let hosts = [
+            host("a", "1", &["z"], None),
+            host("b", "2", &[], None),
+            host("c", "3", &["m"], None),
+        ];
+        let mut view = HostListView::default();
+        view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
+        view.selected = 0; // "a": first when flat, second when grouped
+        view.toggle_group_by_tag(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(filtered_names(&view, &hosts), ["c", "a", "b"]);
+        assert_eq!(view.selected, 1);
+        view.toggle_group_by_tag(&hosts, &HashMap::new(), &HashMap::new());
+        assert_eq!(view.selected, 0);
     }
 
     #[test]
@@ -1693,7 +1695,7 @@ mod tests {
         ];
         let mut view = HostListView {
             search_query: "web".to_string(),
-            tag_filter: tag_set(&["prod"]),
+            tag_filter: Some("prod".to_string()),
             ..Default::default()
         };
         view.rebuild_filter(&hosts, &HashMap::new(), &HashMap::new());
