@@ -56,12 +56,18 @@
   // `dashboardView` so they survive leaving the dashboard and restarts. Grouping keeps
   // the sort inside each section. While a drag runs, the grid holds the order it started
   // in (`frozen`), so a live status sort can't reshuffle cards under the pointer and a
-  // cancelled drag saves nothing.
-  let frozen = $state<string[] | null>(null);
-  const cardSort = $derived<CardSort>(frozen ? 'custom' : $dashboardView.sort);
-  const cardOrder = $derived(frozen ?? $dashboardView.order);
-  const visibleCards = $derived(sortCards(filterHosts($serverCards, query), cardSort, cardOrder));
+  // cancelled drag saves nothing. It holds hosts, not names, which can repeat; raw, since
+  // a deep proxy would break the identity match.
+  let frozen = $state.raw<HostDto[] | null>(null);
+  const visibleCards = $derived(onScreen(filterHosts($serverCards, query)));
   const groups = $derived($dashboardView.groupByTag ? groupByTag(visibleCards) : []);
+
+  function onScreen(cards: ServerCard[]): ServerCard[] {
+    if (!frozen) return sortCards(cards, $dashboardView.sort, $dashboardView.order);
+    const rank = new Map(frozen.map((host, i) => [host, i]));
+    const at = (c: ServerCard): number => rank.get(c.host) ?? rank.size;
+    return [...cards].sort((a, b) => at(a) - at(b));
+  }
 
   // View options popover. Focus moves in on open and back to the trigger on Escape or a
   // press outside; the dot keeps a changed view from going unnoticed.
@@ -165,7 +171,7 @@
       // A small threshold keeps a plain press from lifting the card.
       if (Math.hypot(drag.x - drag.x0, drag.y - drag.y0) < 4) return;
       drag.started = true;
-      frozen = sortCards($serverCards, cardSort, cardOrder).map((c) => c.host.name);
+      frozen = onScreen($serverCards).map((c) => c.host);
       frame = requestAnimationFrame(edgeScroll);
     }
     track();
@@ -215,10 +221,15 @@
     frame = requestAnimationFrame(edgeScroll);
   }
 
-  function commitMove(run: ServerCard[], from: number, to: number): void {
-    const all = sortCards($serverCards, cardSort, cardOrder);
-    dashboardView.setOrder(moveCard(all, run, from, to));
-    announcement = `${run[from].host.name} moved to position ${to + 1} of ${run.length}`;
+  // Returns where the card landed: same-named hosts share one place in the saved order,
+  // so that can differ from `to`.
+  function commitMove(run: ServerCard[], from: number, to: number): number {
+    const order = moveCard(onScreen($serverCards), run, from, to);
+    dashboardView.setOrder(order);
+    const host = run[from].host;
+    const at = sortCards(run, 'custom', order).findIndex((c) => c.host === host);
+    announcement = `${host.name} moved to position ${at + 1} of ${run.length}`;
+    return at;
   }
 
   // Keyboard reorder on the grip; focus follows the card to its new place.
@@ -237,9 +248,9 @@
     e.preventDefault();
     if (to < 0 || to > last || to === from) return;
     const cards = (e.currentTarget as HTMLElement).closest('[data-cards]');
-    commitMove(run, from, to);
+    const at = commitMove(run, from, to);
     await tick();
-    cards?.querySelectorAll<HTMLElement>('[data-grip]')[to]?.focus();
+    cards?.querySelectorAll<HTMLElement>('[data-grip]')[at]?.focus();
   }
 
   onDestroy(endDrag);

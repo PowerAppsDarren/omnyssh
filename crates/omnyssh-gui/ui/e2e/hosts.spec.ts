@@ -11,7 +11,7 @@ const HOSTS = [
   { name: 'api-1', hostname: 'api-1.example.com', user: 'deploy', port: 22, tags: ['prod', 'api'], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false, forwardAgent: false }
 ];
 
-async function boot(page: Page): Promise<void> {
+async function boot(page: Page, seed: Array<Record<string, unknown>> = HOSTS): Promise<void> {
   await page.addInitScript(
     ({ hosts }) => {
       let cbid = 0;
@@ -78,11 +78,11 @@ async function boot(page: Page): Promise<void> {
         }
       };
     },
-    { hosts: HOSTS }
+    { hosts: seed }
   );
   await page.goto('/');
   // The dashboard is the default screen; the seeded cards confirm the app booted.
-  await expect(page.getByText('web-1', { exact: true })).toBeVisible();
+  await expect(page.getByText(String(seed[0].name), { exact: true }).first()).toBeVisible();
 }
 
 test('adds a host and it appears as a card', async ({ page }) => {
@@ -444,6 +444,31 @@ test('holding a drag past the bottom edge scrolls and drops at the end', async (
     .toBe(true);
   await page.mouse.up();
   await expect.poll(() => cardOrder(page)).toEqual(['imported', 'api-1', 'web-1']);
+});
+
+test('same-named hosts keep their places while a drag starts', async ({ page }) => {
+  const twin = HOSTS[1];
+  await boot(page, [
+    { ...twin, name: 'dup', hostname: 'dup-a.example.com' },
+    { ...twin, name: 'x', hostname: 'x.example.com' },
+    { ...twin, name: 'dup', hostname: 'dup-b.example.com' }
+  ]);
+  const addresses = () =>
+    page.getByText(/^root@.*:22$/).evaluateAll((els) => els.map((el) => el.textContent?.trim()));
+  const before = ['root@dup-a.example.com:22', 'root@x.example.com:22', 'root@dup-b.example.com:22'];
+  await expect.poll(addresses).toEqual(before);
+
+  await page.getByText('x', { exact: true }).hover();
+  const grip = await page.getByRole('button', { name: 'Move x' }).boundingBox();
+  if (!grip) throw new Error('grip not on screen');
+  await page.mouse.move(grip.x + 5, grip.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + 15, grip.y + 5, { steps: 3 });
+  await expect(page.locator('[data-card].z-20')).toHaveCount(1);
+  expect(await addresses()).toEqual(before);
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  await expect.poll(addresses).toEqual(before);
 });
 
 test('rejects a new host whose name already exists', async ({ page }) => {
