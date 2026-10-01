@@ -70,13 +70,16 @@ async function boot(
               { name: 'work', path: '/home/user/work', size: 0, isDir: true }
             ]
           };
-      // Where each transfer was sent, and which sessions cancelled, for the test to read back.
+      // Where each transfer was sent, and which sessions cancelled or closed, for the
+      // test to read back.
       const downloads: string[] = [];
       const uploads: string[] = [];
       const cancels: number[] = [];
+      const closes: number[] = [];
       (win as { __downloads?: string[] }).__downloads = downloads;
       (win as { __uploads?: string[] }).__uploads = uploads;
       (win as { __cancels?: number[] }).__cancels = cancels;
+      (win as { __closes?: number[] }).__closes = closes;
       (win as { __fireEvent?: unknown }).__fireEvent = (event: string, payload: unknown) =>
         fireEvent(event, payload);
       const remote: Record<string, Entry[]> = {
@@ -211,6 +214,7 @@ async function boot(
               return Promise.resolve(null);
             }
             case 'sftp_close':
+              closes.push((args as { sessionId: number }).sessionId);
               return Promise.resolve(null);
             case 'plugin:event|listen': {
               const { event, handler } = args as { event: string; handler: number };
@@ -310,6 +314,24 @@ test('Cancel stops the running transfer and drops the queued ones', async ({ pag
     return { uploads: w.__uploads, cancels: w.__cancels };
   });
   expect(sent).toEqual({ uploads: ['/notes.txt'], cancels: [1] });
+});
+
+test('closing the tab mid-transfer closes its session, which stops the transfer', async ({
+  page
+}) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  await expect(localPane.getByText('notes.txt')).toBeVisible();
+  await localPane.getByRole('checkbox', { name: 'Mark notes.txt' }).click();
+  await page.getByRole('button', { name: 'Upload' }).click();
+  await expect(page.getByLabel('transfer progress')).toBeVisible();
+
+  await page.getByRole('button', { name: /^Close web-1/ }).click();
+  await expect(page.getByLabel('transfer progress')).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __closes: number[] }).__closes))
+    .toEqual([1]);
 });
 
 test('a transfer shows as preparing until its first tick, a folder of empty files too', async ({
