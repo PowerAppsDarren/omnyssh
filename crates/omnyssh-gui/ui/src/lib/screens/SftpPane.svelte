@@ -5,6 +5,7 @@
   // batch transfer/delete. A press on a row may start a drag (the parent owns the drag
   // and marks the pane `dropActive` while it is the target); `data-pane` and
   // `data-dir-path` are how the parent finds the pane and folder under the pointer.
+  // A listing on its way dims the current one: a remote one can wait behind a transfer.
   // Semantic tokens only — no colour literals (§5.1).
   import type { Snippet } from 'svelte';
   import { Icon } from '$lib/theme';
@@ -46,6 +47,7 @@
 
 <section
   aria-label={title}
+  aria-busy={pane.loading}
   data-pane={side}
   class="flex min-h-0 min-w-0 flex-1 flex-col transition
     {dropActive ? 'bg-surface-inset ring-2 ring-inset ring-accent' : ''}"
@@ -62,8 +64,11 @@
         {@render toolbar?.()}
       </div>
     </div>
-    <div class="mt-1 truncate font-mono text-xs text-faint" title={pane.path}>
-      {pane.path || '—'}
+    <div class="mt-1 flex items-center gap-2 text-xs text-faint">
+      <span class="min-w-0 truncate font-mono" title={pane.path}>{pane.path || '—'}</span>
+      {#if pane.loading && pane.entries.length > 0}
+        <span class="shrink-0">Loading…</span>
+      {/if}
     </div>
   </header>
 
@@ -84,7 +89,7 @@
         <span class="shrink-0">Size</span>
         <span class={modifiedCol}>Modified</span>
       </div>
-      <ul class="space-y-0.5">
+      <ul class="space-y-0.5 transition-opacity {pane.loading ? 'opacity-50' : ''}">
         {#each pane.entries as entry, i (i)}
           {@const isParent = entry.name === '..'}
           {@const marked = pane.marked.has(entry.path)}

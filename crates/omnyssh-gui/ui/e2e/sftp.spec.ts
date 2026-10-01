@@ -29,6 +29,18 @@ async function boot(
       // A pending transfer holds until the test fires its op-done, so the progress bar
       // is observable mid-flight (the core is sequential — one transfer at a time).
       const completions: Array<{ sessionId: number; tid: number; finish: () => void }> = [];
+      // Remote listings asked for meanwhile wait behind it, in the core's one queue.
+      const waiting: Array<{ sessionId: number; list: () => void }> = [];
+      function busy(sessionId: number): boolean {
+        return completions.some((c) => c.sessionId === sessionId);
+      }
+      function release(sessionId: number): void {
+        if (busy(sessionId)) return;
+        for (const w of waiting.filter((w) => w.sessionId === sessionId)) {
+          waiting.splice(waiting.indexOf(w), 1);
+          w.list();
+        }
+      }
 
       type Entry = {
         name: string;
@@ -100,8 +112,11 @@ async function boot(
       }
 
       // Fire the oldest still-pending transfer's op-done (deterministic completion).
-      (win as { __completeTransfer?: () => void }).__completeTransfer = () =>
-        completions.shift()?.finish();
+      (win as { __completeTransfer?: () => void }).__completeTransfer = () => {
+        const c = completions.shift();
+        c?.finish();
+        if (c) release(c.sessionId);
+      };
       // A progress tick for the oldest pending transfer.
       function tick(done: number, total: number): void {
         const c = completions[0];
@@ -142,10 +157,13 @@ async function boot(
             }
             case 'sftp_list': {
               const { sessionId, path } = args as { sessionId: number; path: string };
-              setTimeout(
-                () => fireEvent('sftp-dir-listed', { sessionId, path, entries: withParent(path, remote[path] ?? []) }),
-                0
-              );
+              const list = () =>
+                setTimeout(
+                  () => fireEvent('sftp-dir-listed', { sessionId, path, entries: withParent(path, remote[path] ?? []) }),
+                  0
+                );
+              if (busy(sessionId)) waiting.push({ sessionId, list });
+              else list();
               return Promise.resolve(null);
             }
             case 'sftp_upload': {
@@ -185,10 +203,10 @@ async function boot(
               const i = completions.findIndex((c) => c.sessionId === sessionId);
               if (i >= 0) {
                 completions.splice(i, 1);
-                setTimeout(
-                  () => fireEvent('sftp-op-done', { sessionId, ok: false, error: 'Transfer cancelled' }),
-                  0
-                );
+                setTimeout(() => {
+                  fireEvent('sftp-op-done', { sessionId, ok: false, error: 'Transfer cancelled' });
+                  release(sessionId);
+                }, 0);
               }
               return Promise.resolve(null);
             }
@@ -320,6 +338,32 @@ test('a transfer shows as preparing until its first tick, a folder of empty file
   await complete(page);
   await expect(strip).toHaveCount(0);
   await expect(remotePane.getByText('work')).toBeVisible();
+});
+
+test('a remote folder opened during a transfer shows loading, then opens', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(localPane.getByText('notes.txt')).toBeVisible();
+  await expect(remotePane.getByText('config.yml')).toBeVisible();
+
+  await localPane.getByRole('checkbox', { name: 'Mark notes.txt' }).click();
+  await page.getByRole('button', { name: 'Upload' }).click();
+  await expect(page.getByLabel('transfer progress')).toBeVisible();
+
+  // The listing waits behind the transfer.
+  await remotePane.getByTitle('var', { exact: true }).click();
+  await expect(remotePane).toHaveAttribute('aria-busy', 'true');
+  await expect(remotePane.getByText('Loading…')).toBeVisible();
+
+  // Once it is done the pane opens the folder asked for, not the one it was on.
+  await complete(page);
+  await expect(remotePane).toHaveAttribute('aria-busy', 'false');
+  await expect(remotePane.getByTitle('/var', { exact: true })).toBeVisible();
+  await expect(remotePane.getByText('config.yml')).toHaveCount(0);
+  await page.waitForTimeout(100);
+  await expect(remotePane.getByTitle('/var', { exact: true })).toBeVisible();
 });
 
 test('the panes show modification times', async ({ page }) => {

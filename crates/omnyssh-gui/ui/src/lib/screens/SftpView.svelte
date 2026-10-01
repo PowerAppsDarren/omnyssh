@@ -195,7 +195,11 @@
     const target = view.refresh;
     sftp.clearRefresh(id);
     if (target === 'local' || target === 'both') void refreshLocal(view.local.path);
-    if (target === 'remote' || target === 'both') refreshRemote(view.remote.path);
+    // A remote listing asked for meanwhile waited in the core's queue behind the
+    // transfer, so it shows the change; the old path again would take the pane back.
+    if ((target === 'remote' || target === 'both') && !view.remote.loading) {
+      refreshRemote(view.remote.path);
+    }
   });
 
   function navigate(side: PaneSide, entry: FileEntryDto): void {
