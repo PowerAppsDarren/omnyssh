@@ -6,9 +6,12 @@
 //! All operations are non-blocking from the UI perspective.
 //! Progress is reported via [`CoreEvent::FileTransferProgress`].
 
+use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context;
+use russh_sftp::protocol::{FileAttributes, FileType};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time;
@@ -70,13 +73,17 @@ fn unix_secs(time: std::io::Result<std::time::SystemTime>) -> Option<i64> {
 pub enum SftpCommand {
     /// List the entries in a remote directory.
     ListDir(String),
-    /// Download a remote file to a local path.
+    /// Download a remote file, or a remote folder with everything in it, to a local
+    /// path. An existing folder is merged into and an existing file replaced. Inside a
+    /// folder, symlinks, special files and names this system cannot create are
+    /// skipped; the transfer goes on past them and past failed files, and its
+    /// [`CoreEvent::SftpOpDone`] error counts them.
     Download {
         remote: String,
         local: String,
         transfer_id: TransferId,
     },
-    /// Upload a local file to a remote path.
+    /// Upload a local file or folder to a remote path, by the rules of `Download`.
     Upload {
         local: String,
         remote: String,
@@ -190,7 +197,7 @@ async fn sftp_task_loop(
                 Err(e) => {
                     let _ = event_tx
                         .send(CoreEvent::SftpDisconnected {
-                            reason: format!("ListDir failed: {e}"),
+                            reason: format!("ListDir failed: {e:#}"),
                         })
                         .await;
                 }
@@ -203,7 +210,7 @@ async fn sftp_task_loop(
             } => {
                 let result = do_download(&sftp, &remote, &local, transfer_id, &event_tx)
                     .await
-                    .map_err(|e| e.to_string());
+                    .map_err(|e| format!("{e:#}"));
                 let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
             }
 
@@ -214,7 +221,7 @@ async fn sftp_task_loop(
             } => {
                 let result = do_upload(&local, &sftp, &remote, transfer_id, &event_tx)
                     .await
-                    .map_err(|e| e.to_string());
+                    .map_err(|e| format!("{e:#}"));
                 let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
             }
 
@@ -323,7 +330,7 @@ fn join_remote(dir: &str, name: &str) -> String {
 /// component, so it neither climbs out of the destination nor, as Windows' `C:x` does,
 /// replaces it.
 fn is_safe_name(name: &str) -> bool {
-    let mut parts = std::path::Path::new(name).components();
+    let mut parts = Path::new(name).components();
     let single = matches!(
         (parts.next(), parts.next()),
         (Some(std::path::Component::Normal(part)), None) if part == name
@@ -353,7 +360,7 @@ fn is_windows_name(name: &str) -> bool {
 
 /// `name` from the server joined onto the local folder `dir`, unless it would be
 /// anything but a direct child of `dir`.
-fn join_local(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+fn join_local(dir: &Path, name: &str) -> Option<PathBuf> {
     let path = dir.join(name);
     (is_safe_name(name) && path.parent() == Some(dir)).then_some(path)
 }
@@ -361,9 +368,7 @@ fn join_local(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
 /// Rejects a download destination whose own name could not be created as itself: the
 /// frontends build it from the name the server listed.
 fn check_local_name(local: &str) -> anyhow::Result<()> {
-    let name = std::path::Path::new(local)
-        .file_name()
-        .and_then(|n| n.to_str());
+    let name = Path::new(local).file_name().and_then(|n| n.to_str());
     if !name.is_some_and(is_safe_name) {
         anyhow::bail!("'{local}' is not a name that can be created here");
     }
@@ -373,7 +378,7 @@ fn check_local_name(local: &str) -> anyhow::Result<()> {
 /// Rejects a transfer whose local path climbs out with `..` or either path holds a
 /// null byte.
 fn check_paths(local: &str, remote: &str) -> anyhow::Result<()> {
-    if std::path::Path::new(local)
+    if Path::new(local)
         .components()
         .any(|c| c == std::path::Component::ParentDir)
     {
@@ -385,9 +390,41 @@ fn check_paths(local: &str, remote: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One file of a folder transfer.
+// ---------------------------------------------------------------------------
+// Transfers
+// ---------------------------------------------------------------------------
+
+/// How deep a folder transfer goes: past any real tree, short of one a server makes
+/// up to never end.
+const MAX_DEPTH: usize = 64;
+
+/// What a folder transfer left out. It goes on past every skip and failure and
+/// reports them in its one result.
+#[derive(Debug, Default)]
+struct Skipped {
+    count: usize,
+    first: Option<String>,
+}
+
+impl Skipped {
+    fn add(&mut self, path: &str, reason: impl std::fmt::Display) {
+        self.count += 1;
+        self.first
+            .get_or_insert_with(|| format!("'{path}': {reason}"));
+    }
+
+    fn into_result(self) -> anyhow::Result<()> {
+        let Some(first) = self.first else {
+            return Ok(());
+        };
+        let items = if self.count == 1 { "item" } else { "items" };
+        anyhow::bail!("{} {items} skipped or failed, first {first}", self.count)
+    }
+}
+
+/// One folder or file of a folder transfer.
 #[derive(Debug, PartialEq)]
-struct PlannedFile {
+struct Planned {
     src: String,
     dst: String,
     size: u64,
@@ -397,8 +434,8 @@ struct PlannedFile {
 /// the progress bar covers the whole folder. `dirs` lists parents before children.
 #[derive(Debug, Default)]
 struct TreePlan {
-    dirs: Vec<String>,
-    files: Vec<PlannedFile>,
+    dirs: Vec<Planned>,
+    files: Vec<Planned>,
 }
 
 impl TreePlan {
@@ -439,70 +476,122 @@ impl<'a> Progress<'a> {
 }
 
 /// Walks the local folder `root`, mapping it onto the remote folder `dst_root`.
-/// Symlinks and special files are skipped, so a link cycle cannot loop forever.
-async fn plan_local_tree(root: &std::path::Path, dst_root: &str) -> anyhow::Result<TreePlan> {
+/// Nothing is followed: a symlink is skipped, as is anything else that is not a
+/// plain file or folder.
+async fn plan_local_tree(
+    root: &str,
+    dst_root: &str,
+    skipped: &mut Skipped,
+) -> anyhow::Result<TreePlan> {
     let mut plan = TreePlan::default();
-    let mut stack = vec![(root.to_path_buf(), dst_root.to_string())];
-    while let Some((src, dst)) = stack.pop() {
-        let mut read_dir = tokio::fs::read_dir(&src)
-            .await
-            .with_context(|| format!("read local dir '{}'", src.display()))?;
-        plan.dirs.push(dst.clone());
-        while let Some(entry) = read_dir
-            .next_entry()
-            .await
-            .with_context(|| format!("read local dir '{}'", src.display()))?
-        {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // `DirEntry::file_type` does not follow symlinks.
-            let file_type = entry
-                .file_type()
-                .await
-                .with_context(|| format!("stat '{}'", entry.path().display()))?;
-            if file_type.is_dir() {
-                stack.push((entry.path(), join_remote(&dst, &name)));
+    let mut stack = vec![(PathBuf::from(root), dst_root.to_string(), 0)];
+    while let Some((src, dst, depth)) = stack.pop() {
+        // Every name on the way is UTF-8, so the path converts losslessly.
+        let src_str = src.to_string_lossy().into_owned();
+        let mut read_dir = match tokio::fs::read_dir(&src).await {
+            Ok(read_dir) => read_dir,
+            Err(e) => {
+                skipped.add(&src_str, format_args!("read local dir: {e}"));
+                continue;
+            }
+        };
+        plan.dirs.push(Planned {
+            src: src_str.clone(),
+            dst: dst.clone(),
+            size: 0,
+        });
+        loop {
+            let entry = match read_dir.next_entry().await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => break,
+                Err(e) => {
+                    skipped.add(&src_str, format_args!("read local dir: {e}"));
+                    break;
+                }
+            };
+            let path = entry.path();
+            let shown = path.to_string_lossy();
+            let Ok(name) = entry.file_name().into_string() else {
+                skipped.add(&shown, "name is not valid UTF-8");
+                continue;
+            };
+            // `DirEntry::metadata` does not follow symlinks.
+            let meta = match entry.metadata().await {
+                Ok(meta) => meta,
+                Err(e) => {
+                    skipped.add(&shown, e);
+                    continue;
+                }
+            };
+            let remote = join_remote(&dst, &name);
+            let file_type = meta.file_type();
+            if file_type.is_dir() && depth < MAX_DEPTH {
+                stack.push((path.clone(), remote, depth + 1));
+            } else if file_type.is_dir() {
+                skipped.add(&shown, "nested too deep");
             } else if file_type.is_file() {
-                let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
-                plan.files.push(PlannedFile {
-                    src: entry.path().to_string_lossy().into_owned(),
-                    dst: join_remote(&dst, &name),
-                    size,
+                plan.files.push(Planned {
+                    src: shown.into_owned(),
+                    dst: remote,
+                    size: meta.len(),
                 });
+            } else if file_type.is_symlink() {
+                skipped.add(&shown, "symbolic link, not followed");
+            } else {
+                skipped.add(&shown, "not a regular file or folder");
             }
         }
     }
     Ok(plan)
 }
 
-/// Walks the remote folder `root`, mapping it onto the local folder `dst_root`.
-/// Symlinks and special files are skipped, as are names that cannot be created here.
-async fn plan_remote_tree(
-    sftp: &russh_sftp::client::SftpSession,
+/// Walks the remote folder `root`, mapping it onto the local folder `dst_root`;
+/// `list` reads one remote folder. A symlink is skipped (servers report links, not
+/// their targets), as is anything that is not a plain file or folder and any name
+/// that cannot be created here.
+async fn plan_remote_tree<F, Fut>(
+    mut list: F,
     root: &str,
-    dst_root: &std::path::Path,
-) -> anyhow::Result<TreePlan> {
+    dst_root: &Path,
+    skipped: &mut Skipped,
+) -> anyhow::Result<TreePlan>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = anyhow::Result<Vec<(String, FileAttributes)>>>,
+{
     let mut plan = TreePlan::default();
-    let mut stack = vec![(root.to_string(), dst_root.to_path_buf())];
-    while let Some((src, dst)) = stack.pop() {
-        let read_dir = sftp
-            .read_dir(src.as_str())
-            .await
-            .with_context(|| format!("read remote dir '{src}'"))?;
-        plan.dirs.push(dst.to_string_lossy().into_owned());
-        for entry in read_dir {
-            let name = entry.file_name();
+    let mut stack = vec![(root.to_string(), dst_root.to_path_buf(), 0)];
+    while let Some((src, dst, depth)) = stack.pop() {
+        let entries = match list(src.clone()).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                skipped.add(&src, format_args!("read remote dir: {e:#}"));
+                continue;
+            }
+        };
+        plan.dirs.push(Planned {
+            src: src.clone(),
+            dst: dst.to_string_lossy().into_owned(),
+            size: 0,
+        });
+        for (name, attrs) in entries {
+            let path = join_remote(&src, &name);
             let Some(local) = join_local(&dst, &name) else {
+                skipped.add(&path, "name not allowed here");
                 continue;
             };
-            let file_type = entry.file_type();
-            if file_type.is_dir() {
-                stack.push((join_remote(&src, &name), local));
-            } else if file_type.is_file() {
-                plan.files.push(PlannedFile {
-                    src: join_remote(&src, &name),
+            match attrs.file_type() {
+                FileType::Dir if depth < MAX_DEPTH => {
+                    stack.push((path, local, depth + 1));
+                }
+                FileType::Dir => skipped.add(&path, "nested too deep"),
+                FileType::File => plan.files.push(Planned {
+                    src: path,
                     dst: local.to_string_lossy().into_owned(),
-                    size: entry.metadata().size.unwrap_or(0),
-                });
+                    size: attrs.size.unwrap_or(0),
+                }),
+                FileType::Symlink => skipped.add(&path, "symbolic link, not followed"),
+                FileType::Other => skipped.add(&path, "not a regular file or folder"),
             }
         }
     }
@@ -520,30 +609,42 @@ async fn do_download(
     check_paths(local, remote)?;
     check_local_name(local)?;
 
-    // Size for progress and file-or-folder (best-effort: a failed stat downloads as a
-    // file, and the open below reports the real error).
+    // Size and type best-effort: a failed stat downloads as a file, and the open below
+    // reports why. Without permissions the type is unknown too.
     let meta = sftp.metadata(remote).await.ok();
-    if meta.as_ref().is_some_and(|m| m.file_type().is_dir()) {
-        let plan = plan_remote_tree(sftp, remote, std::path::Path::new(local)).await?;
-        let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
-        for dir in &plan.dirs {
-            check_paths(dir, remote)?;
-            tokio::fs::create_dir_all(dir)
-                .await
-                .with_context(|| format!("create local dir '{dir}'"))?;
+    match meta
+        .as_ref()
+        .map(|m| (m.permissions.is_some(), m.file_type()))
+    {
+        Some((_, FileType::Dir)) => {}
+        Some((true, FileType::Symlink | FileType::Other)) => {
+            anyhow::bail!("'{remote}' is not a regular file or folder")
         }
-        for file in &plan.files {
-            check_paths(&file.dst, &file.src)?;
-            download_file(sftp, &file.src, &file.dst, &mut progress)
-                .await
-                .with_context(|| format!("download '{}'", file.src))?;
+        _ => {
+            let total = meta.and_then(|m| m.size).unwrap_or(0);
+            let mut progress = Progress::new(transfer_id, total, event_tx);
+            return download_file(sftp, remote, local, &mut progress).await;
         }
-        return Ok(());
     }
 
-    let total = meta.and_then(|m| m.size).unwrap_or(0);
-    let mut progress = Progress::new(transfer_id, total, event_tx);
-    download_file(sftp, remote, local, &mut progress).await
+    let mut skipped = Skipped::default();
+    let list = |dir: String| async move {
+        let entries = sftp.read_dir(dir).await?;
+        anyhow::Ok(entries.map(|e| (e.file_name(), e.metadata())).collect())
+    };
+    let plan = plan_remote_tree(list, remote, Path::new(local), &mut skipped).await?;
+    let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
+    for dir in &plan.dirs {
+        if let Err(e) = tokio::fs::create_dir_all(&dir.dst).await {
+            skipped.add(&dir.src, format_args!("create local dir: {e}"));
+        }
+    }
+    for file in &plan.files {
+        if let Err(e) = download_file(sftp, &file.src, &file.dst, &mut progress).await {
+            skipped.add(&file.src, format_args!("{e:#}"));
+        }
+    }
+    skipped.into_result()
 }
 
 async fn download_file(
@@ -576,7 +677,8 @@ async fn download_file(
         progress.advance(n).await;
     }
 
-    Ok(())
+    // The last write may still be in flight; this is where it fails, if it does.
+    local_file.flush().await.context("write local file")
 }
 
 /// Uploads a local file or, recursively, a local folder to `remote`.
@@ -593,27 +695,46 @@ async fn do_upload(
     let meta = tokio::fs::metadata(local)
         .await
         .context("open local file for upload")?;
-    if meta.is_dir() {
-        let plan = plan_local_tree(std::path::Path::new(local), remote).await?;
-        let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
-        for dir in &plan.dirs {
-            // An existing folder is merged into, as an existing file is overwritten.
-            if !sftp.try_exists(dir.as_str()).await.unwrap_or(false) {
-                sftp.create_dir(dir.as_str())
-                    .await
-                    .with_context(|| format!("create remote dir '{dir}'"))?;
-            }
-        }
-        for file in &plan.files {
-            upload_file(&file.src, sftp, &file.dst, &mut progress)
-                .await
-                .with_context(|| format!("upload '{}'", file.src))?;
-        }
-        return Ok(());
+    if meta.is_file() {
+        let mut progress = Progress::new(transfer_id, meta.len(), event_tx);
+        return upload_file(local, sftp, remote, &mut progress).await;
+    }
+    if !meta.is_dir() {
+        anyhow::bail!("'{local}' is not a regular file or folder");
     }
 
-    let mut progress = Progress::new(transfer_id, meta.len(), event_tx);
-    upload_file(local, sftp, remote, &mut progress).await
+    let mut skipped = Skipped::default();
+    let plan = plan_local_tree(local, remote, &mut skipped).await?;
+    let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
+    for dir in &plan.dirs {
+        if let Err(e) = create_remote_dir(sftp, &dir.dst).await {
+            skipped.add(&dir.src, format_args!("{e:#}"));
+        }
+    }
+    for file in &plan.files {
+        if let Err(e) = upload_file(&file.src, sftp, &file.dst, &mut progress).await {
+            skipped.add(&file.src, format_args!("{e:#}"));
+        }
+    }
+    skipped.into_result()
+}
+
+/// Creates the remote folder `path`, or merges into the one there.
+async fn create_remote_dir(
+    sftp: &russh_sftp::client::SftpSession,
+    path: &str,
+) -> anyhow::Result<()> {
+    if let Err(e) = sftp.create_dir(path).await {
+        if sftp
+            .metadata(path)
+            .await
+            .is_ok_and(|m| m.file_type().is_dir())
+        {
+            return Ok(());
+        }
+        return Err(e).context("create remote dir");
+    }
+    Ok(())
 }
 
 async fn upload_file(
@@ -780,18 +901,20 @@ mod tests {
         assert!(drive_roots(0).is_empty());
     }
 
-    fn scratch_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("omnyssh-sftp-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create scratch dir");
-        dir
+    fn attrs(permissions: u32, size: u64) -> FileAttributes {
+        FileAttributes {
+            permissions: Some(permissions),
+            size: Some(size),
+            ..FileAttributes::empty()
+        }
     }
 
     #[tokio::test]
     async fn local_listing_carries_modification_time() {
-        let dir = scratch_dir("list");
-        std::fs::write(dir.join("a.txt"), b"hello").expect("write scratch file");
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.txt"), b"hello").expect("write scratch file");
 
-        let entries = list_local_dir(&dir.to_string_lossy())
+        let entries = list_local_dir(&dir.path().to_string_lossy())
             .await
             .expect("list scratch dir");
         let file = entries
@@ -804,28 +927,34 @@ mod tests {
         let parent = entries.first().expect("parent entry");
         assert_eq!(parent.name, "..");
         assert!(parent.modified.is_none());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
-    async fn local_tree_plan_maps_every_file_and_folder() {
-        let dir = scratch_dir("plan");
+    async fn the_local_plan_maps_files_and_folders_and_reports_the_rest() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
         std::fs::create_dir_all(dir.join("sub").join("deep")).expect("create scratch tree");
         std::fs::write(dir.join("a.txt"), b"abc").expect("write scratch file");
         std::fs::write(dir.join("sub").join("deep").join("b.bin"), b"hello")
             .expect("write scratch file");
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&dir, dir.join("sub").join("loop")).expect("create symlink");
+        {
+            std::os::unix::fs::symlink(dir, dir.join("sub").join("loop")).expect("symlink");
+            std::os::unix::net::UnixListener::bind(dir.join("sock")).expect("socket");
+        }
 
-        let plan = plan_local_tree(&dir, "/srv/up").await.expect("plan tree");
-        assert_eq!(plan.dirs[0], "/srv/up");
-        let mut dirs = plan.dirs.clone();
+        let mut skipped = Skipped::default();
+        let root = dir.to_str().expect("utf-8 temp dir");
+        let plan = plan_local_tree(root, "/srv/up", &mut skipped)
+            .await
+            .expect("plan tree");
+        assert_eq!(plan.dirs[0].dst, "/srv/up");
+        let mut dirs: Vec<_> = plan.dirs.iter().map(|d| d.dst.as_str()).collect();
         dirs.sort();
         assert_eq!(dirs, ["/srv/up", "/srv/up/sub", "/srv/up/sub/deep"]);
         // Parents come before their children, so creating in order never fails.
-        let sub = plan.dirs.iter().position(|d| d == "/srv/up/sub");
-        let deep = plan.dirs.iter().position(|d| d == "/srv/up/sub/deep");
+        let sub = plan.dirs.iter().position(|d| d.dst == "/srv/up/sub");
+        let deep = plan.dirs.iter().position(|d| d.dst == "/srv/up/sub/deep");
         assert!(sub < deep);
         let mut files: Vec<_> = plan
             .files
@@ -835,8 +964,245 @@ mod tests {
         files.sort();
         assert_eq!(files, [("/srv/up/a.txt", 3), ("/srv/up/sub/deep/b.bin", 5)]);
         assert_eq!(plan.total(), 8);
+        // The link back up and the socket are left out, and said so.
+        assert_eq!(skipped.count, if cfg!(unix) { 2 } else { 0 });
+    }
 
-        let _ = std::fs::remove_dir_all(&dir);
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_local_name_that_is_not_utf8_is_reported_not_fatal() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("ok.txt"), b"ok").expect("write");
+        let bad = std::ffi::OsStr::from_bytes(b"bad\xff.txt");
+        std::fs::write(tmp.path().join(bad), b"bad").expect("write");
+
+        let mut skipped = Skipped::default();
+        let root = tmp.path().to_str().expect("utf-8 temp dir");
+        let plan = plan_local_tree(root, "/up", &mut skipped)
+            .await
+            .expect("plan tree");
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(plan.files[0].dst, "/up/ok.txt");
+        let err = skipped.into_result().expect_err("the bad name is reported");
+        assert!(
+            err.to_string().ends_with("': name is not valid UTF-8"),
+            "{err}"
+        );
+    }
+
+    /// A remote file system: folder -> listing. A folder not in it cannot be read.
+    fn fake_server(
+        tree: Vec<(&'static str, Vec<(&'static str, FileAttributes)>)>,
+    ) -> impl FnMut(String) -> std::future::Ready<anyhow::Result<Vec<(String, FileAttributes)>>>
+    {
+        move |dir| {
+            let listing = tree
+                .iter()
+                .find(|(path, _)| *path == dir)
+                .map(|(_, entries)| {
+                    entries
+                        .iter()
+                        .map(|(name, attrs)| (name.to_string(), attrs.clone()))
+                        .collect()
+                });
+            std::future::ready(listing.ok_or_else(|| anyhow::anyhow!("Permission denied")))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_remote_plan_maps_a_tree_and_reports_what_it_leaves_out() {
+        let server = fake_server(vec![
+            (
+                "/srv/app",
+                vec![
+                    ("run.sh", attrs(0o100_755, 3)),
+                    ("conf", attrs(0o40_700, 0)),
+                    ("current", attrs(0o120_777, 0)),
+                    ("fifo", attrs(0o10_644, 0)),
+                    ("a/b", attrs(0o100_644, 1)),
+                ],
+            ),
+            (
+                "/srv/app/conf",
+                vec![
+                    ("app.toml", attrs(0o100_600, 5)),
+                    ("locked", attrs(0o40_000, 0)),
+                ],
+            ),
+        ]);
+        let dst = Path::new("dl").join("app");
+        let mut skipped = Skipped::default();
+        let plan = plan_remote_tree(server, "/srv/app", &dst, &mut skipped)
+            .await
+            .expect("plan tree");
+
+        let local = |rel: &[&str]| {
+            rel.iter()
+                .fold(dst.clone(), |p, part| p.join(part))
+                .to_string_lossy()
+                .into_owned()
+        };
+        let dirs: Vec<_> = plan.dirs.iter().map(|d| d.dst.clone()).collect();
+        assert_eq!(dirs, [local(&[]), local(&["conf"])]);
+        assert_eq!(
+            plan.files,
+            [
+                Planned {
+                    src: "/srv/app/run.sh".into(),
+                    dst: local(&["run.sh"]),
+                    size: 3,
+                },
+                Planned {
+                    src: "/srv/app/conf/app.toml".into(),
+                    dst: local(&["conf", "app.toml"]),
+                    size: 5,
+                },
+            ]
+        );
+        // The symlink, the FIFO, the name with a separator and the unreadable folder:
+        // left out, counted, and the first one named.
+        assert_eq!(skipped.count, 4);
+        let err = skipped.into_result().expect_err("skips are reported");
+        assert_eq!(
+            err.to_string(),
+            "4 items skipped or failed, first '/srv/app/current': symbolic link, not followed"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_remote_plan_stops_at_the_depth_cap() {
+        // A server that makes up one more folder at every level.
+        let server = |_dir: String| {
+            std::future::ready(anyhow::Ok(vec![("d".to_string(), attrs(0o40_755, 0))]))
+        };
+        let mut skipped = Skipped::default();
+        let plan = plan_remote_tree(server, "/x", Path::new("dl"), &mut skipped)
+            .await
+            .expect("plan tree");
+        assert_eq!(plan.dirs.len(), MAX_DEPTH + 1);
+        let err = skipped.into_result().expect_err("the cut is reported");
+        assert!(err
+            .to_string()
+            .starts_with("1 item skipped or failed, first '/x/d/d/"));
+        assert!(err.to_string().ends_with("/d': nested too deep"), "{err}");
+    }
+
+    #[test]
+    fn skips_are_counted_and_the_first_reason_kept_whole() {
+        assert!(Skipped::default().into_result().is_ok());
+
+        let mut skipped = Skipped::default();
+        let cause = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let err = anyhow::Error::from(cause).context("open remote file for download");
+        skipped.add("/srv/a", format_args!("{err:#}"));
+        let one = format!(
+            "1 item skipped or failed, first '/srv/a': open remote file for download: {}",
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+        );
+        let mut again = Skipped::default();
+        again.add("/srv/a", format_args!("{err:#}"));
+        assert_eq!(again.into_result().expect_err("one").to_string(), one);
+
+        skipped.add("/srv/b", "symbolic link, not followed");
+        assert_eq!(
+            skipped.into_result().expect_err("two").to_string(),
+            one.replacen("1 item", "2 items", 1)
+        );
+    }
+
+    /// An SFTP session on this machine's own files through OpenSSH's sftp-server,
+    /// where one is installed.
+    #[cfg(unix)]
+    async fn local_sftp() -> Option<russh_sftp::client::SftpSession> {
+        let server = [
+            "/usr/lib/openssh/sftp-server",
+            "/usr/libexec/openssh/sftp-server",
+            "/usr/libexec/sftp-server",
+        ]
+        .into_iter()
+        .find(|path| Path::new(path).exists())?;
+        let mut child = tokio::process::Command::new(server)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .ok()?;
+        // The server exits once the session drops its end of the pipes.
+        let pipes = tokio::io::join(child.stdout.take()?, child.stdin.take()?);
+        russh_sftp::client::SftpSession::new(pipes).await.ok()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_folder_round_trips_through_sftp_with_its_skips_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(sftp) = local_sftp().await else {
+            eprintln!("no sftp-server on this machine; skipped");
+            return;
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = |rel: &str| tmp.path().join(rel);
+        let str_of = |p: &Path| p.to_str().expect("utf-8 temp dir").to_string();
+        let set_mode = |p: PathBuf, mode| {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).expect("chmod")
+        };
+        std::fs::create_dir_all(path("src/private")).expect("mkdir");
+        std::fs::write(path("src/run.sh"), "#!/bin/sh\n").expect("write");
+        std::fs::write(path("src/private/data.bin"), vec![7u8; 200_000]).expect("write");
+        std::os::unix::fs::symlink(path("src/run.sh"), path("src/link")).expect("symlink");
+
+        let (tx, _rx) = mpsc::channel(64);
+        let err = do_upload(&str_of(&path("src")), &sftp, &str_of(&path("up")), 1, &tx)
+            .await
+            .expect_err("the link is reported");
+        let link = str_of(&path("src/link"));
+        assert_eq!(
+            err.to_string(),
+            format!("1 item skipped or failed, first '{link}': symbolic link, not followed")
+        );
+        assert_eq!(
+            std::fs::read(path("up/private/data.bin"))
+                .expect("read")
+                .len(),
+            200_000
+        );
+        assert!(!path("up/link").exists());
+
+        // Back down, into a folder that already holds one of the files.
+        std::fs::create_dir_all(path("down")).expect("mkdir");
+        std::fs::write(path("down/run.sh"), "old").expect("write");
+        do_download(&sftp, &str_of(&path("up")), &str_of(&path("down")), 2, &tx)
+            .await
+            .expect("downloaded");
+        assert_eq!(
+            std::fs::read(path("down/run.sh")).expect("read"),
+            b"#!/bin/sh\n"
+        );
+        assert_eq!(
+            std::fs::read(path("down/private/data.bin"))
+                .expect("read")
+                .len(),
+            200_000
+        );
+
+        // An unreadable folder is reported with the server's reason; the rest still
+        // arrives. Root reads it anyway, so only a plain user can check this.
+        set_mode(path("up/private"), 0o000);
+        let readable = std::fs::read_dir(path("up/private")).is_ok();
+        let result =
+            do_download(&sftp, &str_of(&path("up")), &str_of(&path("again")), 3, &tx).await;
+        set_mode(path("up/private"), 0o700);
+        if !readable {
+            let err = result.expect_err("the folder is reported");
+            let private = str_of(&path("up/private"));
+            assert!(
+                err.to_string().starts_with(&format!(
+                    "1 item skipped or failed, first '{private}': read remote dir: Permission denied"
+                )),
+                "{err}"
+            );
+            assert!(path("again/run.sh").exists());
+        }
     }
 
     #[test]
@@ -898,7 +1264,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn on_windows_a_server_name_never_leaves_the_destination() {
-        let dst = std::path::Path::new(r"C:\Users\me\dl");
+        let dst = Path::new(r"C:\Users\me\dl");
         for name in [
             "C:x", "D:", "a:b", r"..\x", r"\x", r"\\?\x", "CON", "aux.c", "a.",
         ] {
@@ -916,7 +1282,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn on_unix_backslashes_colons_and_device_names_are_plain() {
-        let dst = std::path::Path::new("/home/me/dl");
+        let dst = Path::new("/home/me/dl");
         for name in ["a\\b", "..\\x", "C:x", "a:b", "CON", "a."] {
             assert_eq!(join_local(dst, name), Some(dst.join(name)), "{name:?}");
         }
