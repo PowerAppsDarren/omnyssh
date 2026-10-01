@@ -15,11 +15,13 @@ use russh::keys::{Algorithm, EcdsaCurve, HashAlg, PublicKey};
 pub(crate) enum Verdict {
     /// A saved key matches.
     Known,
-    /// No key of this type is saved for the host.
+    /// No key is saved for the host.
     Unknown,
-    /// A saved key of the same type differs.
+    /// Keys are saved for the host and the offered one is not among them.
     Changed {
         file: PathBuf,
+        /// The types saved, when none is the offered key's.
+        pinned: Vec<Algorithm>,
         /// The file is the one OmnySSH kept up to 1.1.3.
         legacy: bool,
     },
@@ -57,9 +59,11 @@ pub(crate) fn check(host: &str, port: u16, key: &PublicKey) -> Verdict {
     check_in(&files(), host, port, key)
 }
 
-/// The first file holding a key of the offered type decides. Any matching line
-/// is enough, as in ssh(1): a stale line next to the right one refuses nothing.
-/// A file that cannot be opened counts as empty, as in ssh(1).
+/// The first file holding a key for the host decides. Any matching line is
+/// enough, as in ssh(1): a stale line next to the right one refuses nothing. A
+/// key of a type nobody saved is refused too, as ssh(1) does: else a server
+/// that shows only another type, as a man in the middle can, would pass for a
+/// new host. A file that cannot be opened counts as empty, as in ssh(1).
 fn check_in(files: &[PathBuf], host: &str, port: u16, key: &PublicKey) -> Verdict {
     // No home: nothing to check against, and nowhere a key could be pinned.
     if files.is_empty() {
@@ -76,9 +80,18 @@ fn check_in(files: &[PathBuf], host: &str, port: u16, key: &PublicKey) -> Verdic
         if saved.iter().any(|k| k.key_data() == key.key_data()) {
             return Verdict::Known;
         }
-        if saved.iter().any(|k| same_type(k, key)) {
+        if !saved.is_empty() {
+            let mut pinned = Vec::new();
+            if !saved.iter().any(|k| same_type(k, key)) {
+                for algorithm in saved.iter().map(PublicKey::algorithm) {
+                    if !pinned.contains(&algorithm) {
+                        pinned.push(algorithm);
+                    }
+                }
+            }
             return Verdict::Changed {
                 file: file.clone(),
+                pinned,
                 legacy: legacy_path().as_ref() == Some(file),
             };
         }
@@ -212,6 +225,7 @@ pub(crate) fn changed_message(
     port: u16,
     key: &PublicKey,
     file: &Path,
+    pinned: &[Algorithm],
     legacy: bool,
 ) -> String {
     // `ssh-keygen -R` wants `[host]:port` off port 22; quoted, or zsh takes it
@@ -222,6 +236,12 @@ pub(crate) fn changed_message(
         format!("[{host}]:{port}")
     };
     let (kind, server_file) = key_type(&key.algorithm());
+    let saved = if pinned.is_empty() {
+        "the one".to_string()
+    } else {
+        let types: Vec<String> = pinned.iter().map(|a| key_type(a).0).collect();
+        format!("the {} key", types.join(" or "))
+    };
     let whose = if legacy {
         ", the list OmnySSH kept up to 1.1.3, which PuTTY and OpenSSH never read"
     } else {
@@ -232,7 +252,7 @@ pub(crate) fn changed_message(
         .unwrap_or_default();
     format!(
         "Host key of {who} has changed: its {kind} key {fingerprint} does not match \
-         the one saved in {file}{whose}. If the server was reinstalled or replaced, \
+         {saved} saved in {file}{whose}. If the server was reinstalled or replaced, \
          check that key on the server{how}, then remove the old one with \
          ssh-keygen -R \"{target}\" -f \"{file}\". \
          Otherwise someone may be intercepting the connection.",
@@ -296,8 +316,14 @@ mod tests {
             Verdict::Known
         ));
         match check_in(&files, "10.0.0.5", 22, &other) {
-            Verdict::Changed { file: path, legacy } => {
+            Verdict::Changed {
+                file: path,
+                pinned,
+                legacy,
+            } => {
                 assert_eq!(path, file);
+                // Same type: nothing to name.
+                assert!(pinned.is_empty());
                 assert!(!legacy);
             }
             _ => panic!("expected a changed key"),
@@ -318,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_file_with_the_offered_type_decides() {
+    fn the_first_file_with_a_key_for_the_host_decides() {
         let dir = tempfile::tempdir().unwrap();
         let (primary, legacy) = (dir.path().join("a"), dir.path().join("b"));
         let (server, stale) = (ed25519(), ed25519());
@@ -343,6 +369,34 @@ mod tests {
             Verdict::Changed { file, .. } => assert_eq!(file, primary),
             _ => panic!("expected the primary pin to refuse"),
         }
+    }
+
+    #[test]
+    fn a_key_of_a_type_nobody_saved_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("known_hosts");
+        write(&file, &[line("vm", &ed25519())]);
+        // What a man in the middle shows when it has no Ed25519 key to offer.
+        let p384 = russh::keys::parse_public_key_base64(
+            "AAAAE2VjZHNhLXNoYTItbmlzdHAzODQAAAAIbmlzdHAzODQAAABhBPsWebQPfTKmztyvWSqgE1HXWtAJwl6Y\
+             YUx43JswHMefMvUBiOAnCS20o697vnbFr6WtNWGsTt48NyDfBtwezmZ4wyhOqDnd7kJL8MUsWd3S7E4xe5RBd\
+             U39kfoUDZ2WOQ==",
+        )
+        .expect("p384 key");
+        match check_in(std::slice::from_ref(&file), "vm", 22, &p384) {
+            Verdict::Changed {
+                file: path, pinned, ..
+            } => {
+                assert_eq!(path, file);
+                assert_eq!(pinned, [Algorithm::Ed25519]);
+            }
+            _ => panic!("a key of another type passed for a new host"),
+        }
+        // A host with nothing saved still trusts its first key.
+        assert!(matches!(
+            check_in(&[file], "other", 22, &p384),
+            Verdict::Unknown
+        ));
     }
 
     #[test]
@@ -465,7 +519,9 @@ mod tests {
         ));
         // Another RSA key is a changed one, not a new type to trust.
         match check_in(&files, "vm", 22, &rsa()) {
-            Verdict::Changed { file: path, .. } => assert_eq!(path, file),
+            Verdict::Changed {
+                file: path, pinned, ..
+            } => assert_eq!((path, pinned), (file, vec![])),
             _ => panic!("an RSA key under another hash name slipped past the pin"),
         }
     }
@@ -474,7 +530,7 @@ mod tests {
     fn the_refusal_names_the_key_the_file_and_the_remedy() {
         let file = Path::new("/home/me/.ssh/known_hosts");
         let key = ed25519();
-        let message = changed_message("10.0.0.5", 2222, &key, file, false);
+        let message = changed_message("10.0.0.5", 2222, &key, file, &[], false);
         // The TUI status bar keeps what comes before the first ':'.
         assert_eq!(
             message.split(':').next(),
@@ -492,9 +548,30 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_names_the_saved_type_when_another_is_offered() {
+        let file = Path::new("/home/me/.ssh/known_hosts");
+        let p256 = Algorithm::Ecdsa {
+            curve: EcdsaCurve::NistP256,
+        };
+        let message = changed_message(
+            "vm",
+            22,
+            &ed25519(),
+            file,
+            std::slice::from_ref(&p256),
+            false,
+        );
+        assert!(message
+            .contains("does not match the ECDSA P-256 key saved in /home/me/.ssh/known_hosts."));
+        let rsa = Algorithm::Rsa { hash: None };
+        let message = changed_message("vm", 22, &ed25519(), file, &[p256, rsa], false);
+        assert!(message.contains("does not match the ECDSA P-256 or RSA key saved in"));
+    }
+
+    #[test]
     fn a_legacy_refusal_says_the_file_is_omnysshs_own() {
         let file = Path::new(r"C:\Users\me\ssh\known_hosts");
-        let message = changed_message("192.168.1.25", 22, &ed25519(), file, true);
+        let message = changed_message("192.168.1.25", 22, &ed25519(), file, &[], true);
         assert_eq!(
             message.split(':').next(),
             Some("Host key of 192.168.1.25 has changed")

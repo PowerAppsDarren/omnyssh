@@ -237,7 +237,11 @@ impl client::Handler for KnownHostsHandler {
                 return Ok(true);
             }
             // A previously recorded key changed — refuse; possible MITM.
-            Verdict::Changed { file, legacy } => {
+            Verdict::Changed {
+                file,
+                pinned,
+                legacy,
+            } => {
                 tracing::warn!(
                     host = %self.host,
                     port = self.port,
@@ -248,6 +252,7 @@ impl client::Handler for KnownHostsHandler {
                     self.port,
                     server_public_key,
                     &file,
+                    &pinned,
                     legacy,
                 )
             }
