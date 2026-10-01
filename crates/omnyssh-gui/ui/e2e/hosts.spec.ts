@@ -284,6 +284,15 @@ test('g is ignored under a modal and while typing', async ({ page }) => {
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
 
+  // Nor behind the command palette, even with focus off its input.
+  await page.keyboard.press('Control+k');
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  await palette.getByText('esc close').click();
+  await page.keyboard.press('g');
+  await expect(grouped).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(palette).toHaveCount(0);
+
   await page.getByRole('button', { name: 'Search hosts' }).click();
   await page.getByRole('textbox', { name: 'Search hosts' }).press('g');
   await expect(page.getByRole('textbox', { name: 'Search hosts' })).toHaveValue('g');

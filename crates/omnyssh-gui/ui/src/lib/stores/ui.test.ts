@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { isCollapseChord, isGroupHotkey, isPaletteChord, isRefreshHotkey } from './ui';
 import { dialogs } from './dialogs';
+import { palette } from './palette';
 
 // Collapse persistence (tech-gui.md §2, §3.5). The canonical layer needs a fake
 // Tauri store — Vitest has no runtime — and a fresh module per test isolates the
@@ -185,6 +186,17 @@ describe('dashboard hotkeys under a modal', () => {
       expect(isGroupHotkey(new KeyboardEvent('keydown', { key: 'g' }))).toBe(false);
     } finally {
       dialogs.set([]);
+    }
+    expect(isGroupHotkey(new KeyboardEvent('keydown', { key: 'g' }))).toBe(true);
+  });
+
+  it('ignore r and g while the command palette is open', () => {
+    palette.open();
+    try {
+      expect(isRefreshHotkey(new KeyboardEvent('keydown', { key: 'r' }))).toBe(false);
+      expect(isGroupHotkey(new KeyboardEvent('keydown', { key: 'g' }))).toBe(false);
+    } finally {
+      palette.close();
     }
     expect(isGroupHotkey(new KeyboardEvent('keydown', { key: 'g' }))).toBe(true);
   });
