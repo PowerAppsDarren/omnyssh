@@ -17,6 +17,7 @@
   import {
     sftp,
     markedEntries,
+    markedTransferable,
     dragPayload,
     formatBytes,
     rootOf,
@@ -76,9 +77,10 @@
   }
   const transfer = $derived(view?.transfer);
 
-  const localMarkedFiles = $derived(view ? markedEntries(view.local).filter((e) => !e.isDir) : []);
+  // Folders transfer whole, so the Upload/Download buttons take them like files.
+  const localMarkedItems = $derived(view ? markedTransferable(view.local) : []);
   const remoteMarked = $derived(view ? markedEntries(view.remote) : []);
-  const remoteMarkedFiles = $derived(remoteMarked.filter((e) => !e.isDir));
+  const remoteMarkedItems = $derived(view ? markedTransferable(view.remote) : []);
   const singleRemoteMark = $derived(remoteMarked.length === 1 ? remoteMarked[0] : undefined);
 
   function errMsg(err: unknown): string {
@@ -386,15 +388,9 @@
       lastError.set(errMsg(err));
       return [] as FileEntryDto[];
     });
-    const files = entries.filter((e) => !e.isDir);
-    if (files.length < paths.length) {
-      lastError.set(
-        entries.some((e) => e.isDir)
-          ? 'Folders cannot be uploaded yet; only the dropped files were sent.'
-          : 'Some dropped items could not be read.'
-      );
-    }
-    upload(files, dir);
+    // Folders upload whole, contents and all (the core walks them).
+    if (entries.length < paths.length) lastError.set('Some dropped items could not be read.');
+    upload(entries, dir);
   }
 
   function guarded<T>(fn: (arg: T) => void): (arg: T) => void {
@@ -486,7 +482,7 @@
     aria-hidden="true"
   >
     <Icon name={drag.from === 'local' ? 'upload' : 'download'} size={13} />
-    {drag.files.length === 1 ? drag.files[0].name : `${drag.files.length} files`}
+    {drag.files.length === 1 ? drag.files[0].name : `${drag.files.length} items`}
   </div>
 {/if}
 
@@ -539,9 +535,9 @@
           <button
             type="button"
             class={toolBtn}
-            title="Upload marked files to the remote directory"
-            disabled={localMarkedFiles.length === 0}
-            onclick={() => upload(localMarkedFiles)}
+            title="Upload marked files and folders to the remote directory"
+            disabled={localMarkedItems.length === 0}
+            onclick={() => upload(localMarkedItems)}
           >
             <Icon name="upload" size={13} />
             Upload
@@ -577,9 +573,9 @@
           <button
             type="button"
             class={toolBtn}
-            title="Download marked files to the local directory"
-            disabled={remoteMarkedFiles.length === 0}
-            onclick={() => download(remoteMarkedFiles)}
+            title="Download marked files and folders to the local directory"
+            disabled={remoteMarkedItems.length === 0}
+            onclick={() => download(remoteMarkedItems)}
           >
             <Icon name="download" size={13} />
             Download

@@ -92,12 +92,17 @@ export function markedEntries(pane: Pane): FileEntryDto[] {
   return pane.entries.filter((e) => pane.marked.has(e.path));
 }
 
-/** What dragging `entry` carries: every marked file when `entry` is one of them, else
- *  `entry` alone. Files only, like the Upload/Download buttons: directories and `..`
- *  are not transferable, so dragging one carries nothing. */
+/** The marked entries a transfer carries: files and folders (copied whole), never `..`. */
+export function markedTransferable(pane: Pane): FileEntryDto[] {
+  return markedEntries(pane).filter((e) => e.name !== '..');
+}
+
+/** What dragging `entry` carries: every marked entry when `entry` is one of them, else
+ *  `entry` alone. Folders travel with their whole contents; `..` is not transferable,
+ *  so dragging it carries nothing. */
 export function dragPayload(pane: Pane, entry: FileEntryDto): FileEntryDto[] {
-  if (entry.isDir || entry.name === '..') return [];
-  if (pane.marked.has(entry.path)) return markedEntries(pane).filter((e) => !e.isDir);
+  if (entry.name === '..') return [];
+  if (pane.marked.has(entry.path)) return markedTransferable(pane);
   return [entry];
 }
 

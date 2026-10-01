@@ -309,7 +309,23 @@ test('drag and drop: dropping back on the same pane transfers nothing', async ({
   expect(uploads).toEqual([]);
 });
 
-test('drag and drop: files dropped from the OS onto the remote pane upload, folders are refused', async ({
+test('drag and drop: a remote folder dropped on the local pane downloads it whole', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(localPane.getByText('notes.txt')).toBeVisible();
+  await expect(remotePane.getByText('var')).toBeVisible();
+
+  await dragOnto(page, remotePane.getByTitle('var', { exact: true }), localPane.getByTitle('notes.txt', { exact: true }));
+  await expect(page.getByLabel('transfer progress')).toBeVisible();
+  const downloads = await page.evaluate(() => (window as unknown as { __downloads: string[] }).__downloads);
+  expect(downloads).toEqual(['/home/user/var']);
+  // The press on the folder row did not navigate into it.
+  await expect(remotePane.getByText('config.yml')).toBeVisible();
+});
+
+test('drag and drop: files and folders dropped from the OS onto the remote pane upload', async ({
   page
 }) => {
   await boot(page);
@@ -328,10 +344,13 @@ test('drag and drop: files dropped from the OS onto the remote pane upload, fold
     { position }
   );
 
+  // One transfer at a time: the folder goes once the file is done.
   await expect(page.getByLabel('transfer progress')).toBeVisible();
-  const uploads = await page.evaluate(() => (window as unknown as { __uploads: string[] }).__uploads);
-  expect(uploads).toEqual(['/photo.png']);
-  await expect(page.getByText('Folders cannot be uploaded yet')).toBeVisible();
+  const uploads = () => page.evaluate(() => (window as unknown as { __uploads: string[] }).__uploads);
+  expect(await uploads()).toEqual(['/photo.png']);
+  await page.evaluate(() => (window as unknown as { __completeTransfer: () => void }).__completeTransfer());
+  await expect.poll(uploads).toEqual(['/photo.png', '/album']);
+  await expect(page.getByText('could not be read')).toHaveCount(0);
 });
 
 test('an inactive tab’s modal never overlays another entity (§2 exactly-one-active)', async ({

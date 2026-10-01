@@ -54,13 +54,17 @@ describe('dragPayload', () => {
     expect(dragPayload(paneWith([a, b], [b.path]), a)).toEqual([a]);
   });
 
-  it('carries every marked file, in listing order, when the dragged file is marked', () => {
+  it('carries every marked entry, folders included, in listing order', () => {
     const pane = paneWith([a, dir, b], [b.path, dir.path, a.path]);
-    expect(dragPayload(pane, b)).toEqual([a, b]);
+    expect(dragPayload(pane, b)).toEqual([a, dir, b]);
+    expect(dragPayload(pane, dir)).toEqual([a, dir, b]);
   });
 
-  it('carries nothing for a directory or the parent row', () => {
-    expect(dragPayload(paneWith([dir], [dir.path]), dir)).toEqual([]);
+  it('carries an unmarked folder on its own', () => {
+    expect(dragPayload(paneWith([a, dir], [a.path]), dir)).toEqual([dir]);
+  });
+
+  it('carries nothing for the parent row', () => {
     expect(dragPayload(paneWith([parent]), parent)).toEqual([]);
   });
 });

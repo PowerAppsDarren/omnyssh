@@ -301,11 +301,7 @@ async fn do_list_dir(
         let ft = entry.file_type();
         let meta = entry.metadata();
 
-        let full_path = if path.ends_with('/') {
-            format!("{path}{name}")
-        } else {
-            format!("{path}/{name}")
-        };
+        let full_path = join_remote(path, &name);
 
         entries.push(FileEntry {
             name,
@@ -335,6 +331,164 @@ async fn do_list_dir(
     Ok(entries)
 }
 
+/// `name` joined onto the remote directory `dir`.
+fn join_remote(dir: &str, name: &str) -> String {
+    if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// A directory entry name that is safe to join onto a destination: not `.` or `..`
+/// and free of separators, so a hostile server cannot steer a download elsewhere.
+fn is_plain_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0'])
+}
+
+/// Rejects a transfer whose local path climbs out with `..` or either path holds a
+/// null byte.
+fn check_paths(local: &str, remote: &str) -> anyhow::Result<()> {
+    if std::path::Path::new(local)
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        anyhow::bail!("Local path contains '..': {local}");
+    }
+    if local.contains('\0') || remote.contains('\0') {
+        anyhow::bail!("Path contains null bytes");
+    }
+    Ok(())
+}
+
+/// One file of a folder transfer.
+#[derive(Debug, PartialEq)]
+struct PlannedFile {
+    src: String,
+    dst: String,
+    size: u64,
+}
+
+/// Everything a folder transfer creates, worked out before the first byte moves so
+/// the progress bar covers the whole folder. `dirs` lists parents before children.
+#[derive(Debug, Default)]
+struct TreePlan {
+    dirs: Vec<String>,
+    files: Vec<PlannedFile>,
+}
+
+impl TreePlan {
+    fn total(&self) -> u64 {
+        self.files.iter().map(|f| f.size).sum()
+    }
+}
+
+/// Byte progress across every file of one transfer.
+struct Progress<'a> {
+    transfer_id: TransferId,
+    done: u64,
+    total: u64,
+    event_tx: &'a mpsc::Sender<CoreEvent>,
+}
+
+impl<'a> Progress<'a> {
+    fn new(transfer_id: TransferId, total: u64, event_tx: &'a mpsc::Sender<CoreEvent>) -> Self {
+        Self {
+            transfer_id,
+            done: 0,
+            total,
+            event_tx,
+        }
+    }
+
+    async fn advance(&mut self, n: usize) {
+        self.done += n as u64;
+        let _ = self
+            .event_tx
+            .send(CoreEvent::FileTransferProgress(
+                self.transfer_id,
+                self.done,
+                self.total,
+            ))
+            .await;
+    }
+}
+
+/// Walks the local folder `root`, mapping it onto the remote folder `dst_root`.
+/// Symlinks and special files are skipped, so a link cycle cannot loop forever.
+async fn plan_local_tree(root: &std::path::Path, dst_root: &str) -> anyhow::Result<TreePlan> {
+    let mut plan = TreePlan::default();
+    let mut stack = vec![(root.to_path_buf(), dst_root.to_string())];
+    while let Some((src, dst)) = stack.pop() {
+        let mut read_dir = tokio::fs::read_dir(&src)
+            .await
+            .with_context(|| format!("read local dir '{}'", src.display()))?;
+        plan.dirs.push(dst.clone());
+        while let Some(entry) = read_dir
+            .next_entry()
+            .await
+            .with_context(|| format!("read local dir '{}'", src.display()))?
+        {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !is_plain_name(&name) {
+                continue;
+            }
+            // `DirEntry::file_type` does not follow symlinks.
+            let file_type = entry
+                .file_type()
+                .await
+                .with_context(|| format!("stat '{}'", entry.path().display()))?;
+            if file_type.is_dir() {
+                stack.push((entry.path(), join_remote(&dst, &name)));
+            } else if file_type.is_file() {
+                let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                plan.files.push(PlannedFile {
+                    src: entry.path().to_string_lossy().into_owned(),
+                    dst: join_remote(&dst, &name),
+                    size,
+                });
+            }
+        }
+    }
+    Ok(plan)
+}
+
+/// Walks the remote folder `root`, mapping it onto the local folder `dst_root`.
+/// Symlinks and special files are skipped, as are names that are not plain.
+async fn plan_remote_tree(
+    sftp: &russh_sftp::client::SftpSession,
+    root: &str,
+    dst_root: &std::path::Path,
+) -> anyhow::Result<TreePlan> {
+    let mut plan = TreePlan::default();
+    let mut stack = vec![(root.to_string(), dst_root.to_path_buf())];
+    while let Some((src, dst)) = stack.pop() {
+        let read_dir = sftp
+            .read_dir(src.as_str())
+            .await
+            .with_context(|| format!("read remote dir '{src}'"))?;
+        plan.dirs.push(dst.to_string_lossy().into_owned());
+        for entry in read_dir {
+            let name = entry.file_name();
+            if !is_plain_name(&name) {
+                continue;
+            }
+            let file_type = entry.file_type();
+            if file_type.is_dir() {
+                stack.push((join_remote(&src, &name), dst.join(&name)));
+            } else if file_type.is_file() {
+                plan.files.push(PlannedFile {
+                    src: join_remote(&src, &name),
+                    dst: dst.join(&name).to_string_lossy().into_owned(),
+                    size: entry.metadata().size.unwrap_or(0),
+                });
+            }
+        }
+    }
+    Ok(plan)
+}
+
+/// Downloads a remote file or, recursively, a remote folder to `local`.
 async fn do_download(
     sftp: &russh_sftp::client::SftpSession,
     remote: &str,
@@ -342,24 +496,40 @@ async fn do_download(
     transfer_id: TransferId,
     event_tx: &mpsc::Sender<CoreEvent>,
 ) -> anyhow::Result<()> {
-    // Guard against path traversal in the local destination.
-    if std::path::Path::new(local)
-        .components()
-        .any(|c| c == std::path::Component::ParentDir)
-    {
-        anyhow::bail!("Download destination path contains '..': {local}");
-    }
-    if local.contains('\0') || remote.contains('\0') {
-        anyhow::bail!("Path contains null bytes");
+    check_paths(local, remote)?;
+
+    // Size for progress and file-or-folder (best-effort: a failed stat downloads as a
+    // file, and the open below reports the real error).
+    let meta = sftp.metadata(remote).await.ok();
+    if meta.as_ref().is_some_and(|m| m.file_type().is_dir()) {
+        let plan = plan_remote_tree(sftp, remote, std::path::Path::new(local)).await?;
+        let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
+        for dir in &plan.dirs {
+            check_paths(dir, remote)?;
+            tokio::fs::create_dir_all(dir)
+                .await
+                .with_context(|| format!("create local dir '{dir}'"))?;
+        }
+        for file in &plan.files {
+            check_paths(&file.dst, &file.src)?;
+            download_file(sftp, &file.src, &file.dst, &mut progress)
+                .await
+                .with_context(|| format!("download '{}'", file.src))?;
+        }
+        return Ok(());
     }
 
-    // Fetch size for progress (best-effort).
-    let total = sftp
-        .metadata(remote)
-        .await
-        .map(|m| m.size.unwrap_or(0))
-        .unwrap_or(0);
+    let total = meta.and_then(|m| m.size).unwrap_or(0);
+    let mut progress = Progress::new(transfer_id, total, event_tx);
+    download_file(sftp, remote, local, &mut progress).await
+}
 
+async fn download_file(
+    sftp: &russh_sftp::client::SftpSession,
+    remote: &str,
+    local: &str,
+    progress: &mut Progress<'_>,
+) -> anyhow::Result<()> {
     let mut remote_file = sftp
         .open(remote)
         .await
@@ -369,8 +539,6 @@ async fn do_download(
         .context("create local file")?;
 
     let mut buf = vec![0u8; 65_536];
-    let mut done: u64 = 0;
-
     loop {
         let n = remote_file
             .read(&mut buf)
@@ -383,15 +551,13 @@ async fn do_download(
             .write_all(&buf[..n])
             .await
             .context("write local file")?;
-        done += n as u64;
-        let _ = event_tx
-            .send(CoreEvent::FileTransferProgress(transfer_id, done, total))
-            .await;
+        progress.advance(n).await;
     }
 
     Ok(())
 }
 
+/// Uploads a local file or, recursively, a local folder to `remote`.
 async fn do_upload(
     local: &str,
     sftp: &russh_sftp::client::SftpSession,
@@ -399,30 +565,50 @@ async fn do_upload(
     transfer_id: TransferId,
     event_tx: &mpsc::Sender<CoreEvent>,
 ) -> anyhow::Result<()> {
-    // Guard against path traversal in the local source.
-    if std::path::Path::new(local)
-        .components()
-        .any(|c| c == std::path::Component::ParentDir)
-    {
-        anyhow::bail!("Upload source path contains '..': {local}");
-    }
-    if local.contains('\0') || remote.contains('\0') {
-        anyhow::bail!("Path contains null bytes");
+    check_paths(local, remote)?;
+
+    // Follows a symlink: a linked folder the user picked is uploaded as a folder.
+    let meta = tokio::fs::metadata(local)
+        .await
+        .context("open local file for upload")?;
+    if meta.is_dir() {
+        let plan = plan_local_tree(std::path::Path::new(local), remote).await?;
+        let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
+        for dir in &plan.dirs {
+            // An existing folder is merged into, as an existing file is overwritten.
+            if !sftp.try_exists(dir.as_str()).await.unwrap_or(false) {
+                sftp.create_dir(dir.as_str())
+                    .await
+                    .with_context(|| format!("create remote dir '{dir}'"))?;
+            }
+        }
+        for file in &plan.files {
+            upload_file(&file.src, sftp, &file.dst, &mut progress)
+                .await
+                .with_context(|| format!("upload '{}'", file.src))?;
+        }
+        return Ok(());
     }
 
+    let mut progress = Progress::new(transfer_id, meta.len(), event_tx);
+    upload_file(local, sftp, remote, &mut progress).await
+}
+
+async fn upload_file(
+    local: &str,
+    sftp: &russh_sftp::client::SftpSession,
+    remote: &str,
+    progress: &mut Progress<'_>,
+) -> anyhow::Result<()> {
     let mut local_file = tokio::fs::File::open(local)
         .await
         .context("open local file for upload")?;
-    let total = local_file.metadata().await.map(|m| m.len()).unwrap_or(0);
-
     let mut remote_file = sftp
         .create(remote)
         .await
         .context("create remote file for upload")?;
 
     let mut buf = vec![0u8; 65_536];
-    let mut done: u64 = 0;
-
     loop {
         let n = local_file.read(&mut buf).await.context("read local file")?;
         if n == 0 {
@@ -432,10 +618,7 @@ async fn do_upload(
             .write_all(&buf[..n])
             .await
             .context("write remote file")?;
-        done += n as u64;
-        let _ = event_tx
-            .send(CoreEvent::FileTransferProgress(transfer_id, done, total))
-            .await;
+        progress.advance(n).await;
     }
 
     Ok(())
@@ -628,6 +811,55 @@ mod tests {
         assert!(entries[1].is_dir);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn local_tree_plan_maps_every_file_and_folder() {
+        let dir = scratch_dir("plan");
+        std::fs::create_dir_all(dir.join("sub").join("deep")).expect("create scratch tree");
+        std::fs::write(dir.join("a.txt"), b"abc").expect("write scratch file");
+        std::fs::write(dir.join("sub").join("deep").join("b.bin"), b"hello")
+            .expect("write scratch file");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&dir, dir.join("sub").join("loop")).expect("create symlink");
+
+        let plan = plan_local_tree(&dir, "/srv/up").await.expect("plan tree");
+        assert_eq!(plan.dirs[0], "/srv/up");
+        let mut dirs = plan.dirs.clone();
+        dirs.sort();
+        assert_eq!(dirs, ["/srv/up", "/srv/up/sub", "/srv/up/sub/deep"]);
+        // Parents come before their children, so creating in order never fails.
+        let sub = plan.dirs.iter().position(|d| d == "/srv/up/sub");
+        let deep = plan.dirs.iter().position(|d| d == "/srv/up/sub/deep");
+        assert!(sub < deep);
+        let mut files: Vec<_> = plan
+            .files
+            .iter()
+            .map(|f| (f.dst.as_str(), f.size))
+            .collect();
+        files.sort();
+        assert_eq!(files, [("/srv/up/a.txt", 3), ("/srv/up/sub/deep/b.bin", 5)]);
+        assert_eq!(plan.total(), 8);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plain_names_exclude_dots_and_separators() {
+        assert!(is_plain_name("report.txt"));
+        assert!(is_plain_name("..hidden"));
+        for name in ["", ".", "..", "a/b", "a\\b", "a\0b"] {
+            assert!(!is_plain_name(name), "{name:?} should not be plain");
+        }
+        assert_eq!(join_remote("/", "x"), "/x");
+        assert_eq!(join_remote("/srv", "x"), "/srv/x");
+    }
+
+    #[test]
+    fn check_paths_rejects_parent_dirs_and_nulls() {
+        assert!(check_paths("/tmp/a", "/srv/a").is_ok());
+        assert!(check_paths("/tmp/../etc/a", "/srv/a").is_err());
+        assert!(check_paths("/tmp/a", "/srv/a\0").is_err());
     }
 
     #[test]
