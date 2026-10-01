@@ -196,8 +196,9 @@ async sftpList(sessionId: number, path: string) : Promise<Result<null, CommandEr
 }
 },
 /**
- * Upload a local file to a remote path (tech-gui.md §4.2). Allocates a transfer id
- * owned by this session so `transfer-progress` routes back to the tab (§3.4).
+ * Upload a local file or folder to a remote path (tech-gui.md §4.2). Allocates a
+ * transfer id owned by this session so `transfer-progress` routes back to the tab
+ * (§3.4).
  */
 async sftpUpload(sessionId: number, local: string, remote: string) : Promise<Result<null, CommandError>> {
     try {
@@ -208,8 +209,9 @@ async sftpUpload(sessionId: number, local: string, remote: string) : Promise<Res
 }
 },
 /**
- * Download a remote file to a local path (tech-gui.md §4.2). See `sftp_upload` for
- * the transfer-id routing; the core guards the local destination against `..` (§3.2).
+ * Download a remote file or folder to a local path (tech-gui.md §4.2). See
+ * `sftp_upload` for the transfer-id routing; the core keeps every name the server
+ * gives inside the local destination (§3.2).
  */
 async sftpDownload(sessionId: number, local: string, remote: string) : Promise<Result<null, CommandError>> {
     try {
