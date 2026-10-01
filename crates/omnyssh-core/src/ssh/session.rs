@@ -237,13 +237,19 @@ impl client::Handler for KnownHostsHandler {
                 return Ok(true);
             }
             // A previously recorded key changed — refuse; possible MITM.
-            Verdict::Changed(file) => {
+            Verdict::Changed { file, legacy } => {
                 tracing::warn!(
                     host = %self.host,
                     port = self.port,
                     "server key mismatch in known_hosts — possible MITM attack, refusing connection"
                 );
-                known_hosts::changed_message(&self.host, self.port, &file, &fingerprint)
+                known_hosts::changed_message(
+                    &self.host,
+                    self.port,
+                    server_public_key,
+                    &file,
+                    legacy,
+                )
             }
             // Unreadable or corrupt known_hosts — fail closed rather than
             // accept an unverified key.

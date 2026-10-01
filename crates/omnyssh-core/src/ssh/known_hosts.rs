@@ -18,7 +18,11 @@ pub(crate) enum Verdict {
     /// No key of this type is saved for the host.
     Unknown,
     /// A saved key of the same type differs.
-    Changed(PathBuf),
+    Changed {
+        file: PathBuf,
+        /// The file is the one OmnySSH kept up to 1.1.3.
+        legacy: bool,
+    },
     /// The file could not be read or parsed, or there is no home to find it in.
     Unreadable(PathBuf, russh::keys::Error),
 }
@@ -73,7 +77,10 @@ fn check_in(files: &[PathBuf], host: &str, port: u16, key: &PublicKey) -> Verdic
             return Verdict::Known;
         }
         if saved.iter().any(|k| same_type(k, key)) {
-            return Verdict::Changed(file.clone());
+            return Verdict::Changed {
+                file: file.clone(),
+                legacy: legacy_path().as_ref() == Some(file),
+            };
         }
     }
     Verdict::Unknown
@@ -175,9 +182,38 @@ fn who(host: &str, port: u16) -> String {
     }
 }
 
+/// The key type as `ssh-keygen -l` names it, with the curve, since a server can
+/// change curves, and the name OpenSSH gives the server's file for it.
+fn key_type(algorithm: &Algorithm) -> (String, Option<&'static str>) {
+    match algorithm {
+        Algorithm::Ed25519 => ("ED25519".into(), Some("ed25519")),
+        Algorithm::Ecdsa { curve } => {
+            let bits = match curve {
+                EcdsaCurve::NistP256 => 256,
+                EcdsaCurve::NistP384 => 384,
+                EcdsaCurve::NistP521 => 521,
+            };
+            (format!("ECDSA P-{bits}"), Some("ecdsa"))
+        }
+        Algorithm::Rsa { .. } => ("RSA".into(), Some("rsa")),
+        other => (other.to_string(), None),
+    }
+}
+
 /// Shown when a saved key no longer matches. The first ':' closes the headline,
 /// so a frontend that cuts there (the TUI status bar) keeps just that.
-pub(crate) fn changed_message(host: &str, port: u16, file: &Path, fingerprint: &str) -> String {
+///
+/// Names the offered key's type: a server has one key per type, and checking
+/// another type's key on the server shows a mismatch that is not there. A
+/// refusal from the legacy file says it is OmnySSH's own list, or a user whose
+/// PuTTY and `ssh` connect has no reason to believe it.
+pub(crate) fn changed_message(
+    host: &str,
+    port: u16,
+    key: &PublicKey,
+    file: &Path,
+    legacy: bool,
+) -> String {
     // `ssh-keygen -R` wants `[host]:port` off port 22; quoted, or zsh takes it
     // for a glob.
     let target = if port == 22 {
@@ -185,12 +221,23 @@ pub(crate) fn changed_message(host: &str, port: u16, file: &Path, fingerprint: &
     } else {
         format!("[{host}]:{port}")
     };
+    let (kind, server_file) = key_type(&key.algorithm());
+    let whose = if legacy {
+        ", the list OmnySSH kept up to 1.1.3, which PuTTY and OpenSSH never read"
+    } else {
+        ""
+    };
+    let how = server_file
+        .map(|name| format!(", e.g. with ssh-keygen -lf /etc/ssh/ssh_host_{name}_key.pub"))
+        .unwrap_or_default();
     format!(
-        "Host key of {who} has changed: it does not match the key saved in {file}. \
-         If the server was reinstalled, check on the server that its key is {fingerprint}, \
-         then remove the old one with ssh-keygen -R \"{target}\" -f \"{file}\". \
+        "Host key of {who} has changed: its {kind} key {fingerprint} does not match \
+         the one saved in {file}{whose}. If the server was reinstalled or replaced, \
+         check that key on the server{how}, then remove the old one with \
+         ssh-keygen -R \"{target}\" -f \"{file}\". \
          Otherwise someone may be intercepting the connection.",
         who = who(host, port),
+        fingerprint = key.fingerprint(HashAlg::Sha256),
         file = file.display(),
     )
 }
@@ -249,7 +296,10 @@ mod tests {
             Verdict::Known
         ));
         match check_in(&files, "10.0.0.5", 22, &other) {
-            Verdict::Changed(path) => assert_eq!(path, file),
+            Verdict::Changed { file: path, legacy } => {
+                assert_eq!(path, file);
+                assert!(!legacy);
+            }
             _ => panic!("expected a changed key"),
         }
         assert!(matches!(
@@ -277,7 +327,7 @@ mod tests {
         // The legacy pin still refuses a key nobody saved elsewhere...
         write(&legacy, &[line("vm", &stale)]);
         match check_in(&files, "vm", 22, &server) {
-            Verdict::Changed(path) => assert_eq!(path, legacy),
+            Verdict::Changed { file, .. } => assert_eq!(file, legacy),
             _ => panic!("expected the legacy pin to refuse"),
         }
         // ...until the key is saved in the primary file, which is read first.
@@ -290,7 +340,7 @@ mod tests {
         write(&primary, &[line("vm", &stale)]);
         write(&legacy, &[line("vm", &server)]);
         match check_in(&files, "vm", 22, &server) {
-            Verdict::Changed(path) => assert_eq!(path, primary),
+            Verdict::Changed { file, .. } => assert_eq!(file, primary),
             _ => panic!("expected the primary pin to refuse"),
         }
     }
@@ -316,7 +366,7 @@ mod tests {
         ));
         assert!(matches!(
             check_in(&files, "Build.Corp.lan", 22, &other),
-            Verdict::Changed(_)
+            Verdict::Changed { .. }
         ));
     }
 
@@ -415,23 +465,45 @@ mod tests {
         ));
         // Another RSA key is a changed one, not a new type to trust.
         match check_in(&files, "vm", 22, &rsa()) {
-            Verdict::Changed(path) => assert_eq!(path, file),
+            Verdict::Changed { file: path, .. } => assert_eq!(path, file),
             _ => panic!("an RSA key under another hash name slipped past the pin"),
         }
     }
 
     #[test]
-    fn the_refusal_names_the_file_and_the_remedy() {
+    fn the_refusal_names_the_key_the_file_and_the_remedy() {
         let file = Path::new("/home/me/.ssh/known_hosts");
-        let message = changed_message("10.0.0.5", 2222, file, "SHA256:abc");
+        let key = ed25519();
+        let message = changed_message("10.0.0.5", 2222, &key, file, false);
         // The TUI status bar keeps what comes before the first ':'.
         assert_eq!(
             message.split(':').next(),
             Some("Host key of 10.0.0.5 port 2222 has changed")
         );
-        assert!(message.contains("SHA256:abc"));
+        let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
+        assert!(message.contains(&format!(
+            "its ED25519 key {fingerprint} does not match the one saved in /home/me/.ssh/known_hosts."
+        )));
+        assert!(message.contains("ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub"));
         assert!(
             message.contains("ssh-keygen -R \"[10.0.0.5]:2222\" -f \"/home/me/.ssh/known_hosts\"")
+        );
+        assert!(!message.contains("PuTTY"));
+    }
+
+    #[test]
+    fn a_legacy_refusal_says_the_file_is_omnysshs_own() {
+        let file = Path::new(r"C:\Users\me\ssh\known_hosts");
+        let message = changed_message("192.168.1.25", 22, &ed25519(), file, true);
+        assert_eq!(
+            message.split(':').next(),
+            Some("Host key of 192.168.1.25 has changed")
+        );
+        assert!(message.contains(
+            r"saved in C:\Users\me\ssh\known_hosts, the list OmnySSH kept up to 1.1.3, which PuTTY and OpenSSH never read."
+        ));
+        assert!(
+            message.contains(r#"ssh-keygen -R "192.168.1.25" -f "C:\Users\me\ssh\known_hosts""#)
         );
     }
 
@@ -448,5 +520,10 @@ mod tests {
         write(&legacy, &[line("vm", &key)]);
         assert_eq!(path(), Some(home.path().join(".ssh").join("known_hosts")));
         assert!(matches!(check("vm", 22, &key), Verdict::Known));
+        // A refusal from it says it is the old file.
+        assert!(matches!(
+            check("vm", 22, &ed25519()),
+            Verdict::Changed { legacy: true, .. }
+        ));
     }
 }
