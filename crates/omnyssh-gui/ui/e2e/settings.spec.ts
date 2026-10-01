@@ -23,11 +23,11 @@ async function boot(
   opts: {
     fireUpdateOnBoot: boolean;
     traySupport?: { available: boolean; minimize: boolean };
-    versionFails?: boolean;
+    version?: 'fails' | 'hangs';
   }
 ): Promise<void> {
   await page.addInitScript(
-    ({ hosts, update, installed, fireUpdateOnBoot, traySupport, versionFails }) => {
+    ({ hosts, update, installed, fireUpdateOnBoot, traySupport, version }) => {
       let cbid = 0;
       const listeners: Record<string, number[]> = {};
       const state = {
@@ -65,9 +65,9 @@ async function boot(
             case 'check_update':
               return Promise.resolve({ ...update });
             case 'plugin:app|version':
-              return versionFails
-                ? Promise.reject('no Tauri runtime')
-                : Promise.resolve(installed);
+              if (version === 'fails') return Promise.reject('no Tauri runtime');
+              if (version === 'hangs') return new Promise(() => {});
+              return Promise.resolve(installed);
             case 'set_tray_behavior':
               ((win.__tray ??= []) as unknown[]).push({ ...args });
               return Promise.resolve({ ...traySupport });
@@ -93,7 +93,7 @@ async function boot(
       installed: INSTALLED,
       fireUpdateOnBoot: opts.fireUpdateOnBoot,
       traySupport: opts.traySupport ?? { available: true, minimize: true },
-      versionFails: opts.versionFails ?? false
+      version: opts.version
     }
   );
   await page.goto('/');
@@ -141,16 +141,20 @@ test('About shows the installed version, selectable for a bug report', async ({ 
   await expect(version).toHaveCSS('user-select', 'text');
 });
 
-test('a failed version read leaves no row, and the update prefs still load', async ({ page }) => {
-  await boot(page, { fireUpdateOnBoot: false, versionFails: true });
-  await page.getByRole('button', { name: 'Settings' }).click();
+for (const version of ['fails', 'hangs'] as const) {
+  test(`a version read that ${version} leaves no row, and the update prefs still load`, async ({
+    page
+  }) => {
+    await boot(page, { fireUpdateOnBoot: false, version });
+    await page.getByRole('button', { name: 'Settings' }).click();
 
-  await expect(
-    page.getByRole('switch', { name: 'Check for updates on startup' })
-  ).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByRole('heading', { name: 'About' })).toHaveCount(0);
-  await expect(page.getByText('Version', { exact: true })).toHaveCount(0);
-});
+    await expect(
+      page.getByRole('switch', { name: 'Check for updates on startup' })
+    ).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByRole('heading', { name: 'About' })).toHaveCount(0);
+    await expect(page.getByText('Version', { exact: true })).toHaveCount(0);
+  });
+}
 
 test('scrolled to the end, Settings keeps its bottom padding', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 480 });
