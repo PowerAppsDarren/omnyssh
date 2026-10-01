@@ -431,6 +431,27 @@ test('the panes show modification times', async ({ page }) => {
 
   await expect(localPane.getByTitle(/^Modified .*2024/)).toBeVisible();
   await expect(remotePane.getByTitle(/^Modified .*2024/)).toBeVisible();
+  await expect(page.getByText('Created')).toHaveCount(0);
+});
+
+test('a date stays on one line, and the column gives way in a narrow window', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  const date = remotePane.getByTitle(/^Modified /);
+  await expect(date).toBeVisible();
+
+  // As under GDK_SCALE=2 with GDK_DPI_SCALE=0.5: the rem the column is sized in shrinks,
+  // the text it holds does not.
+  await page.addStyleTag({
+    content: 'html { font-size: 8px } [title^="Modified "] { font-size: 12px; line-height: 16px }'
+  });
+  const box = await date.boundingBox();
+  expect(box?.height).toBeLessThan(24);
+
+  await page.setViewportSize({ width: 900, height: 720 });
+  await expect(date).toBeHidden();
+  await expect(remotePane.getByText('Modified', { exact: true })).toBeHidden();
 });
 
 async function centre(locator: Locator): Promise<{ x: number; y: number }> {

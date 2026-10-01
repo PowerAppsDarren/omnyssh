@@ -41,8 +41,9 @@
   const rowBase =
     'flex w-full min-w-0 items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
-  // The date column appears once the pane is wide enough to keep names readable.
-  const modifiedCol = 'hidden w-36 shrink-0 text-right lg:inline';
+  // The date column appears once the pane is wide enough to keep names readable. It
+  // never wraps: under GDK_DPI_SCALE the rem it is sized in can shrink below its text.
+  const modifiedCol = 'hidden min-w-36 shrink-0 whitespace-nowrap text-right lg:inline';
 </script>
 
 <section
