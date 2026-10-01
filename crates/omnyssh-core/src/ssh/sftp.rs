@@ -510,13 +510,20 @@ struct Progress<'a> {
 }
 
 impl<'a> Progress<'a> {
-    fn new(transfer_id: TransferId, total: u64, event_tx: &'a mpsc::Sender<CoreEvent>) -> Self {
-        Self {
+    /// Starts the count. Its first tick tells the frontends that planning is over.
+    async fn start(
+        transfer_id: TransferId,
+        total: u64,
+        event_tx: &'a mpsc::Sender<CoreEvent>,
+    ) -> Self {
+        let mut progress = Self {
             transfer_id,
             done: 0,
             total,
             event_tx,
-        }
+        };
+        progress.advance(0).await;
+        progress
     }
 
     async fn advance(&mut self, n: usize) {
@@ -711,7 +718,7 @@ async fn do_download(
         }
         _ => {
             let total = meta.and_then(|m| m.size).unwrap_or(0);
-            let mut progress = Progress::new(transfer_id, total, event_tx);
+            let mut progress = Progress::start(transfer_id, total, event_tx).await;
             return download_file(sftp, remote, local, mode, &mut progress, cancel).await;
         }
     }
@@ -722,7 +729,7 @@ async fn do_download(
         anyhow::Ok(entries.map(|e| (e.file_name(), e.metadata())).collect())
     };
     let plan = plan_remote_tree(list, remote, mode, Path::new(local), cancel, &mut skipped).await?;
-    let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
+    let mut progress = Progress::start(transfer_id, plan.total(), event_tx).await;
     for dir in &plan.dirs {
         cancel.check()?;
         if let Err(e) = create_local_dir(&dir.dst, dir.mode).await {
@@ -838,7 +845,7 @@ async fn do_upload(
         .context("open local file for upload")?;
     let mode = local_mode(&meta);
     if meta.is_file() {
-        let mut progress = Progress::new(transfer_id, meta.len(), event_tx);
+        let mut progress = Progress::start(transfer_id, meta.len(), event_tx).await;
         return upload_file(local, sftp, remote, mode, &mut progress, cancel).await;
     }
     if !meta.is_dir() {
@@ -847,7 +854,7 @@ async fn do_upload(
 
     let mut skipped = Skipped::default();
     let plan = plan_local_tree(local, mode, remote, cancel, &mut skipped).await?;
-    let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
+    let mut progress = Progress::start(transfer_id, plan.total(), event_tx).await;
     for dir in &plan.dirs {
         cancel.check()?;
         if let Err(e) = create_remote_dir(sftp, &dir.dst, dir.mode).await {
@@ -1410,7 +1417,7 @@ mod tests {
         let local = tmp.path().join("part.bin");
         let cancels = AtomicU64::new(0);
         let (tx, _rx) = mpsc::channel(8);
-        let mut progress = Progress::new(1, 100, &tx);
+        let mut progress = Progress::start(1, 100, &tx).await;
         let source = CancellingReader {
             data: b"the first chunk of many",
             cancels: &cancels,
@@ -1437,7 +1444,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cancels = AtomicU64::new(0);
         let (tx, _rx) = mpsc::channel(8);
-        let mut progress = Progress::new(1, 10, &tx);
+        let mut progress = Progress::start(1, 10, &tx).await;
 
         let script = tmp.path().join("run.sh");
         let script_str = script.to_str().expect("utf-8 temp dir");
@@ -1509,7 +1516,7 @@ mod tests {
         std::os::unix::fs::symlink(path("src/run.sh"), path("src/link")).expect("symlink");
 
         let cancels = AtomicU64::new(0);
-        let (tx, _rx) = mpsc::channel(64);
+        let (tx, mut rx) = mpsc::channel(64);
         let err = do_upload(
             &str_of(&path("src")),
             &sftp,
@@ -1538,6 +1545,11 @@ mod tests {
             "still executable"
         );
         assert_eq!(mode_of(&path("up/private")), 0o700, "still private");
+        // The first tick (nothing done yet) marks the end of planning.
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(CoreEvent::FileTransferProgress(1, 0, 200_010))
+        ));
 
         // Back down, into a folder that already holds one of the files.
         std::fs::create_dir_all(path("down")).expect("mkdir");
