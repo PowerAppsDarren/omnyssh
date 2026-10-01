@@ -662,7 +662,7 @@
             onpointermove={gripMove}
             onpointerup={gripUp}
             onpointercancel={endDrag}
-          onlostpointercapture={endDrag}
+            onlostpointercapture={endDrag}
             onkeydown={(e) => gripKey(e, run, i)}
           >
             <Icon name="grip" size={14} />
