@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use russh_sftp::protocol::{FileAttributes, FileType};
+use russh_sftp::protocol::{FileAttributes, FileType, OpenFlags};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time;
@@ -76,10 +76,11 @@ pub enum SftpCommand {
     /// List the entries in a remote directory.
     ListDir(String),
     /// Download a remote file, or a remote folder with everything in it, to a local
-    /// path. An existing folder is merged into and an existing file replaced. Inside a
-    /// folder, symlinks, special files and names this system cannot create are
-    /// skipped; the transfer goes on past them and past failed files, and its
-    /// [`CoreEvent::SftpOpDone`] error counts them. [`SftpManager::cancel`] stops it.
+    /// path. An existing folder is merged into and an existing file replaced; new
+    /// files and folders get the source's permission bits. Inside a folder, symlinks,
+    /// special files and names this system cannot create are skipped; the transfer
+    /// goes on past them and past failed files, and its [`CoreEvent::SftpOpDone`]
+    /// error counts them. [`SftpManager::cancel`] stops it.
     Download {
         remote: String,
         local: String,
@@ -482,6 +483,8 @@ struct Planned {
     src: String,
     dst: String,
     size: u64,
+    /// The source's permission bits, when known.
+    mode: Option<u32>,
 }
 
 /// Everything a folder transfer creates, worked out before the first byte moves so
@@ -529,18 +532,38 @@ impl<'a> Progress<'a> {
     }
 }
 
-/// Walks the local folder `root`, mapping it onto the remote folder `dst_root`.
-/// Nothing is followed: a symlink is skipped, as is anything else that is not a
-/// plain file or folder.
+/// A local file's permission bits; Windows has none to give.
+fn local_mode(meta: &std::fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Some(meta.permissions().mode() & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
+    }
+}
+
+/// A remote entry's permission bits, when the server sent them.
+fn remote_mode(attrs: &FileAttributes) -> Option<u32> {
+    attrs.permissions.map(|p| p & 0o777)
+}
+
+/// Walks the local folder `root`, whose permission bits are `mode`, mapping it onto
+/// the remote folder `dst_root`. Nothing is followed: a symlink is skipped, as is
+/// anything else that is not a plain file or folder.
 async fn plan_local_tree(
     root: &str,
+    mode: Option<u32>,
     dst_root: &str,
     cancel: &Cancel<'_>,
     skipped: &mut Skipped,
 ) -> anyhow::Result<TreePlan> {
     let mut plan = TreePlan::default();
-    let mut stack = vec![(PathBuf::from(root), dst_root.to_string(), 0)];
-    while let Some((src, dst, depth)) = stack.pop() {
+    let mut stack = vec![(PathBuf::from(root), dst_root.to_string(), mode, 0)];
+    while let Some((src, dst, mode, depth)) = stack.pop() {
         cancel.check()?;
         // Every name on the way is UTF-8, so the path converts losslessly.
         let src_str = src.to_string_lossy().into_owned();
@@ -555,6 +578,7 @@ async fn plan_local_tree(
             src: src_str.clone(),
             dst: dst.clone(),
             size: 0,
+            mode,
         });
         loop {
             let entry = match read_dir.next_entry().await {
@@ -582,7 +606,7 @@ async fn plan_local_tree(
             let remote = join_remote(&dst, &name);
             let file_type = meta.file_type();
             if file_type.is_dir() && depth < MAX_DEPTH {
-                stack.push((path.clone(), remote, depth + 1));
+                stack.push((path.clone(), remote, local_mode(&meta), depth + 1));
             } else if file_type.is_dir() {
                 skipped.add(&shown, "nested too deep");
             } else if file_type.is_file() {
@@ -590,6 +614,7 @@ async fn plan_local_tree(
                     src: shown.into_owned(),
                     dst: remote,
                     size: meta.len(),
+                    mode: local_mode(&meta),
                 });
             } else if file_type.is_symlink() {
                 skipped.add(&shown, "symbolic link, not followed");
@@ -601,13 +626,14 @@ async fn plan_local_tree(
     Ok(plan)
 }
 
-/// Walks the remote folder `root`, mapping it onto the local folder `dst_root`;
-/// `list` reads one remote folder. A symlink is skipped (servers report links, not
-/// their targets), as is anything that is not a plain file or folder and any name
-/// that cannot be created here.
+/// Walks the remote folder `root`, whose permission bits are `mode`, mapping it onto
+/// the local folder `dst_root`; `list` reads one remote folder. A symlink is skipped
+/// (servers report links, not their targets), as is anything that is not a plain
+/// file or folder and any name that cannot be created here.
 async fn plan_remote_tree<F, Fut>(
     mut list: F,
     root: &str,
+    mode: Option<u32>,
     dst_root: &Path,
     cancel: &Cancel<'_>,
     skipped: &mut Skipped,
@@ -617,8 +643,8 @@ where
     Fut: Future<Output = anyhow::Result<Vec<(String, FileAttributes)>>>,
 {
     let mut plan = TreePlan::default();
-    let mut stack = vec![(root.to_string(), dst_root.to_path_buf(), 0)];
-    while let Some((src, dst, depth)) = stack.pop() {
+    let mut stack = vec![(root.to_string(), dst_root.to_path_buf(), mode, 0)];
+    while let Some((src, dst, mode, depth)) = stack.pop() {
         cancel.check()?;
         let entries = match list(src.clone()).await {
             Ok(entries) => entries,
@@ -631,6 +657,7 @@ where
             src: src.clone(),
             dst: dst.to_string_lossy().into_owned(),
             size: 0,
+            mode,
         });
         for (name, attrs) in entries {
             let path = join_remote(&src, &name);
@@ -640,13 +667,14 @@ where
             };
             match attrs.file_type() {
                 FileType::Dir if depth < MAX_DEPTH => {
-                    stack.push((path, local, depth + 1));
+                    stack.push((path, local, remote_mode(&attrs), depth + 1));
                 }
                 FileType::Dir => skipped.add(&path, "nested too deep"),
                 FileType::File => plan.files.push(Planned {
                     src: path,
                     dst: local.to_string_lossy().into_owned(),
                     size: attrs.size.unwrap_or(0),
+                    mode: remote_mode(&attrs),
                 }),
                 FileType::Symlink => skipped.add(&path, "symbolic link, not followed"),
                 FileType::Other => skipped.add(&path, "not a regular file or folder"),
@@ -669,9 +697,10 @@ async fn do_download(
     check_local_name(local)?;
     cancel.check()?;
 
-    // Size and type best-effort: a failed stat downloads as a file, and the open below
-    // reports why. Without permissions the type is unknown too.
+    // Size, mode and type best-effort: a failed stat downloads as a file, and the open
+    // below reports why. Without permissions the type is unknown too.
     let meta = sftp.metadata(remote).await.ok();
+    let mode = meta.as_ref().and_then(remote_mode);
     match meta
         .as_ref()
         .map(|m| (m.permissions.is_some(), m.file_type()))
@@ -683,7 +712,7 @@ async fn do_download(
         _ => {
             let total = meta.and_then(|m| m.size).unwrap_or(0);
             let mut progress = Progress::new(transfer_id, total, event_tx);
-            return download_file(sftp, remote, local, &mut progress, cancel).await;
+            return download_file(sftp, remote, local, mode, &mut progress, cancel).await;
         }
     }
 
@@ -692,16 +721,16 @@ async fn do_download(
         let entries = sftp.read_dir(dir).await?;
         anyhow::Ok(entries.map(|e| (e.file_name(), e.metadata())).collect())
     };
-    let plan = plan_remote_tree(list, remote, Path::new(local), cancel, &mut skipped).await?;
+    let plan = plan_remote_tree(list, remote, mode, Path::new(local), cancel, &mut skipped).await?;
     let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
     for dir in &plan.dirs {
         cancel.check()?;
-        if let Err(e) = tokio::fs::create_dir_all(&dir.dst).await {
+        if let Err(e) = create_local_dir(&dir.dst, dir.mode).await {
             skipped.add(&dir.src, format_args!("create local dir: {e}"));
         }
     }
     for file in &plan.files {
-        match download_file(sftp, &file.src, &file.dst, &mut progress, cancel).await {
+        match download_file(sftp, &file.src, &file.dst, file.mode, &mut progress, cancel).await {
             Err(e) if e.is::<Cancelled>() => return Err(e),
             Err(e) => skipped.add(&file.src, format_args!("{e:#}")),
             Ok(()) => {}
@@ -714,6 +743,7 @@ async fn download_file(
     sftp: &russh_sftp::client::SftpSession,
     remote: &str,
     local: &str,
+    mode: Option<u32>,
     progress: &mut Progress<'_>,
     cancel: &Cancel<'_>,
 ) -> anyhow::Result<()> {
@@ -722,7 +752,7 @@ async fn download_file(
         .open(remote)
         .await
         .context("open remote file for download")?;
-    write_local(remote_file, local, progress, cancel).await
+    write_local(remote_file, local, mode, progress, cancel).await
 }
 
 /// Writes everything `source` yields to the local file `local`; a cancel removes the
@@ -730,10 +760,11 @@ async fn download_file(
 async fn write_local(
     mut source: impl AsyncRead + Unpin,
     local: &str,
+    mode: Option<u32>,
     progress: &mut Progress<'_>,
     cancel: &Cancel<'_>,
 ) -> anyhow::Result<()> {
-    let mut local_file = tokio::fs::File::create(local)
+    let mut local_file = create_local_file(local, mode)
         .await
         .context("create local file")?;
 
@@ -761,6 +792,34 @@ async fn write_local(
     local_file.flush().await.context("write local file")
 }
 
+/// Creates or truncates the local file `path`. A new file gets the permission bits
+/// `mode` less the umask, as scp and sftp give it; an existing one keeps its own.
+async fn create_local_file(path: &str, mode: Option<u32>) -> std::io::Result<tokio::fs::File> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    options.open(path).await
+}
+
+/// Creates the local folder `path`, or merges into the one there. A new folder gets
+/// the permission bits `mode` less the umask, owner access added so it can be filled.
+async fn create_local_dir(path: &str, mode: Option<u32>) -> std::io::Result<()> {
+    let mut builder = tokio::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        builder.mode(mode | 0o700);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    builder.create(path).await
+}
+
 /// Uploads a local file or, recursively, a local folder to `remote`.
 async fn do_upload(
     local: &str,
@@ -777,25 +836,26 @@ async fn do_upload(
     let meta = tokio::fs::metadata(local)
         .await
         .context("open local file for upload")?;
+    let mode = local_mode(&meta);
     if meta.is_file() {
         let mut progress = Progress::new(transfer_id, meta.len(), event_tx);
-        return upload_file(local, sftp, remote, &mut progress, cancel).await;
+        return upload_file(local, sftp, remote, mode, &mut progress, cancel).await;
     }
     if !meta.is_dir() {
         anyhow::bail!("'{local}' is not a regular file or folder");
     }
 
     let mut skipped = Skipped::default();
-    let plan = plan_local_tree(local, remote, cancel, &mut skipped).await?;
+    let plan = plan_local_tree(local, mode, remote, cancel, &mut skipped).await?;
     let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
     for dir in &plan.dirs {
         cancel.check()?;
-        if let Err(e) = create_remote_dir(sftp, &dir.dst).await {
+        if let Err(e) = create_remote_dir(sftp, &dir.dst, dir.mode).await {
             skipped.add(&dir.src, format_args!("{e:#}"));
         }
     }
     for file in &plan.files {
-        match upload_file(&file.src, sftp, &file.dst, &mut progress, cancel).await {
+        match upload_file(&file.src, sftp, &file.dst, file.mode, &mut progress, cancel).await {
             Err(e) if e.is::<Cancelled>() => return Err(e),
             Err(e) => skipped.add(&file.src, format_args!("{e:#}")),
             Ok(()) => {}
@@ -804,10 +864,12 @@ async fn do_upload(
     skipped.into_result()
 }
 
-/// Creates the remote folder `path`, or merges into the one there.
+/// Creates the remote folder `path`, or merges into the one there. A new folder gets
+/// the permission bits `mode`, owner access added so it can be filled.
 async fn create_remote_dir(
     sftp: &russh_sftp::client::SftpSession,
     path: &str,
+    mode: Option<u32>,
 ) -> anyhow::Result<()> {
     if let Err(e) = sftp.create_dir(path).await {
         if sftp
@@ -819,6 +881,16 @@ async fn create_remote_dir(
         }
         return Err(e).context("create remote dir");
     }
+    // SFTP's mkdir takes a mode, but this client sends none.
+    if let Some(mode) = mode {
+        let attrs = FileAttributes {
+            permissions: Some(mode | 0o700),
+            ..FileAttributes::empty()
+        };
+        sftp.set_metadata(path, attrs)
+            .await
+            .context("set remote dir mode")?;
+    }
     Ok(())
 }
 
@@ -826,6 +898,7 @@ async fn upload_file(
     local: &str,
     sftp: &russh_sftp::client::SftpSession,
     remote: &str,
+    mode: Option<u32>,
     progress: &mut Progress<'_>,
     cancel: &Cancel<'_>,
 ) -> anyhow::Result<()> {
@@ -833,8 +906,15 @@ async fn upload_file(
     let mut local_file = tokio::fs::File::open(local)
         .await
         .context("open local file for upload")?;
+    // A new file gets the source's mode less the server's umask, as sftp gives it; an
+    // existing one keeps its own.
+    let attrs = FileAttributes {
+        permissions: mode,
+        ..FileAttributes::empty()
+    };
+    let flags = OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE;
     let mut remote_file = sftp
-        .create(remote)
+        .open_with_flags_and_attributes(remote, flags, attrs)
         .await
         .context("create remote file for upload")?;
 
@@ -1043,10 +1123,17 @@ mod tests {
         let cancels = AtomicU64::new(0);
         let mut skipped = Skipped::default();
         let root = dir.to_str().expect("utf-8 temp dir");
-        let plan = plan_local_tree(root, "/srv/up", &no_cancel(&cancels), &mut skipped)
-            .await
-            .expect("plan tree");
+        let plan = plan_local_tree(
+            root,
+            Some(0o750),
+            "/srv/up",
+            &no_cancel(&cancels),
+            &mut skipped,
+        )
+        .await
+        .expect("plan tree");
         assert_eq!(plan.dirs[0].dst, "/srv/up");
+        assert_eq!(plan.dirs[0].mode, Some(0o750));
         let mut dirs: Vec<_> = plan.dirs.iter().map(|d| d.dst.as_str()).collect();
         dirs.sort();
         assert_eq!(dirs, ["/srv/up", "/srv/up/sub", "/srv/up/sub/deep"]);
@@ -1057,10 +1144,17 @@ mod tests {
         let mut files: Vec<_> = plan
             .files
             .iter()
-            .map(|f| (f.dst.as_str(), f.size))
+            .map(|f| (f.dst.as_str(), f.size, f.mode.is_some()))
             .collect();
         files.sort();
-        assert_eq!(files, [("/srv/up/a.txt", 3), ("/srv/up/sub/deep/b.bin", 5)]);
+        let moded = cfg!(unix);
+        assert_eq!(
+            files,
+            [
+                ("/srv/up/a.txt", 3, moded),
+                ("/srv/up/sub/deep/b.bin", 5, moded)
+            ]
+        );
         assert_eq!(plan.total(), 8);
         // The link back up and the socket are left out, and said so.
         assert_eq!(skipped.count, if cfg!(unix) { 2 } else { 0 });
@@ -1078,7 +1172,7 @@ mod tests {
         let cancels = AtomicU64::new(0);
         let mut skipped = Skipped::default();
         let root = tmp.path().to_str().expect("utf-8 temp dir");
-        let plan = plan_local_tree(root, "/up", &no_cancel(&cancels), &mut skipped)
+        let plan = plan_local_tree(root, None, "/up", &no_cancel(&cancels), &mut skipped)
             .await
             .expect("plan tree");
         assert_eq!(plan.files.len(), 1);
@@ -1133,9 +1227,16 @@ mod tests {
         let dst = Path::new("dl").join("app");
         let cancels = AtomicU64::new(0);
         let mut skipped = Skipped::default();
-        let plan = plan_remote_tree(server, "/srv/app", &dst, &no_cancel(&cancels), &mut skipped)
-            .await
-            .expect("plan tree");
+        let plan = plan_remote_tree(
+            server,
+            "/srv/app",
+            Some(0o755),
+            &dst,
+            &no_cancel(&cancels),
+            &mut skipped,
+        )
+        .await
+        .expect("plan tree");
 
         let local = |rel: &[&str]| {
             rel.iter()
@@ -1143,8 +1244,11 @@ mod tests {
                 .to_string_lossy()
                 .into_owned()
         };
-        let dirs: Vec<_> = plan.dirs.iter().map(|d| d.dst.clone()).collect();
-        assert_eq!(dirs, [local(&[]), local(&["conf"])]);
+        let dirs: Vec<_> = plan.dirs.iter().map(|d| (d.dst.clone(), d.mode)).collect();
+        assert_eq!(
+            dirs,
+            [(local(&[]), Some(0o755)), (local(&["conf"]), Some(0o700))]
+        );
         assert_eq!(
             plan.files,
             [
@@ -1152,11 +1256,13 @@ mod tests {
                     src: "/srv/app/run.sh".into(),
                     dst: local(&["run.sh"]),
                     size: 3,
+                    mode: Some(0o755),
                 },
                 Planned {
                     src: "/srv/app/conf/app.toml".into(),
                     dst: local(&["conf", "app.toml"]),
                     size: 5,
+                    mode: Some(0o600),
                 },
             ]
         );
@@ -1181,6 +1287,7 @@ mod tests {
         let plan = plan_remote_tree(
             server,
             "/x",
+            None,
             Path::new("dl"),
             &no_cancel(&cancels),
             &mut skipped,
@@ -1206,6 +1313,7 @@ mod tests {
         let err = plan_remote_tree(
             server,
             "/x",
+            None,
             Path::new("dl"),
             &no_cancel(&cancels),
             &mut skipped,
@@ -1309,12 +1417,53 @@ mod tests {
         };
 
         let local_str = local.to_str().expect("utf-8 temp dir");
-        let err = write_local(source, local_str, &mut progress, &no_cancel(&cancels))
+        let err = write_local(source, local_str, None, &mut progress, &no_cancel(&cancels))
             .await
             .expect_err("cancelled");
         assert!(err.is::<Cancelled>());
         assert_eq!(progress.done, 23, "the chunk was written before the cancel");
         assert!(!local.exists(), "the partial file is gone");
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).expect("stat").permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_download_keeps_the_source_mode() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cancels = AtomicU64::new(0);
+        let (tx, _rx) = mpsc::channel(8);
+        let mut progress = Progress::new(1, 10, &tx);
+
+        let script = tmp.path().join("run.sh");
+        let script_str = script.to_str().expect("utf-8 temp dir");
+        write_local(
+            &b"#!/bin/sh\n"[..],
+            script_str,
+            Some(0o755),
+            &mut progress,
+            &no_cancel(&cancels),
+        )
+        .await
+        .expect("written");
+        assert_eq!(std::fs::read(&script).expect("read"), b"#!/bin/sh\n");
+        // The umask may take group and other bits, never the owner's.
+        assert_eq!(mode_of(&script) & 0o700, 0o700);
+
+        // A read-only folder still gets the owner's access, to be filled.
+        let dir = tmp.path().join("ro");
+        create_local_dir(dir.to_str().expect("utf-8"), Some(0o500))
+            .await
+            .expect("created");
+        assert_eq!(mode_of(&dir) & 0o700, 0o700);
+        // An existing folder is merged into.
+        create_local_dir(dir.to_str().expect("utf-8"), Some(0o755))
+            .await
+            .expect("merged");
     }
 
     /// An SFTP session on this machine's own files through OpenSSH's sftp-server,
@@ -1340,7 +1489,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_folder_round_trips_through_sftp_with_its_skips_reported() {
+    async fn a_folder_round_trips_through_sftp_with_its_modes_and_skips_reported() {
         use std::os::unix::fs::PermissionsExt;
         let Some(sftp) = local_sftp().await else {
             eprintln!("no sftp-server on this machine; skipped");
@@ -1354,7 +1503,9 @@ mod tests {
         };
         std::fs::create_dir_all(path("src/private")).expect("mkdir");
         std::fs::write(path("src/run.sh"), "#!/bin/sh\n").expect("write");
+        set_mode(path("src/run.sh"), 0o755);
         std::fs::write(path("src/private/data.bin"), vec![7u8; 200_000]).expect("write");
+        set_mode(path("src/private"), 0o700);
         std::os::unix::fs::symlink(path("src/run.sh"), path("src/link")).expect("symlink");
 
         let cancels = AtomicU64::new(0);
@@ -1381,6 +1532,12 @@ mod tests {
             200_000
         );
         assert!(!path("up/link").exists());
+        assert_eq!(
+            mode_of(&path("up/run.sh")) & 0o700,
+            0o700,
+            "still executable"
+        );
+        assert_eq!(mode_of(&path("up/private")), 0o700, "still private");
 
         // Back down, into a folder that already holds one of the files.
         std::fs::create_dir_all(path("down")).expect("mkdir");
@@ -1405,6 +1562,7 @@ mod tests {
                 .len(),
             200_000
         );
+        assert_eq!(mode_of(&path("down/private")), 0o700);
 
         // An unreadable folder is reported with the server's reason; the rest still
         // arrives. Root reads it anyway, so only a plain user can check this.
