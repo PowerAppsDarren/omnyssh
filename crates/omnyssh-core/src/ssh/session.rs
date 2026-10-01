@@ -783,6 +783,8 @@ const KEX_ORDER: &[kex::Name] = &[
     kex::ECDH_SHA2_NISTP256,
     kex::ECDH_SHA2_NISTP384,
     kex::ECDH_SHA2_NISTP521,
+    // The one method without SHA-1 that OpenSSH before 5.7 has (RHEL 6).
+    kex::DH_GEX_SHA256,
     kex::EXTENSION_SUPPORT_AS_CLIENT,
     kex::EXTENSION_SUPPORT_AS_SERVER,
     kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
@@ -826,6 +828,9 @@ fn client_config(host: &Host) -> Arc<client::Config> {
             compression: Cow::Borrowed(COMPRESSION_ORDER),
             ..russh::Preferred::DEFAULT
         },
+        // russh asks for 8192 bits, whose exponentiations stall the connecting
+        // task for up to seconds; 4096 is group16's size.
+        gex: client::GexParams::new(2048, 4096, 8192).expect("valid group sizes"),
         // No inactivity timeout: russh skips resetting it on the iteration that
         // sends a keepalive, so a peer that never answers `keepalive@openssh.com`
         // (common in appliance SSH stacks) was torn down after 30 s even while

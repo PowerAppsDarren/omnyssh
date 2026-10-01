@@ -107,7 +107,8 @@ pub(crate) fn learn(host: &str, port: u16, key: &PublicKey) -> Result<(), russh:
 /// The host key algorithms asked for when nothing is pinned: russh 0.46's list,
 /// which OmnySSH shipped with, then P-384, last so that no server that worked
 /// shows another key; some devices have no other (Cisco RoomOS set to ECDSA).
-/// Never `ssh-rsa` (SHA-1).
+/// `ssh-rsa` (SHA-1) only after all of them, for servers before OpenSSH 7.2
+/// that have nothing else (RHEL 6).
 const KEY_ORDER: &[Algorithm] = &[
     Algorithm::Ed25519,
     Algorithm::Ecdsa {
@@ -125,6 +126,7 @@ const KEY_ORDER: &[Algorithm] = &[
     Algorithm::Ecdsa {
         curve: EcdsaCurve::NistP384,
     },
+    Algorithm::Rsa { hash: None },
 ];
 
 /// Host key algorithms for `host:port`, those of the keys saved for it first,
@@ -145,6 +147,8 @@ fn preferred_in(files: &[PathBuf], host: &str, port: u16) -> Cow<'static, [Algor
     let (mut order, rest): (Vec<Algorithm>, Vec<Algorithm>) = KEY_ORDER
         .iter()
         .cloned()
+        // A saved RSA key brings ssh-rsa along, after both SHA-2 forms: an
+        // OpenSSH before 7.2 shows that key no other way.
         .partition(|algo| saved.iter().any(|k| signs_with(k, algo)));
     order.extend(rest);
     Cow::Owned(order)
@@ -359,12 +363,38 @@ mod tests {
     }
 
     #[test]
-    fn nothing_pinned_asks_for_p384_last_and_no_sha1() {
+    fn nothing_pinned_asks_for_p384_then_sha1_last() {
         let p384 = Algorithm::Ecdsa {
             curve: EcdsaCurve::NistP384,
         };
-        assert_eq!(KEY_ORDER.last(), Some(&p384));
-        assert!(!KEY_ORDER.contains(&Algorithm::Rsa { hash: None }));
+        assert_eq!(
+            KEY_ORDER[KEY_ORDER.len() - 2..],
+            [p384, Algorithm::Rsa { hash: None }]
+        );
+    }
+
+    #[test]
+    fn an_rsa_pin_asks_for_sha2_then_sha1() {
+        let mut rng = russh::keys::key::safe_rng();
+        let pair = RsaKeypair::random(&mut rng, 2048).expect("rsa key");
+        let pinned = PrivateKey::from(pair).public_key().clone();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("known_hosts");
+        write(&file, &[line("vm", &pinned)]);
+        let order = preferred_in(&[file], "vm", 22);
+        assert_eq!(
+            order[..3],
+            [
+                Algorithm::Rsa {
+                    hash: Some(HashAlg::Sha256)
+                },
+                Algorithm::Rsa {
+                    hash: Some(HashAlg::Sha512)
+                },
+                Algorithm::Rsa { hash: None },
+            ]
+        );
+        assert_eq!(order[3], Algorithm::Ed25519);
     }
 
     #[test]
