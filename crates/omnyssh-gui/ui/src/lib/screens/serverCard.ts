@@ -247,9 +247,25 @@ function statusRank(card: ServerCard): number {
   return card.overall === 'unknown' ? 1 : 0;
 }
 
-/** Cards in dashboard order. `order` is the custom order by host name; hosts it doesn't
- *  list follow in config order. The sort is stable, so ties keep config order. */
-export function sortCards(cards: ServerCard[], sort: CardSort, order: readonly string[]): ServerCard[] {
+/** How the custom order names a host. Build it from every host, not a filtered few: a name
+ *  that a hand-edited hosts.toml or ~/.ssh/config repeats gets user@hostname:port added.
+ *  A unique host so keeps its place when its address changes; JSON keeps the parts from
+ *  running together. */
+export function orderKeys(hosts: readonly HostDto[]): (host: HostDto) => string {
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const { name } of hosts) (seen.has(name) ? repeated : seen).add(name);
+  return (h) => JSON.stringify(repeated.has(h.name) ? [h.name, h.user, h.hostname, h.port] : [h.name]);
+}
+
+/** Cards in dashboard order. `order` is the custom order by `keyOf` (`orderKeys`); hosts
+ *  it doesn't list follow in config order. The sort is stable, so ties keep config order. */
+export function sortCards(
+  cards: ServerCard[],
+  sort: CardSort,
+  order: readonly string[],
+  keyOf: (host: HostDto) => string
+): ServerCard[] {
   const sorted = [...cards];
   if (sort === 'name') {
     return sorted.sort((a, b) =>
@@ -257,21 +273,28 @@ export function sortCards(cards: ServerCard[], sort: CardSort, order: readonly s
     );
   }
   if (sort === 'status') return sorted.sort((a, b) => statusRank(a) - statusRank(b));
-  const rank = new Map(order.map((name, i) => [name, i]));
-  const at = (c: ServerCard): number => rank.get(c.host.name) ?? order.length;
+  const rank = new Map(order.map((key, i) => [key, i]));
+  const at = (c: ServerCard): number => rank.get(keyOf(c.host)) ?? order.length;
   return sorted.sort((a, b) => at(a) - at(b));
 }
 
 /** The custom order after moving `run[from]` to index `to` of `run`, a run of cards on
  *  screen (a section, or the whole grid). `all` is every card in screen order; cards
  *  outside the run keep their places. */
-export function moveCard(all: ServerCard[], run: ServerCard[], from: number, to: number): string[] {
-  const moved = run[from].host.name;
-  const rest = run.filter((_, i) => i !== from).map((c) => c.host.name);
-  // Anchor on a neighbour in the run; names repeat, so skip the card's own name.
-  const next = rest.slice(to).find((n) => n !== moved);
-  const prev = rest.slice(0, to).reverse().find((n) => n !== moved);
-  const order = [...new Set(all.map((c) => c.host.name))].filter((n) => n !== moved);
+export function moveCard(
+  all: ServerCard[],
+  run: ServerCard[],
+  from: number,
+  to: number,
+  keyOf: (host: HostDto) => string
+): string[] {
+  const moved = keyOf(run[from].host);
+  const rest = run.filter((_, i) => i !== from).map((c) => keyOf(c.host));
+  // Anchor on a neighbour in the run. Entries identical down to the address share a
+  // key, so skip the card's own.
+  const next = rest.slice(to).find((k) => k !== moved);
+  const prev = rest.slice(0, to).reverse().find((k) => k !== moved);
+  const order = [...new Set(all.map((c) => keyOf(c.host)))].filter((k) => k !== moved);
   const at =
     next !== undefined ? order.indexOf(next) : prev !== undefined ? order.indexOf(prev) + 1 : order.length;
   order.splice(at, 0, moved);

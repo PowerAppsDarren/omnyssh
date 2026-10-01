@@ -8,6 +8,7 @@ import {
   filterHosts,
   groupByTag,
   moveCard,
+  orderKeys,
   sortCards,
   forwardListen,
   forwardTarget,
@@ -235,16 +236,19 @@ describe('dashboard sort and drag order', () => {
     deriveCard(host(name), status, undefined, undefined);
   const card = (name: string) => withStatus(name, CONNECTED);
   const names = (cs: { host: HostDto }[]) => cs.map((c) => c.host.name);
+  // No name repeats here, so each host is keyed by its name alone.
+  const keyOf = orderKeys([]);
+  const keys = (...ns: string[]) => ns.map((n) => keyOf(host(n)));
 
   it('custom puts listed hosts first and the rest in config order', () => {
     const cards = [card('a'), card('b'), card('c'), card('d')];
-    expect(names(sortCards(cards, 'custom', ['c', 'gone', 'a']))).toEqual(['c', 'a', 'b', 'd']);
-    expect(names(sortCards(cards, 'custom', []))).toEqual(['a', 'b', 'c', 'd']);
+    expect(names(sortCards(cards, 'custom', keys('c', 'gone', 'a'), keyOf))).toEqual(['c', 'a', 'b', 'd']);
+    expect(names(sortCards(cards, 'custom', [], keyOf))).toEqual(['a', 'b', 'c', 'd']);
   });
 
   it('name is case-insensitive and natural', () => {
     const cards = [card('web-10'), card('Web-2'), card('db'), card('web-1')];
-    expect(names(sortCards(cards, 'name', []))).toEqual(['db', 'web-1', 'Web-2', 'web-10']);
+    expect(names(sortCards(cards, 'name', [], keyOf))).toEqual(['db', 'web-1', 'Web-2', 'web-10']);
   });
 
   it('status follows the TUI: connected, then not yet known, failed last', () => {
@@ -255,26 +259,72 @@ describe('dashboard sort and drag order', () => {
       withStatus('dialing', { kind: 'connecting' }),
       withStatus('up2', CONNECTED)
     ];
-    expect(names(sortCards(cards, 'status', []))).toEqual(['up', 'up2', 'new', 'dialing', 'down']);
+    expect(names(sortCards(cards, 'status', [], keyOf))).toEqual(['up', 'up2', 'new', 'dialing', 'down']);
   });
 
   it('moves a card within the whole grid', () => {
     const all = [card('a'), card('b'), card('c'), card('d')];
-    expect(moveCard(all, all, 3, 0)).toEqual(['d', 'a', 'b', 'c']);
-    expect(moveCard(all, all, 0, 3)).toEqual(['b', 'c', 'd', 'a']);
-    expect(moveCard(all, all, 1, 2)).toEqual(['a', 'c', 'b', 'd']);
+    expect(moveCard(all, all, 3, 0, keyOf)).toEqual(keys('d', 'a', 'b', 'c'));
+    expect(moveCard(all, all, 0, 3, keyOf)).toEqual(keys('b', 'c', 'd', 'a'));
+    expect(moveCard(all, all, 1, 2, keyOf)).toEqual(keys('a', 'c', 'b', 'd'));
   });
 
   it('moves a card within a run, leaving the cards outside it in place', () => {
     const [a, x, b, y, c] = [card('a'), card('x'), card('b'), card('y'), card('c')];
     const all = [a, x, b, y, c];
-    expect(moveCard(all, [a, b, c], 2, 0)).toEqual(['c', 'a', 'x', 'b', 'y']);
-    expect(moveCard(all, [a, b, c], 0, 2)).toEqual(['x', 'b', 'y', 'c', 'a']);
+    expect(moveCard(all, [a, b, c], 2, 0, keyOf)).toEqual(keys('c', 'a', 'x', 'b', 'y'));
+    expect(moveCard(all, [a, b, c], 0, 2, keyOf)).toEqual(keys('x', 'b', 'y', 'c', 'a'));
   });
 
   it('seeds the custom order from the sort on screen', () => {
-    const shown = sortCards([card('c'), card('a'), card('b')], 'name', []);
-    expect(moveCard(shown, shown, 2, 1)).toEqual(['a', 'c', 'b']);
+    const shown = sortCards([card('c'), card('a'), card('b')], 'name', [], keyOf);
+    expect(moveCard(shown, shown, 2, 1, keyOf)).toEqual(keys('a', 'c', 'b'));
+  });
+});
+
+describe('custom order with repeated host names', () => {
+  // Only a hand-edited hosts.toml or ~/.ssh/config can repeat a name.
+  const at = (name: string, port: number, tags: string[] = []) =>
+    deriveCard({ ...host(name), port, tags }, CONNECTED, undefined, undefined);
+  const ids = (cs: { host: HostDto }[]) => cs.map((c) => `${c.host.name}:${c.host.port}`);
+  const keysOf = (cs: { host: HostDto }[]) => orderKeys(cs.map((c) => c.host));
+
+  it('keys a repeated name by its address too, the same on every load', () => {
+    const [a, b, solo] = [at('twin', 22), at('twin', 2201), at('solo', 22)];
+    const keyOf = keysOf([a, solo, b]);
+    expect(new Set([a, b, solo].map((c) => keyOf(c.host))).size).toBe(3);
+    expect(keyOf({ ...b.host })).toBe(keyOf(b.host));
+    // A unique name alone names its host, so editing the address keeps its place.
+    expect(keyOf({ ...solo.host, hostname: 'moved.example.com' })).toBe(keyOf(solo.host));
+  });
+
+  it('keeps the parts of a key apart', () => {
+    const hosts = [
+      { ...host('a'), user: 'b c' },
+      { ...host('a'), user: 'x' },
+      { ...host('a b'), user: 'c' },
+      { ...host('a b'), user: 'x' }
+    ];
+    expect(new Set(hosts.map(orderKeys(hosts))).size).toBe(4);
+  });
+
+  it('moves one twin before the other', () => {
+    const all = [at('twin', 22), at('x', 22), at('twin', 2201)];
+    const keyOf = keysOf(all);
+    const order = moveCard(all, all, 2, 0, keyOf);
+    expect(ids(sortCards(all, 'custom', order, keyOf))).toEqual(['twin:2201', 'twin:22', 'x:22']);
+  });
+
+  it('leaves a namesake in another section in place', () => {
+    const all = [at('u', 22), at('a', 22, ['db']), at('dup', 22, ['db']), at('dup', 2202)];
+    const keyOf = keysOf(all);
+    const untagged = [all[0], all[3]];
+    const order = moveCard(all, untagged, 1, 0, keyOf);
+    const sections = groupByTag(sortCards(all, 'custom', order, keyOf)).map((g) => [g.tag, ids(g.cards)]);
+    expect(sections).toEqual([
+      ['db', ['a:22', 'dup:22']],
+      [null, ['dup:2202', 'u:22']]
+    ]);
   });
 });
 

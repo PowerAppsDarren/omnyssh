@@ -17,7 +17,7 @@ interface DashboardView {
   /** Folded sections by tag; '' is "Untagged", which no trimmed tag can be. */
   collapsed: string[];
   sort: CardSort;
-  /** Host names in the custom order. */
+  /** Hosts in the custom order, as `orderKeys` names them. */
   order: string[];
 }
 

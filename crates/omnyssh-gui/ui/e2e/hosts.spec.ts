@@ -490,6 +490,42 @@ test('same-named hosts keep their places while a drag starts', async ({ page }) 
   await expect.poll(addresses).toEqual(before);
 });
 
+test('moving one of two same-named hosts moves just that card', async ({ page }) => {
+  const twin = HOSTS[1];
+  await boot(page, [
+    { ...twin, name: 'dup', hostname: 'dup-a.example.com', tags: ['web'] },
+    { ...twin, name: 'x', hostname: 'x.example.com', tags: ['web'] },
+    { ...twin, name: 'dup', hostname: 'dup-b.example.com', tags: ['web'] },
+    { ...twin, name: 'y', hostname: 'y.example.com' },
+    { ...twin, name: 'dup', hostname: 'dup-c.example.com' }
+  ]);
+  const addresses = () =>
+    page
+      .getByText(/^root@.*:22$/)
+      .evaluateAll((els) => els.map((el) => el.textContent?.trim().replace(/^root@|\.example\.com:22$/g, '')));
+  const card = (hostname: string) => page.locator('[data-card]', { hasText: hostname });
+
+  // Drag dup-b onto the left half of dup-a.
+  await card('dup-b.example.com').hover();
+  const grip = await card('dup-b.example.com').getByRole('button', { name: 'Move dup' }).boundingBox();
+  const target = await card('dup-a.example.com').boundingBox();
+  if (!grip || !target) throw new Error('card not on screen');
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(target.x + 2, target.y + target.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await expect.poll(addresses).toEqual(['dup-b', 'dup-a', 'x', 'y', 'dup-c']);
+
+  // Grouped, moving the untagged dup leaves its namesakes under web where they are.
+  await page.keyboard.press('g');
+  await card('dup-c.example.com').getByRole('button', { name: 'Move dup' }).focus();
+  await page.keyboard.press('Home');
+  await expect.poll(addresses).toEqual(['dup-b', 'dup-a', 'x', 'dup-c', 'y']);
+
+  await page.reload();
+  await expect.poll(addresses).toEqual(['dup-b', 'dup-a', 'x', 'dup-c', 'y']);
+});
+
 test('rejects a new host whose name already exists', async ({ page }) => {
   await boot(page);
 

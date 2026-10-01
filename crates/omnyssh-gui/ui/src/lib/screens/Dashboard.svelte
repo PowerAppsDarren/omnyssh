@@ -16,6 +16,7 @@
     groupByTag,
     sortCards,
     moveCard,
+    orderKeys,
     forwardListen,
     forwardTarget,
     QUICK_ACTIONS,
@@ -61,11 +62,12 @@
   // cancelled drag saves nothing. It holds hosts, not names, which can repeat; raw, since
   // a deep proxy would break the identity match.
   let frozen = $state.raw<HostDto[] | null>(null);
+  const keyOf = $derived(orderKeys($hosts));
   const visibleCards = $derived(onScreen(filterHosts($serverCards, query)));
   const groups = $derived($dashboardView.groupByTag ? groupByTag(visibleCards) : []);
 
   function onScreen(cards: ServerCard[]): ServerCard[] {
-    if (!frozen) return sortCards(cards, $dashboardView.sort, $dashboardView.order);
+    if (!frozen) return sortCards(cards, $dashboardView.sort, $dashboardView.order, keyOf);
     const rank = new Map(frozen.map((host, i) => [host, i]));
     const at = (c: ServerCard): number => rank.get(c.host) ?? rank.size;
     return [...cards].sort((a, b) => at(a) - at(b));
@@ -223,13 +225,13 @@
     frame = requestAnimationFrame(edgeScroll);
   }
 
-  // Returns where the card landed: same-named hosts share one place in the saved order,
-  // so that can differ from `to`.
+  // Returns where the card landed: entries identical down to the address share one place
+  // in the saved order, so that can differ from `to`.
   function commitMove(run: ServerCard[], from: number, to: number): number {
-    const order = moveCard(onScreen($serverCards), run, from, to);
+    const order = moveCard(onScreen($serverCards), run, from, to, keyOf);
     dashboardView.setOrder(order);
     const host = run[from].host;
-    const at = sortCards(run, 'custom', order).findIndex((c) => c.host === host);
+    const at = sortCards(run, 'custom', order, keyOf).findIndex((c) => c.host === host);
     announcement = `${host.name} moved to position ${at + 1} of ${run.length}`;
     return at;
   }
