@@ -248,6 +248,15 @@ test('folded sections stay folded across navigation and reload', async ({ page }
   await expect(header()).toHaveAttribute('aria-expanded', 'false');
   await expect(page.getByText('web-1', { exact: true })).toBeHidden();
 
+  // A search shows matches inside a folded section, and the fold returns once it clears.
+  await page.getByRole('button', { name: 'Search hosts' }).click();
+  const search = page.getByRole('textbox', { name: 'Search hosts' });
+  await search.fill('web');
+  await expect(page.getByText('web-1', { exact: true })).toBeVisible();
+  await expect(header()).toBeDisabled();
+  await search.press('Escape');
+  await expect(page.getByText('web-1', { exact: true })).toBeHidden();
+
   await header().focus();
   await page.keyboard.press('Enter');
   await expect(header()).toHaveAttribute('aria-expanded', 'true');

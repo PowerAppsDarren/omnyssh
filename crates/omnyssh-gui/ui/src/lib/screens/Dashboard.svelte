@@ -51,6 +51,8 @@
   let query = $state('');
   let searchOpen = $state(false);
   let searchInput = $state<HTMLInputElement>();
+  // A search unfolds every section until it clears, so no match hides behind a fold.
+  const searching = $derived(query.trim() !== '');
 
   // Sort, group-by-tag (mirrors the TUI's `g`) and the folded sections, persisted in
   // `dashboardView` so they survive leaving the dashboard and restarts. Grouping keeps
@@ -539,7 +541,7 @@
     <div class="flex flex-col gap-6">
       {#each groups as group, g (group.tag ?? '')}
         {@const key = group.tag ?? ''}
-        {@const open = !$dashboardView.collapsed.includes(key)}
+        {@const open = searching || !$dashboardView.collapsed.includes(key)}
         <section aria-label="{group.tag ?? 'Untagged'} hosts">
           <h2 class="mb-3">
             <button
@@ -547,6 +549,7 @@
               class="flex w-full items-center gap-2 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
               aria-expanded={open}
               aria-controls="dashboard-section-{g}"
+              disabled={searching}
               onclick={() => dashboardView.toggleCollapsed(key)}
             >
               <span class="inline-flex text-faint transition-transform {open ? '' : '-rotate-90'}">
