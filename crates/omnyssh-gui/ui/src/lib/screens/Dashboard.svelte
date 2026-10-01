@@ -18,7 +18,7 @@
     QUICK_ACTIONS,
     type ServerCard
   } from './serverCard';
-  import { dashboardView, isGroupHotkey } from '$lib/stores/dashboardView';
+  import { dashboardView } from '$lib/stores/dashboardView';
   import { spawnSession } from '$lib/stores/navigation';
   import { streamerMode, displayHostname } from '$lib/stores/streamer';
   import { hosts } from '$lib/stores/hosts';
@@ -32,7 +32,7 @@
     tunnelStart,
     tunnelStop
   } from '$lib/ipc/commands';
-  import { isRefreshHotkey } from '$lib/stores/ui';
+  import { isGroupHotkey, isRefreshHotkey } from '$lib/stores/ui';
   import { beginKeySetup, dismissKeySetup } from '$lib/stores/keySetup';
   import { emptyForm, formFromHost } from './hostForm';
   import HostEditor from './HostEditor.svelte';
@@ -86,10 +86,8 @@
 
   // Dashboard hotkeys (tech-gui.md §2): `r` refreshes metrics, `g` toggles group-by-tag.
   // This listener only exists while the dashboard is mounted (the selector unmounts when
-  // a session is active), so it never reaches terminal input. Suppressed while a host
-  // dialog owns the keyboard.
+  // a session is active), so it never reaches terminal input.
   function onKeydown(e: KeyboardEvent): void {
-    if (dialog) return;
     if (isRefreshHotkey(e)) {
       e.preventDefault();
       void refresh();

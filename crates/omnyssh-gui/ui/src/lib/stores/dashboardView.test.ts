@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { isGroupHotkey } from './dashboardView';
 
 // Same persistence shape as the sidebar collapse (./ui.test.ts): a fake Tauri store
 // and a fresh module per test to reset the singleton.
@@ -72,27 +71,5 @@ describe('dashboard view prefs', () => {
     const view = await fresh();
     await view.hydrate();
     expect(get(view)).toEqual({ groupByTag: false });
-  });
-});
-
-describe('group hotkey (g)', () => {
-  const hot = (init: KeyboardEventInit) => isGroupHotkey(new KeyboardEvent('keydown', init));
-
-  it('matches a bare g/G and rejects modifiers, repeat and other keys', () => {
-    expect(hot({ key: 'g' })).toBe(true);
-    expect(hot({ key: 'G' })).toBe(true);
-    expect(hot({ key: 'g', ctrlKey: true })).toBe(false);
-    expect(hot({ key: 'g', repeat: true })).toBe(false);
-    expect(hot({ key: 'r' })).toBe(false);
-  });
-
-  it('does not fire while typing in an editable field', () => {
-    const input = document.createElement('input');
-    document.body.append(input);
-    let matched = true;
-    input.addEventListener('keydown', (e) => (matched = isGroupHotkey(e)));
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'g', bubbles: true }));
-    input.remove();
-    expect(matched).toBe(false);
   });
 });

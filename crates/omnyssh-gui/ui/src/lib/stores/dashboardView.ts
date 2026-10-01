@@ -83,12 +83,3 @@ function createDashboardView() {
 }
 
 export const dashboardView = createDashboardView();
-
-/** The dashboard group-by-tag hotkey (mirrors the TUI's `g`): a bare g/G with no
- *  modifier, ignored while typing in an editable surface. */
-export function isGroupHotkey(e: KeyboardEvent): boolean {
-  if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return false;
-  if (e.key !== 'g' && e.key !== 'G') return false;
-  const t = e.target as HTMLElement | null;
-  return !t?.isContentEditable && !/^(input|textarea|select)$/i.test(t?.tagName ?? '');
-}

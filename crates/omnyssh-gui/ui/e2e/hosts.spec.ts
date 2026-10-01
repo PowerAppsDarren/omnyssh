@@ -207,6 +207,28 @@ test('groups the grid by tag, repeating multi-tag hosts', async ({ page }) => {
   await expect(page.getByText('api-1', { exact: true })).toHaveCount(1);
 });
 
+test('g is ignored under a modal and while typing', async ({ page }) => {
+  await boot(page);
+  const grouped = page.getByRole('region', { name: 'Untagged hosts' });
+
+  // The Support dialog is not the dashboard's own: g must not regroup the grid behind it.
+  await page.getByRole('button', { name: 'Support OmnySSH' }).click();
+  await expect(page.getByRole('dialog', { name: 'Support OmnySSH' })).toBeVisible();
+  await page.keyboard.press('g');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Search hosts' }).click();
+  await page.getByRole('textbox', { name: 'Search hosts' }).press('g');
+  await expect(page.getByRole('textbox', { name: 'Search hosts' })).toHaveValue('g');
+  await expect(grouped).toHaveCount(0);
+
+  // Away from both, the same key groups.
+  await page.getByRole('textbox', { name: 'Search hosts' }).press('Escape');
+  await page.keyboard.press('g');
+  await expect(grouped).toBeVisible();
+});
+
 test('rejects a new host whose name already exists', async ({ page }) => {
   await boot(page);
 
