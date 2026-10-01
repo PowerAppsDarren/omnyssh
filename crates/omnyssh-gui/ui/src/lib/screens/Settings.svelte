@@ -80,7 +80,7 @@
     active ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-surface-inset hover:text-fg';
 </script>
 
-<section class="mx-auto h-full max-w-2xl p-6">
+<section class="mx-auto min-h-full max-w-2xl p-6">
   <h1 class="mb-5 text-lg font-semibold tracking-tight">Settings</h1>
 
   <div class="space-y-4">

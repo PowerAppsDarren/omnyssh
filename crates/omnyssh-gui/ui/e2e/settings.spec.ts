@@ -152,6 +152,25 @@ test('a failed version read leaves no row, and the update prefs still load', asy
   await expect(page.getByText('Version', { exact: true })).toHaveCount(0);
 });
 
+test('scrolled to the end, Settings keeps its bottom padding', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 480 });
+  await boot(page, { fireUpdateOnBoot: false });
+  await page.getByRole('button', { name: 'Settings' }).click();
+
+  const last = page.getByRole('heading', { name: 'About' }).locator('..');
+  await expect(last).toBeVisible();
+  const { overflows, gap } = await last.evaluate((card) => {
+    const scroller = card.closest('.overflow-auto') as HTMLElement;
+    scroller.scrollTop = scroller.scrollHeight;
+    return {
+      overflows: scroller.scrollHeight > scroller.clientHeight,
+      gap: scroller.getBoundingClientRect().bottom - card.getBoundingClientRect().bottom
+    };
+  });
+  expect(overflows).toBe(true);
+  expect(gap).toBeGreaterThanOrEqual(24);
+});
+
 test('startup update-available raises the banner; dismiss hides it', async ({ page }) => {
   await boot(page, { fireUpdateOnBoot: true });
 
