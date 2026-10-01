@@ -416,6 +416,36 @@ test('the grip moves a card with the keyboard, within its section when grouped',
   await expect.poll(() => cardOrder(page)).toEqual(['api-1', 'web-1', 'imported']);
 });
 
+test('holding a drag past the bottom edge scrolls and drops at the end', async ({ page }) => {
+  await page.setViewportSize({ width: 600, height: 560 });
+  await boot(page);
+  await page.getByText('web-1', { exact: true }).hover();
+  const grip = await page.getByRole('button', { name: 'Move web-1' }).boundingBox();
+  if (!grip) throw new Error('grip not on screen');
+  await page.mouse.move(grip.x + 5, grip.y + 5);
+  await page.mouse.down();
+  // The very bottom row of the window sits below the scrolling grid.
+  await page.mouse.move(grip.x + 5, 559, { steps: 10 });
+  const marker = page.locator('.pointer-events-none.fixed.bg-accent');
+  await expect(marker).toBeVisible();
+  // Let the auto-scroll run to the end of the grid.
+  const scrolled = () =>
+    page.evaluate(() => {
+      let p = document.querySelector('[data-cards]')?.parentElement;
+      while (p && !/auto|scroll/.test(getComputedStyle(p).overflowY)) p = p.parentElement;
+      return p?.scrollTop ?? 0;
+    });
+  await expect
+    .poll(async () => {
+      const before = await scrolled();
+      await page.waitForTimeout(150);
+      return before > 0 && (await scrolled()) === before;
+    })
+    .toBe(true);
+  await page.mouse.up();
+  await expect.poll(() => cardOrder(page)).toEqual(['imported', 'api-1', 'web-1']);
+});
+
 test('rejects a new host whose name already exists', async ({ page }) => {
   await boot(page);
 

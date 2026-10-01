@@ -38,7 +38,7 @@
   import { isGroupHotkey, isRefreshHotkey } from '$lib/stores/ui';
   import { beginKeySetup, dismissKeySetup } from '$lib/stores/keySetup';
   import { emptyForm, formFromHost } from './hostForm';
-  import { dropTarget, scrollParent, scrollStep, swallowClick } from './cardDrag';
+  import { clampToScroller, dropTarget, scrollParent, scrollStep, swallowClick } from './cardDrag';
   import HostEditor from './HostEditor.svelte';
   import Modal from '$lib/components/Modal.svelte';
 
@@ -199,7 +199,7 @@
     if (!drag) return;
     const d = drag;
     lifted = { grid: d.grid, index: d.from, dx: d.x - d.x0, dy: d.y - d.y0 + d.scroller.scrollTop - d.scroll0 };
-    const drop = dropTarget(d.cards, d.from, d.x, d.y);
+    const drop = dropTarget(d.cards, d.from, d.x, clampToScroller(d.scroller, d.y));
     d.to = drop?.to ?? null;
     marker = drop && drop.to !== d.from ? drop.marker : null;
   }

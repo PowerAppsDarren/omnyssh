@@ -53,13 +53,24 @@ export function scrollParent(el: HTMLElement): HTMLElement {
   return document.documentElement;
 }
 
+// The scroller's visible band on screen.
+function band(scroller: HTMLElement): { top: number; bottom: number } {
+  return scroller === document.documentElement ? { top: 0, bottom: innerHeight } : scroller.getBoundingClientRect();
+}
+
+/** `y` pulled into the scroller's visible band. A pointer parked past an edge to
+ *  auto-scroll (over the status bar, say) then still drops on the nearest visible row. */
+export function clampToScroller(scroller: HTMLElement, y: number): number {
+  const { top, bottom } = band(scroller);
+  return Math.min(Math.max(y, top), bottom);
+}
+
 /** Pixels to scroll this frame with the pointer at `y`: faster the deeper it sits in
  *  the scroller's top or bottom edge band, and only while the run still extends past
  *  that edge. The lifted card itself grows the scroll area, so without that stop the
  *  scroll would chase it forever. */
 export function scrollStep(scroller: HTMLElement, run: HTMLElement, y: number): number {
-  const { top, bottom } =
-    scroller === document.documentElement ? { top: 0, bottom: innerHeight } : scroller.getBoundingClientRect();
+  const { top, bottom } = band(scroller);
   const box = run.getBoundingClientRect();
   let depth = 0;
   if (y < top + EDGE && box.top < top) depth = y - top - EDGE;

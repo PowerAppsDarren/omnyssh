@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { scrollStep } from './cardDrag';
+import { clampToScroller, scrollStep } from './cardDrag';
 
 // An element whose box spans `top`..`bottom` on screen.
 function at(top: number, bottom: number): HTMLElement {
@@ -23,5 +23,14 @@ describe('auto-scroll while dragging a card', () => {
   it('stops once the cards end inside the scroller, whatever the lifted card adds', () => {
     expect(scrollStep(scroller, at(-200, 480), 499)).toBe(0);
     expect(scrollStep(scroller, at(10, 900), 5)).toBe(0);
+  });
+});
+
+describe('drop point while dragging a card', () => {
+  it('keeps a pointer past the scroller edge on its nearest visible row', () => {
+    const scroller = at(40, 500);
+    expect(clampToScroller(scroller, 520)).toBe(500);
+    expect(clampToScroller(scroller, 10)).toBe(40);
+    expect(clampToScroller(scroller, 250)).toBe(250);
   });
 });
