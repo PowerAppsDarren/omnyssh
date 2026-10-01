@@ -251,6 +251,11 @@ describe('dashboard sort and drag order', () => {
     expect(names(sortCards(cards, 'name', [], keyOf))).toEqual(['db', 'web-1', 'Web-2', 'web-10']);
   });
 
+  it('name mixes capitals in, whatever the system locale', () => {
+    const cards = ['Web-upper', 'api-eu', 'Zeta', 'bad-auth', 'ALPHA'].map(card);
+    expect(names(sortCards(cards, 'name', [], keyOf))).toEqual(['ALPHA', 'api-eu', 'bad-auth', 'Web-upper', 'Zeta']);
+  });
+
   it('status follows the TUI: connected, then not yet known, failed last', () => {
     const cards = [
       withStatus('down', FAILED),

@@ -258,6 +258,10 @@ export function orderKeys(hosts: readonly HostDto[]): (host: HostDto) => string 
   return (h) => JSON.stringify(repeated.has(h.name) ? [h.name, h.user, h.hostname, h.port] : [h.name]);
 }
 
+// A fixed locale: the system's may be POSIX (C.UTF-8), whose collation puts every
+// capital before any lowercase letter whatever the sensitivity.
+const byHostName = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+
 /** Cards in dashboard order. `order` is the custom order by `keyOf` (`orderKeys`); hosts
  *  it doesn't list follow in config order. The sort is stable, so ties keep config order. */
 export function sortCards(
@@ -267,11 +271,7 @@ export function sortCards(
   keyOf: (host: HostDto) => string
 ): ServerCard[] {
   const sorted = [...cards];
-  if (sort === 'name') {
-    return sorted.sort((a, b) =>
-      a.host.name.localeCompare(b.host.name, undefined, { numeric: true, sensitivity: 'base' })
-    );
-  }
+  if (sort === 'name') return sorted.sort((a, b) => byHostName.compare(a.host.name, b.host.name));
   if (sort === 'status') return sorted.sort((a, b) => statusRank(a) - statusRank(b));
   const rank = new Map(order.map((key, i) => [key, i]));
   const at = (c: ServerCard): number => rank.get(keyOf(c.host)) ?? order.length;
