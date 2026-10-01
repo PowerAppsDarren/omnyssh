@@ -366,6 +366,61 @@ test('a remote folder opened during a transfer shows loading, then opens', async
   await expect(remotePane.getByTitle('/var', { exact: true })).toBeVisible();
 });
 
+test('a transfer that would replace items asks first, once for the batch', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(localPane.getByText('notes.txt')).toBeVisible();
+  await expect(remotePane.getByText('config.yml')).toBeVisible();
+
+  await localPane.getByRole('checkbox', { name: 'Mark notes.txt' }).click();
+  await page.getByRole('button', { name: 'Upload' }).click();
+  await complete(page);
+  await expect(remotePane.getByText('notes.txt')).toBeVisible();
+
+  // notes.txt is on the server now; the folder ticked beside it is not.
+  await localPane.getByRole('checkbox', { name: 'Mark work' }).click();
+  await page.getByRole('button', { name: 'Upload' }).click();
+  const ask = page.getByRole('dialog', { name: 'Replace existing items' });
+  await expect(ask).toContainText(
+    '1 item(s) already exist in /. Folders are merged and files with the same name are replaced.'
+  );
+  await ask.getByRole('button', { name: 'Cancel' }).click();
+  await expect(ask).toHaveCount(0);
+  expect(await uploads(page)).toEqual(['/notes.txt']);
+
+  await page.getByRole('button', { name: 'Upload' }).click();
+  await ask.getByRole('button', { name: 'Replace' }).click();
+  await expect(ask).toHaveCount(0);
+  await expect(page.getByLabel('transfer progress')).toBeVisible();
+  await complete(page);
+  await expect.poll(() => uploads(page)).toEqual(['/notes.txt', '/notes.txt', '/work']);
+});
+
+test('a drop on a folder row does not ask: that folder is not on show', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(localPane.getByText('notes.txt')).toBeVisible();
+  await localPane.getByRole('checkbox', { name: 'Mark notes.txt' }).click();
+  await page.getByRole('button', { name: 'Upload' }).click();
+  await complete(page);
+  await expect(remotePane.getByText('notes.txt')).toBeVisible();
+
+  // The local pane shows a notes.txt, but the drop goes into work/.
+  await dragOnto(
+    page,
+    remotePane.getByTitle('notes.txt', { exact: true }),
+    localPane.getByTitle('work', { exact: true })
+  );
+  await expect(page.getByLabel('transfer progress')).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Replace existing items' })).toHaveCount(0);
+  const downloads = await page.evaluate(() => (window as unknown as { __downloads: string[] }).__downloads);
+  expect(downloads).toEqual(['/home/user/work/notes.txt']);
+});
+
 test('the panes show modification times', async ({ page }) => {
   await boot(page);
   await page.getByTitle('files on web-1').click();

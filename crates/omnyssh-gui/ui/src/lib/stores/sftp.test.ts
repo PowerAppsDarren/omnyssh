@@ -14,6 +14,7 @@ import {
   formatBytes,
   formatDate,
   dragPayload,
+  clashCount,
   rootOf,
   baseName,
   type Pane,
@@ -68,6 +69,24 @@ describe('dragPayload', () => {
 
   it('carries nothing for the parent row', () => {
     expect(dragPayload(paneWith([parent]), parent)).toEqual([]);
+  });
+});
+
+describe('clashCount', () => {
+  const listing = [{ ...entry('..', true), path: '/' }, entry('App.log'), entry('www', true)];
+
+  it('counts the names the listing already has, files and folders alike', () => {
+    expect(clashCount(['www', 'App.log', 'new.txt'], listing, false)).toBe(2);
+    expect(clashCount(['new.txt'], listing, false)).toBe(0);
+  });
+
+  it('never counts the parent row', () => {
+    expect(clashCount(['..'], listing, false)).toBe(0);
+  });
+
+  it('matches across case only where the file system ignores it', () => {
+    expect(clashCount(['app.log', 'WWW'], listing, false)).toBe(0);
+    expect(clashCount(['app.log', 'WWW'], listing, true)).toBe(2);
   });
 });
 

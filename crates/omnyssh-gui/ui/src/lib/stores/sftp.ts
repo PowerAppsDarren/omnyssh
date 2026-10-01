@@ -95,6 +95,15 @@ export function markedEntries(pane: Pane): FileEntryDto[] {
   return pane.entries.filter((e) => pane.marked.has(e.path));
 }
 
+/** How many of `names` the listing `entries` already holds: what a transfer into its
+ *  directory would replace, or merge into for a folder. `caseless` for a file system
+ *  that ignores case, as Windows and macOS do by default. */
+export function clashCount(names: string[], entries: FileEntryDto[], caseless: boolean): number {
+  const key = (name: string) => (caseless ? name.toLowerCase() : name);
+  const there = new Set(entries.filter((e) => e.name !== '..').map((e) => key(e.name)));
+  return names.filter((name) => there.has(key(name))).length;
+}
+
 /** What dragging `entry` carries: every marked entry when `entry` is one of them, else
  *  `entry` alone. Folders travel with their whole contents; `..` is not transferable,
  *  so dragging it carries nothing. */

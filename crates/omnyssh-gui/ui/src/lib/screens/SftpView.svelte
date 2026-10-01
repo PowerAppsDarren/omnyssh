@@ -8,7 +8,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { homeDir } from '@tauri-apps/api/path';
   import { getCurrentWebview } from '@tauri-apps/api/webview';
-  import { Icon } from '$lib/theme';
+  import { Button, Icon } from '$lib/theme';
   import Modal from '$lib/components/Modal.svelte';
   import Select from '$lib/components/Select.svelte';
   import SftpPane from './SftpPane.svelte';
@@ -18,6 +18,7 @@
     sftp,
     markedEntries,
     dragPayload,
+    clashCount,
     formatBytes,
     rootOf,
     baseName,
@@ -26,7 +27,7 @@
     type PaneSide
   } from '$lib/stores/sftp';
   import { lastError } from '$lib/stores/notifications';
-  import { dropPoint } from '$lib/platform';
+  import { dropPoint, isMac, isWindows } from '$lib/platform';
   import {
     sftpOpen,
     sftpList,
@@ -253,29 +254,52 @@
     void sftpCancel(id).catch((err) => lastError.set(errMsg(err)));
   }
 
+  // A transfer held back until the user agrees to replace what is there.
+  let overwrite = $state<{ count: number; dir: string; run: () => void } | null>(null);
+
+  // Runs a transfer of `names` into `dir`, asking first when the listing on show there
+  // already has some of them. A folder row's listing is unknown, so a drop on one goes.
+  function unlessClashing(side: PaneSide, names: string[], dir: string, run: () => void): void {
+    const pane = view?.[side];
+    const caseless = side === 'local' && (isWindows || isMac);
+    const count = pane?.path === dir ? clashCount(names, pane.entries, caseless) : 0;
+    if (count > 0) overwrite = { count, dir, run };
+    else run();
+  }
+
+  function replace(): void {
+    const run = overwrite?.run;
+    overwrite = null;
+    run?.();
+  }
+
   // `dir` defaults to the other pane's current directory; a drop onto a folder row
   // passes that folder instead.
   function upload(files: Array<Pick<FileEntryDto, 'name' | 'path'>>, dir = view?.remote.path): void {
     const id = backendId;
     if (id == null || !view || dir == null) return;
-    enqueue(
-      files.map((file) => () => {
-        sftp.pushOp(id, { kind: 'upload', name: file.name, refresh: 'remote' });
-        void sftpUpload(id, file.path, joinRemote(dir, file.name)).catch(onDispatchError(id));
-      }),
-      true
+    unlessClashing('remote', files.map((file) => file.name), dir, () =>
+      enqueue(
+        files.map((file) => () => {
+          sftp.pushOp(id, { kind: 'upload', name: file.name, refresh: 'remote' });
+          void sftpUpload(id, file.path, joinRemote(dir, file.name)).catch(onDispatchError(id));
+        }),
+        true
+      )
     );
   }
 
   function download(files: FileEntryDto[], dir = view?.local.path): void {
     const id = backendId;
     if (id == null || !view || dir == null) return;
-    enqueue(
-      files.map((file) => () => {
-        sftp.pushOp(id, { kind: 'download', name: file.name, refresh: 'local' });
-        void sftpDownload(id, joinLocal(dir, file.name), file.path).catch(onDispatchError(id));
-      }),
-      true
+    unlessClashing('local', files.map((file) => file.name), dir, () =>
+      enqueue(
+        files.map((file) => () => {
+          sftp.pushOp(id, { kind: 'download', name: file.name, refresh: 'local' });
+          void sftpDownload(id, joinLocal(dir, file.name), file.path).catch(onDispatchError(id));
+        }),
+        true
+      )
     );
   }
 
@@ -758,6 +782,22 @@
         </button>
       </footer>
     </form>
+  </Modal>
+{/if}
+
+{#if active && overwrite}
+  <Modal label="Replace existing items" onClose={() => (overwrite = null)}>
+    <div class="space-y-3 px-5 py-4">
+      <h2 class="text-sm font-semibold">Replace existing items</h2>
+      <p class="text-sm text-muted">
+        {overwrite.count} item(s) already exist in <span class="font-mono">{overwrite.dir}</span>.
+        Folders are merged and files with the same name are replaced.
+      </p>
+      <div class="flex justify-end gap-2 pt-1">
+        <Button variant="ghost" onclick={() => (overwrite = null)}>Cancel</Button>
+        <Button variant="primary" onclick={replace}>Replace</Button>
+      </div>
+    </div>
   </Modal>
 {/if}
 
