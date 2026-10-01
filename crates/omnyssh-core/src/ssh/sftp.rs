@@ -8,11 +8,13 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use russh_sftp::protocol::{FileAttributes, FileType};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time;
 
@@ -77,7 +79,7 @@ pub enum SftpCommand {
     /// path. An existing folder is merged into and an existing file replaced. Inside a
     /// folder, symlinks, special files and names this system cannot create are
     /// skipped; the transfer goes on past them and past failed files, and its
-    /// [`CoreEvent::SftpOpDone`] error counts them.
+    /// [`CoreEvent::SftpOpDone`] error counts them. [`SftpManager::cancel`] stops it.
     Download {
         remote: String,
         local: String,
@@ -101,6 +103,9 @@ pub enum SftpCommand {
     Disconnect,
 }
 
+/// A command and the cancel count it was sent under (see [`SftpManager::cancel`]).
+type Queued = (u64, SftpCommand);
+
 // ---------------------------------------------------------------------------
 // SftpManager — handle held by App to communicate with the background task
 // ---------------------------------------------------------------------------
@@ -111,7 +116,10 @@ pub enum SftpCommand {
 /// commands, and [`SftpManager::disconnect`] for a clean shutdown.
 #[derive(Debug)]
 pub struct SftpManager {
-    cmd_tx: mpsc::Sender<SftpCommand>,
+    cmd_tx: mpsc::Sender<Queued>,
+    /// How many times transfers were cancelled. Shared with the task rather than
+    /// queued: the transfer to stop holds the queue until it ends.
+    cancels: Arc<AtomicU64>,
 }
 
 impl SftpManager {
@@ -145,34 +153,53 @@ impl SftpManager {
         .await
         .map_err(|_| anyhow::anyhow!("SFTP did not start within {}s", OPEN_TIMEOUT.as_secs()))??;
 
-        let (cmd_tx, cmd_rx) = mpsc::channel::<SftpCommand>(64);
+        let (cmd_tx, cmd_rx) = mpsc::channel::<Queued>(64);
+        let cancels = Arc::new(AtomicU64::new(0));
         let host_name = host.name.clone();
 
         // `session` and `sftp` are owned by this async block.  If the task
         // panics, Rust's unwind machinery calls their Drop impls before the
         // panic propagates to tokio — the TCP connection is therefore always
         // released even in the panic path.  No explicit catch_unwind needed.
+        let task_cancels = Arc::clone(&cancels);
         tokio::spawn(async move {
             let _ = event_tx
                 .send(CoreEvent::SftpConnected {
                     host_name: host_name.clone(),
                 })
                 .await;
-            sftp_task_loop(session, sftp, cmd_rx, event_tx.clone()).await;
+            sftp_task_loop(session, sftp, cmd_rx, event_tx.clone(), task_cancels).await;
             tracing::info!("SFTP task for '{}' exited", host_name);
         });
 
-        Ok(Self { cmd_tx })
+        Ok(Self { cmd_tx, cancels })
     }
 
     /// Enqueues a command (fire-and-forget). Silently drops if the task exited.
     pub fn send(&self, cmd: SftpCommand) {
-        let _ = self.cmd_tx.try_send(cmd);
+        let _ = self
+            .cmd_tx
+            .try_send((self.cancels.load(Ordering::Relaxed), cmd));
     }
 
-    /// Sends [`SftpCommand::Disconnect`] and drops the sender.
+    /// Cancels every transfer sent so far. The running one stops at its next step and
+    /// removes the file it was part way through; files it finished stay. Queued ones
+    /// stop before they start. Each still ends with its [`CoreEvent::SftpOpDone`],
+    /// whose error says it was cancelled.
+    pub fn cancel(&self) {
+        self.cancels.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Cancels the transfers, sends [`SftpCommand::Disconnect`] and drops the sender.
     pub fn disconnect(self) {
-        let _ = self.cmd_tx.try_send(SftpCommand::Disconnect);
+        self.send(SftpCommand::Disconnect);
+    }
+}
+
+impl Drop for SftpManager {
+    // Nothing can follow a transfer's progress once its manager is gone.
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 
@@ -183,10 +210,15 @@ impl SftpManager {
 async fn sftp_task_loop(
     _ssh: SshSession, // kept alive to hold the SSH connection open
     sftp: russh_sftp::client::SftpSession,
-    mut cmd_rx: mpsc::Receiver<SftpCommand>,
+    mut cmd_rx: mpsc::Receiver<Queued>,
     event_tx: mpsc::Sender<CoreEvent>,
+    cancels: Arc<AtomicU64>,
 ) {
-    while let Some(cmd) = cmd_rx.recv().await {
+    while let Some((sent, cmd)) = cmd_rx.recv().await {
+        let cancel = Cancel {
+            cancels: &cancels,
+            sent,
+        };
         match cmd {
             SftpCommand::ListDir(path) => match do_list_dir(&sftp, &path).await {
                 Ok(entries) => {
@@ -208,7 +240,7 @@ async fn sftp_task_loop(
                 local,
                 transfer_id,
             } => {
-                let result = do_download(&sftp, &remote, &local, transfer_id, &event_tx)
+                let result = do_download(&sftp, &remote, &local, transfer_id, &event_tx, &cancel)
                     .await
                     .map_err(|e| format!("{e:#}"));
                 let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
@@ -219,7 +251,7 @@ async fn sftp_task_loop(
                 remote,
                 transfer_id,
             } => {
-                let result = do_upload(&local, &sftp, &remote, transfer_id, &event_tx)
+                let result = do_upload(&local, &sftp, &remote, transfer_id, &event_tx, &cancel)
                     .await
                     .map_err(|e| format!("{e:#}"));
                 let _ = event_tx.send(CoreEvent::SftpOpDone { result }).await;
@@ -398,6 +430,28 @@ fn check_paths(local: &str, remote: &str) -> anyhow::Result<()> {
 /// up to never end.
 const MAX_DEPTH: usize = 64;
 
+/// Whether the transfer at hand was cancelled: the manager's cancel count has moved
+/// on from the one its command was sent under.
+struct Cancel<'a> {
+    cancels: &'a AtomicU64,
+    sent: u64,
+}
+
+impl Cancel<'_> {
+    fn check(&self) -> anyhow::Result<()> {
+        if self.cancels.load(Ordering::Relaxed) == self.sent {
+            Ok(())
+        } else {
+            Err(Cancelled.into())
+        }
+    }
+}
+
+/// The error a cancelled transfer ends with.
+#[derive(Debug, thiserror::Error)]
+#[error("Transfer cancelled")]
+struct Cancelled;
+
 /// What a folder transfer left out. It goes on past every skip and failure and
 /// reports them in its one result.
 #[derive(Debug, Default)]
@@ -481,11 +535,13 @@ impl<'a> Progress<'a> {
 async fn plan_local_tree(
     root: &str,
     dst_root: &str,
+    cancel: &Cancel<'_>,
     skipped: &mut Skipped,
 ) -> anyhow::Result<TreePlan> {
     let mut plan = TreePlan::default();
     let mut stack = vec![(PathBuf::from(root), dst_root.to_string(), 0)];
     while let Some((src, dst, depth)) = stack.pop() {
+        cancel.check()?;
         // Every name on the way is UTF-8, so the path converts losslessly.
         let src_str = src.to_string_lossy().into_owned();
         let mut read_dir = match tokio::fs::read_dir(&src).await {
@@ -553,6 +609,7 @@ async fn plan_remote_tree<F, Fut>(
     mut list: F,
     root: &str,
     dst_root: &Path,
+    cancel: &Cancel<'_>,
     skipped: &mut Skipped,
 ) -> anyhow::Result<TreePlan>
 where
@@ -562,6 +619,7 @@ where
     let mut plan = TreePlan::default();
     let mut stack = vec![(root.to_string(), dst_root.to_path_buf(), 0)];
     while let Some((src, dst, depth)) = stack.pop() {
+        cancel.check()?;
         let entries = match list(src.clone()).await {
             Ok(entries) => entries,
             Err(e) => {
@@ -605,9 +663,11 @@ async fn do_download(
     local: &str,
     transfer_id: TransferId,
     event_tx: &mpsc::Sender<CoreEvent>,
+    cancel: &Cancel<'_>,
 ) -> anyhow::Result<()> {
     check_paths(local, remote)?;
     check_local_name(local)?;
+    cancel.check()?;
 
     // Size and type best-effort: a failed stat downloads as a file, and the open below
     // reports why. Without permissions the type is unknown too.
@@ -623,7 +683,7 @@ async fn do_download(
         _ => {
             let total = meta.and_then(|m| m.size).unwrap_or(0);
             let mut progress = Progress::new(transfer_id, total, event_tx);
-            return download_file(sftp, remote, local, &mut progress).await;
+            return download_file(sftp, remote, local, &mut progress, cancel).await;
         }
     }
 
@@ -632,16 +692,19 @@ async fn do_download(
         let entries = sftp.read_dir(dir).await?;
         anyhow::Ok(entries.map(|e| (e.file_name(), e.metadata())).collect())
     };
-    let plan = plan_remote_tree(list, remote, Path::new(local), &mut skipped).await?;
+    let plan = plan_remote_tree(list, remote, Path::new(local), cancel, &mut skipped).await?;
     let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
     for dir in &plan.dirs {
+        cancel.check()?;
         if let Err(e) = tokio::fs::create_dir_all(&dir.dst).await {
             skipped.add(&dir.src, format_args!("create local dir: {e}"));
         }
     }
     for file in &plan.files {
-        if let Err(e) = download_file(sftp, &file.src, &file.dst, &mut progress).await {
-            skipped.add(&file.src, format_args!("{e:#}"));
+        match download_file(sftp, &file.src, &file.dst, &mut progress, cancel).await {
+            Err(e) if e.is::<Cancelled>() => return Err(e),
+            Err(e) => skipped.add(&file.src, format_args!("{e:#}")),
+            Ok(()) => {}
         }
     }
     skipped.into_result()
@@ -652,21 +715,38 @@ async fn download_file(
     remote: &str,
     local: &str,
     progress: &mut Progress<'_>,
+    cancel: &Cancel<'_>,
 ) -> anyhow::Result<()> {
-    let mut remote_file = sftp
+    cancel.check()?;
+    let remote_file = sftp
         .open(remote)
         .await
         .context("open remote file for download")?;
+    write_local(remote_file, local, progress, cancel).await
+}
+
+/// Writes everything `source` yields to the local file `local`; a cancel removes the
+/// part written so far.
+async fn write_local(
+    mut source: impl AsyncRead + Unpin,
+    local: &str,
+    progress: &mut Progress<'_>,
+    cancel: &Cancel<'_>,
+) -> anyhow::Result<()> {
     let mut local_file = tokio::fs::File::create(local)
         .await
         .context("create local file")?;
 
     let mut buf = vec![0u8; 65_536];
     loop {
-        let n = remote_file
-            .read(&mut buf)
-            .await
-            .context("read remote file")?;
+        if let Err(e) = cancel.check() {
+            // tokio writes in the background: the flush lets the file close first.
+            let _ = local_file.flush().await;
+            drop(local_file);
+            let _ = tokio::fs::remove_file(local).await;
+            return Err(e);
+        }
+        let n = source.read(&mut buf).await.context("read remote file")?;
         if n == 0 {
             break;
         }
@@ -688,8 +768,10 @@ async fn do_upload(
     remote: &str,
     transfer_id: TransferId,
     event_tx: &mpsc::Sender<CoreEvent>,
+    cancel: &Cancel<'_>,
 ) -> anyhow::Result<()> {
     check_paths(local, remote)?;
+    cancel.check()?;
 
     // Follows a symlink: a linked folder the user picked is uploaded as a folder.
     let meta = tokio::fs::metadata(local)
@@ -697,23 +779,26 @@ async fn do_upload(
         .context("open local file for upload")?;
     if meta.is_file() {
         let mut progress = Progress::new(transfer_id, meta.len(), event_tx);
-        return upload_file(local, sftp, remote, &mut progress).await;
+        return upload_file(local, sftp, remote, &mut progress, cancel).await;
     }
     if !meta.is_dir() {
         anyhow::bail!("'{local}' is not a regular file or folder");
     }
 
     let mut skipped = Skipped::default();
-    let plan = plan_local_tree(local, remote, &mut skipped).await?;
+    let plan = plan_local_tree(local, remote, cancel, &mut skipped).await?;
     let mut progress = Progress::new(transfer_id, plan.total(), event_tx);
     for dir in &plan.dirs {
+        cancel.check()?;
         if let Err(e) = create_remote_dir(sftp, &dir.dst).await {
             skipped.add(&dir.src, format_args!("{e:#}"));
         }
     }
     for file in &plan.files {
-        if let Err(e) = upload_file(&file.src, sftp, &file.dst, &mut progress).await {
-            skipped.add(&file.src, format_args!("{e:#}"));
+        match upload_file(&file.src, sftp, &file.dst, &mut progress, cancel).await {
+            Err(e) if e.is::<Cancelled>() => return Err(e),
+            Err(e) => skipped.add(&file.src, format_args!("{e:#}")),
+            Ok(()) => {}
         }
     }
     skipped.into_result()
@@ -742,7 +827,9 @@ async fn upload_file(
     sftp: &russh_sftp::client::SftpSession,
     remote: &str,
     progress: &mut Progress<'_>,
+    cancel: &Cancel<'_>,
 ) -> anyhow::Result<()> {
+    cancel.check()?;
     let mut local_file = tokio::fs::File::open(local)
         .await
         .context("open local file for upload")?;
@@ -753,6 +840,12 @@ async fn upload_file(
 
     let mut buf = vec![0u8; 65_536];
     loop {
+        if let Err(e) = cancel.check() {
+            // Closed first, or the handle would close only after the removal.
+            let _ = remote_file.shutdown().await;
+            let _ = sftp.remove_file(remote).await;
+            return Err(e);
+        }
         let n = local_file.read(&mut buf).await.context("read local file")?;
         if n == 0 {
             break;
@@ -901,6 +994,10 @@ mod tests {
         assert!(drive_roots(0).is_empty());
     }
 
+    fn no_cancel(cancels: &AtomicU64) -> Cancel<'_> {
+        Cancel { cancels, sent: 0 }
+    }
+
     fn attrs(permissions: u32, size: u64) -> FileAttributes {
         FileAttributes {
             permissions: Some(permissions),
@@ -943,9 +1040,10 @@ mod tests {
             std::os::unix::net::UnixListener::bind(dir.join("sock")).expect("socket");
         }
 
+        let cancels = AtomicU64::new(0);
         let mut skipped = Skipped::default();
         let root = dir.to_str().expect("utf-8 temp dir");
-        let plan = plan_local_tree(root, "/srv/up", &mut skipped)
+        let plan = plan_local_tree(root, "/srv/up", &no_cancel(&cancels), &mut skipped)
             .await
             .expect("plan tree");
         assert_eq!(plan.dirs[0].dst, "/srv/up");
@@ -977,9 +1075,10 @@ mod tests {
         let bad = std::ffi::OsStr::from_bytes(b"bad\xff.txt");
         std::fs::write(tmp.path().join(bad), b"bad").expect("write");
 
+        let cancels = AtomicU64::new(0);
         let mut skipped = Skipped::default();
         let root = tmp.path().to_str().expect("utf-8 temp dir");
-        let plan = plan_local_tree(root, "/up", &mut skipped)
+        let plan = plan_local_tree(root, "/up", &no_cancel(&cancels), &mut skipped)
             .await
             .expect("plan tree");
         assert_eq!(plan.files.len(), 1);
@@ -1032,8 +1131,9 @@ mod tests {
             ),
         ]);
         let dst = Path::new("dl").join("app");
+        let cancels = AtomicU64::new(0);
         let mut skipped = Skipped::default();
-        let plan = plan_remote_tree(server, "/srv/app", &dst, &mut skipped)
+        let plan = plan_remote_tree(server, "/srv/app", &dst, &no_cancel(&cancels), &mut skipped)
             .await
             .expect("plan tree");
 
@@ -1076,16 +1176,48 @@ mod tests {
         let server = |_dir: String| {
             std::future::ready(anyhow::Ok(vec![("d".to_string(), attrs(0o40_755, 0))]))
         };
+        let cancels = AtomicU64::new(0);
         let mut skipped = Skipped::default();
-        let plan = plan_remote_tree(server, "/x", Path::new("dl"), &mut skipped)
-            .await
-            .expect("plan tree");
+        let plan = plan_remote_tree(
+            server,
+            "/x",
+            Path::new("dl"),
+            &no_cancel(&cancels),
+            &mut skipped,
+        )
+        .await
+        .expect("plan tree");
         assert_eq!(plan.dirs.len(), MAX_DEPTH + 1);
         let err = skipped.into_result().expect_err("the cut is reported");
         assert!(err
             .to_string()
             .starts_with("1 item skipped or failed, first '/x/d/d/"));
         assert!(err.to_string().ends_with("/d': nested too deep"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn planning_stops_at_the_next_folder_once_cancelled() {
+        let cancels = AtomicU64::new(0);
+        let server = |_dir: String| {
+            cancels.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(anyhow::Ok(vec![("d".to_string(), attrs(0o40_755, 0))]))
+        };
+        let mut skipped = Skipped::default();
+        let err = plan_remote_tree(
+            server,
+            "/x",
+            Path::new("dl"),
+            &no_cancel(&cancels),
+            &mut skipped,
+        )
+        .await
+        .expect_err("cancelled");
+        assert!(err.is::<Cancelled>());
+        assert_eq!(
+            cancels.load(Ordering::Relaxed),
+            1,
+            "one folder read, no more"
+        );
     }
 
     #[test]
@@ -1109,6 +1241,80 @@ mod tests {
             skipped.into_result().expect_err("two").to_string(),
             one.replacen("1 item", "2 items", 1)
         );
+    }
+
+    #[test]
+    fn a_cancel_stops_what_was_sent_before_it_and_a_closed_manager_stops_all() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
+        let manager = SftpManager {
+            cmd_tx,
+            cancels: Arc::new(AtomicU64::new(0)),
+        };
+        let cancels = Arc::clone(&manager.cancels);
+        let cancelled = |sent| {
+            Cancel {
+                cancels: &cancels,
+                sent,
+            }
+            .check()
+            .is_err_and(|e| e.is::<Cancelled>())
+        };
+
+        manager.send(SftpCommand::ListDir("/before".into()));
+        manager.cancel();
+        manager.send(SftpCommand::ListDir("/after".into()));
+        let (before, _) = cmd_rx.try_recv().expect("queued");
+        let (after, _) = cmd_rx.try_recv().expect("queued");
+        assert!(cancelled(before));
+        assert!(!cancelled(after));
+
+        manager.disconnect();
+        assert!(cancelled(after));
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok((_, SftpCommand::Disconnect))
+        ));
+    }
+
+    /// Hands out `data` in one read and cancels the transfer as it does.
+    struct CancellingReader<'a> {
+        data: &'a [u8],
+        cancels: &'a AtomicU64,
+    }
+
+    impl AsyncRead for CancellingReader<'_> {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let n = self.data.len().min(buf.remaining());
+            buf.put_slice(&self.data[..n]);
+            self.data = &self.data[n..];
+            self.cancels.fetch_add(1, Ordering::Relaxed);
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_download_removes_the_part_it_wrote() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let local = tmp.path().join("part.bin");
+        let cancels = AtomicU64::new(0);
+        let (tx, _rx) = mpsc::channel(8);
+        let mut progress = Progress::new(1, 100, &tx);
+        let source = CancellingReader {
+            data: b"the first chunk of many",
+            cancels: &cancels,
+        };
+
+        let local_str = local.to_str().expect("utf-8 temp dir");
+        let err = write_local(source, local_str, &mut progress, &no_cancel(&cancels))
+            .await
+            .expect_err("cancelled");
+        assert!(err.is::<Cancelled>());
+        assert_eq!(progress.done, 23, "the chunk was written before the cancel");
+        assert!(!local.exists(), "the partial file is gone");
     }
 
     /// An SFTP session on this machine's own files through OpenSSH's sftp-server,
@@ -1151,10 +1357,18 @@ mod tests {
         std::fs::write(path("src/private/data.bin"), vec![7u8; 200_000]).expect("write");
         std::os::unix::fs::symlink(path("src/run.sh"), path("src/link")).expect("symlink");
 
+        let cancels = AtomicU64::new(0);
         let (tx, _rx) = mpsc::channel(64);
-        let err = do_upload(&str_of(&path("src")), &sftp, &str_of(&path("up")), 1, &tx)
-            .await
-            .expect_err("the link is reported");
+        let err = do_upload(
+            &str_of(&path("src")),
+            &sftp,
+            &str_of(&path("up")),
+            1,
+            &tx,
+            &no_cancel(&cancels),
+        )
+        .await
+        .expect_err("the link is reported");
         let link = str_of(&path("src/link"));
         assert_eq!(
             err.to_string(),
@@ -1171,9 +1385,16 @@ mod tests {
         // Back down, into a folder that already holds one of the files.
         std::fs::create_dir_all(path("down")).expect("mkdir");
         std::fs::write(path("down/run.sh"), "old").expect("write");
-        do_download(&sftp, &str_of(&path("up")), &str_of(&path("down")), 2, &tx)
-            .await
-            .expect("downloaded");
+        do_download(
+            &sftp,
+            &str_of(&path("up")),
+            &str_of(&path("down")),
+            2,
+            &tx,
+            &no_cancel(&cancels),
+        )
+        .await
+        .expect("downloaded");
         assert_eq!(
             std::fs::read(path("down/run.sh")).expect("read"),
             b"#!/bin/sh\n"
@@ -1189,8 +1410,15 @@ mod tests {
         // arrives. Root reads it anyway, so only a plain user can check this.
         set_mode(path("up/private"), 0o000);
         let readable = std::fs::read_dir(path("up/private")).is_ok();
-        let result =
-            do_download(&sftp, &str_of(&path("up")), &str_of(&path("again")), 3, &tx).await;
+        let result = do_download(
+            &sftp,
+            &str_of(&path("up")),
+            &str_of(&path("again")),
+            3,
+            &tx,
+            &no_cancel(&cancels),
+        )
+        .await;
         set_mode(path("up/private"), 0o700);
         if !readable {
             let err = result.expect_err("the folder is reported");
@@ -1203,6 +1431,46 @@ mod tests {
             );
             assert!(path("again/run.sh").exists());
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cancelled_upload_removes_the_partial_remote_file() {
+        let Some(sftp) = local_sftp().await else {
+            eprintln!("no sftp-server on this machine; skipped");
+            return;
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let src = tmp.path().join("big.bin");
+        std::fs::write(&src, vec![1u8; 1_000_000]).expect("write");
+        let dst = tmp.path().join("copy.bin");
+
+        // One slot: the upload cannot run more than a chunk ahead of this watcher,
+        // which cancels once the first chunk is out.
+        let (tx, mut rx) = mpsc::channel(1);
+        let cancels = AtomicU64::new(0);
+        let cancel = no_cancel(&cancels);
+        let upload = do_upload(
+            src.to_str().expect("utf-8"),
+            &sftp,
+            dst.to_str().expect("utf-8"),
+            1,
+            &tx,
+            &cancel,
+        );
+        let watch = async {
+            while let Some(CoreEvent::FileTransferProgress(_, done, _)) = rx.recv().await {
+                if done > 0 {
+                    cancels.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        };
+        let result = tokio::select! {
+            result = upload => result,
+            () = watch => unreachable!("the channel outlives the upload"),
+        };
+        assert!(result.expect_err("cancelled").is::<Cancelled>());
+        assert!(!dst.exists(), "the partial file is gone");
     }
 
     #[test]
