@@ -266,7 +266,19 @@ async sftpPreview(sessionId: number, path: string) : Promise<Result<null, Comman
 }
 },
 /**
- * Close an SFTP session and its connection (tech-gui.md §4.2).
+ * Cancel the transfer this session is running (tech-gui.md §4.2). It stops at its
+ * next step, and its `sftp-op-done` says it was cancelled.
+ */
+async sftpCancel(sessionId: number) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sftp_cancel", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Close an SFTP session and its connection, stopping its transfer (tech-gui.md §4.2).
  */
 async sftpClose(sessionId: number) : Promise<Result<null, CommandError>> {
     try {

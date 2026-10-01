@@ -167,7 +167,16 @@ pub fn sftp_preview(
     Ok(())
 }
 
-/// Close an SFTP session and its connection (tech-gui.md §4.2).
+/// Cancel the transfer this session is running (tech-gui.md §4.2). It stops at its
+/// next step, and its `sftp-op-done` says it was cancelled.
+#[tauri::command]
+#[specta::specta]
+pub fn sftp_cancel(state: State<'_, GuiState>, session_id: u64) -> Result<(), CommandError> {
+    state.cancel_sftp(session_id);
+    Ok(())
+}
+
+/// Close an SFTP session and its connection, stopping its transfer (tech-gui.md §4.2).
 #[tauri::command]
 #[specta::specta]
 pub fn sftp_close(state: State<'_, GuiState>, session_id: u64) -> Result<(), CommandError> {
