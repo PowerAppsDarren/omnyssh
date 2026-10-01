@@ -294,6 +294,7 @@
     row?: string;
   }
 
+  let root = $state<HTMLElement>();
   let press: { side: PaneSide; entry: FileEntryDto; x: number; y: number } | null = null;
   let drag = $state<{
     from: PaneSide;
@@ -302,28 +303,59 @@
     y: number;
     target: DropTarget | null;
   } | null>(null);
-  // A drag that ends on the row it started on would otherwise click it.
+  // The press went past the threshold, carrying something or not (`..`): the release
+  // must not click the row it ends on, even after Escape.
+  let moved = false;
   let swallowClick = false;
   // A drag from the OS hovering this view, for the remote pane's highlight.
   let osDrop = $state<DropTarget | null>(null);
 
-  /** The pane (and folder row, if any) under a viewport point. */
+  function endGesture(): void {
+    press = null;
+    drag = null;
+    moved = false;
+  }
+
+  // A hidden view lets go of what it held (§2): no ghost over the entity now shown, and
+  // no transfer from a release there.
+  $effect(() => {
+    if (!active) {
+      endGesture();
+      osDrop = null;
+    }
+  });
+
+  /** This view's pane (and folder row, if any) under a viewport point. Below the panes,
+   *  on the transfer strip, a point goes to the pane above it. */
   function dropTargetAt(x: number, y: number): DropTarget | null {
-    if (!view) return null;
+    if (!view || !root) return null;
     const el = document.elementFromPoint(x, y);
-    const paneEl = el?.closest<HTMLElement>('[data-pane]');
+    if (!el || !root.contains(el)) return null;
+    const paneEl =
+      el.closest<HTMLElement>('[data-pane]') ??
+      [...root.querySelectorAll<HTMLElement>('[data-pane]')].find((pane) => {
+        const r = pane.getBoundingClientRect();
+        return x >= r.left && x < r.right;
+      });
     const side = paneEl?.dataset.pane;
     if (side !== 'local' && side !== 'remote') return null;
-    const row = el?.closest<HTMLElement>('[data-dir-path]')?.dataset.dirPath;
+    const row = el.closest<HTMLElement>('[data-dir-path]')?.dataset.dirPath;
     return { side, dir: row ?? view[side].path, row };
   }
 
   function startPress(side: PaneSide, entry: FileEntryDto, e: PointerEvent): void {
-    if (e.button !== 0 || !view) return;
+    if (e.button !== 0 || !view || !active) return;
     press = { side, entry, x: e.clientX, y: e.clientY };
+    moved = false;
   }
 
   function onPointerMove(e: PointerEvent): void {
+    if (!press && !drag) return;
+    // The button came up where no pointerup reached this window.
+    if ((e.buttons & 1) === 0) {
+      endGesture();
+      return;
+    }
     if (drag) {
       const target = dropTargetAt(e.clientX, e.clientY);
       drag = {
@@ -336,6 +368,7 @@
     }
     if (!press || !view) return;
     if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < DRAG_THRESHOLD) return;
+    moved = true;
     const files = dragPayload(view[press.side], press.entry);
     const from = press.side;
     press = null;
@@ -344,22 +377,19 @@
   }
 
   function onPointerUp(): void {
-    press = null;
     const done = drag;
-    if (!done) return;
-    drag = null;
-    swallowClick = true;
-    setTimeout(() => (swallowClick = false), 0);
-    if (!done.target) return;
+    if (moved) {
+      swallowClick = true;
+      setTimeout(() => (swallowClick = false), 0);
+    }
+    endGesture();
+    if (!active || !done?.target) return;
     if (done.from === 'local') upload(done.files, done.target.dir);
     else download(done.files, done.target.dir);
   }
 
   function onKeyDown(e: KeyboardEvent): void {
-    if (e.key === 'Escape' && drag) {
-      drag = null;
-      press = null;
-    }
+    if (e.key === 'Escape' && drag) drag = null;
   }
 
   // Drops from the OS (Explorer, Finder): Tauri reports physical pixels and absolute
@@ -484,18 +514,15 @@
 <svelte:window
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}
-  onpointercancel={() => {
-    press = null;
-    drag = null;
-  }}
+  onpointercancel={endGesture}
   onkeydown={onKeyDown}
 />
 
-{#if drag}
+{#if active && drag}
   <!-- Follows the pointer; pointer-events-none so the pane under it stays hit-testable. -->
   <div
     class="pointer-events-none fixed z-50 flex items-center gap-1.5 rounded-full border border-default
-      bg-surface px-3 py-1.5 text-xs font-medium text-fg shadow-lg
+      bg-surface px-3 py-1.5 text-xs font-medium text-fg shadow-soft
       {drag.target ? '' : 'opacity-70'}"
     style="left: {drag.x + 14}px; top: {drag.y + 14}px"
     aria-hidden="true"
@@ -508,6 +535,7 @@
 <!-- bg-surface fills behind the macOS traffic lights (no seam); the pt insets the
      panes below them. The select-none while dragging keeps the drag from selecting text. -->
 <div
+  bind:this={root}
   class="absolute inset-0 flex flex-col bg-surface pt-[var(--titlebar-h)]
     {active ? '' : 'hidden'} {drag ? 'cursor-grabbing select-none' : ''}"
 >
