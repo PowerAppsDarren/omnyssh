@@ -13,9 +13,14 @@ const HOSTS = [
 ];
 
 // `windows` swaps in a Windows-shaped local side: a home on C: and a second drive, D:.
-async function boot(page: Page, windows = false): Promise<void> {
+// `holdProgress` keeps a transfer's first tick back until `__tick()`, as while the core
+// walks a folder.
+async function boot(
+  page: Page,
+  { windows = false, holdProgress = false }: { windows?: boolean; holdProgress?: boolean } = {}
+): Promise<void> {
   await page.addInitScript(
-    ({ hosts, windows }) => {
+    ({ hosts, windows, holdProgress }) => {
       let cbid = 0;
       const win = window as unknown as Record<string, unknown>;
       const listeners: Record<string, number[]> = {};
@@ -23,7 +28,7 @@ async function boot(page: Page, windows = false): Promise<void> {
       let nextTransfer = 0;
       // A pending transfer holds until the test fires its op-done, so the progress bar
       // is observable mid-flight (the core is sequential — one transfer at a time).
-      const completions: Array<{ sessionId: number; finish: () => void }> = [];
+      const completions: Array<{ sessionId: number; tid: number; finish: () => void }> = [];
 
       type Entry = {
         name: string;
@@ -97,6 +102,13 @@ async function boot(page: Page, windows = false): Promise<void> {
       // Fire the oldest still-pending transfer's op-done (deterministic completion).
       (win as { __completeTransfer?: () => void }).__completeTransfer = () =>
         completions.shift()?.finish();
+      // A progress tick for the oldest pending transfer.
+      function tick(done: number, total: number): void {
+        const c = completions[0];
+        if (!c) return;
+        fireEvent('transfer-progress', { sessionId: c.sessionId, transferId: c.tid, done, total });
+      }
+      (win as { __tick?: typeof tick }).__tick = tick;
 
       (win as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
         // `getCurrentWebview()` reads these to scope OS drag-drop listeners.
@@ -140,9 +152,10 @@ async function boot(page: Page, windows = false): Promise<void> {
               const { sessionId, remote: dest } = args as { sessionId: number; remote: string };
               uploads.push(dest);
               const tid = ++nextTransfer;
-              setTimeout(() => fireEvent('transfer-progress', { sessionId, transferId: tid, done: 4, total: 8 }), 0);
+              if (!holdProgress) setTimeout(() => tick(4, 8), 0);
               completions.push({
                 sessionId,
+                tid,
                 finish: () => {
                   addFile(remote, parentOf(dest), baseName(dest));
                   fireEvent('sftp-op-done', { sessionId, ok: true });
@@ -154,9 +167,10 @@ async function boot(page: Page, windows = false): Promise<void> {
               const { sessionId, local: dest } = args as { sessionId: number; local: string };
               downloads.push(dest);
               const tid = ++nextTransfer;
-              setTimeout(() => fireEvent('transfer-progress', { sessionId, transferId: tid, done: 2, total: 8 }), 0);
+              if (!holdProgress) setTimeout(() => tick(2, 8), 0);
               completions.push({
                 sessionId,
+                tid,
                 finish: () => {
                   addFile(local, parentOf(dest), baseName(dest));
                   fireEvent('sftp-op-done', { sessionId, ok: true });
@@ -199,11 +213,16 @@ async function boot(page: Page, windows = false): Promise<void> {
         }
       };
     },
-    { hosts: HOSTS, windows }
+    { hosts: HOSTS, windows, holdProgress }
   );
 
   await page.goto('/');
   await expect(page.getByText('2 hosts')).toBeVisible();
+}
+
+// Fire the oldest pending transfer's op-done.
+async function complete(page: Page): Promise<void> {
+  await page.evaluate(() => (window as unknown as { __completeTransfer: () => void }).__completeTransfer());
 }
 
 test('host-first: a card’s files opens SFTP and browses both sides', async ({ page }) => {
@@ -273,6 +292,34 @@ test('Cancel stops the running transfer and drops the queued ones', async ({ pag
     return { uploads: w.__uploads, cancels: w.__cancels };
   });
   expect(sent).toEqual({ uploads: ['/notes.txt'], cancels: [1] });
+});
+
+test('a transfer shows as preparing until its first tick, a folder of empty files too', async ({
+  page
+}) => {
+  await boot(page, { holdProgress: true });
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(localPane.getByText('work')).toBeVisible();
+  await expect(remotePane.getByText('config.yml')).toBeVisible();
+
+  await localPane.getByRole('checkbox', { name: 'Mark work' }).click();
+  await page.getByRole('button', { name: 'Upload' }).click();
+  const strip = page.getByLabel('transfer progress');
+  await expect(strip).toContainText('Preparing work…');
+  await expect(strip.getByRole('button', { name: 'Cancel transfer' })).toBeVisible();
+
+  // Planned, and nothing in it has a byte: the core's first tick is 0 of 0.
+  await page.evaluate(() => {
+    (window as unknown as { __tick: (done: number, total: number) => void }).__tick(0, 0);
+  });
+  await expect(strip).toContainText('Uploading work');
+  await expect(strip).toContainText('0 B');
+
+  await complete(page);
+  await expect(strip).toHaveCount(0);
+  await expect(remotePane.getByText('work')).toBeVisible();
 });
 
 test('the panes show modification times', async ({ page }) => {
@@ -425,7 +472,7 @@ test('action-first: the SFTP spawner opens the host picker, then a live session'
 test('Windows: the local pane switches drives, and downloads land on the chosen one', async ({
   page
 }) => {
-  await boot(page, true);
+  await boot(page, { windows: true });
   await page.getByTitle('files on web-1').click();
 
   const localPane = page.getByRole('region', { name: 'Local' });
@@ -448,7 +495,7 @@ test('Windows: the local pane switches drives, and downloads land on the chosen 
 test('Windows: a drive that fails to list says why, and the selector stays on the pane’s drive', async ({
   page
 }) => {
-  await boot(page, true);
+  await boot(page, { windows: true });
   await page.getByTitle('files on web-1').click();
   const localPane = page.getByRole('region', { name: 'Local' });
   const drive = localPane.getByRole('combobox', { name: 'Local drive' });
@@ -472,7 +519,7 @@ test('a single-root system shows no drive switch', async ({ page }) => {
 });
 
 test('Windows: a slow drive left for another does not take the pane back', async ({ page }) => {
-  await boot(page, true);
+  await boot(page, { windows: true });
   await page.getByTitle('files on web-1').click();
   const localPane = page.getByRole('region', { name: 'Local' });
   const drive = localPane.getByRole('combobox', { name: 'Local drive' });

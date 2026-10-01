@@ -22,6 +22,7 @@
     formatBytes,
     rootOf,
     baseName,
+    transferState,
     CANCELLED,
     type PaneSide
   } from '$lib/stores/sftp';
@@ -78,7 +79,7 @@
     await refreshLocal(root);
     selectedDrive = drive;
   }
-  const transfer = $derived(view?.transfer);
+  const transfer = $derived(view ? transferState(view) : undefined);
 
   // Folders transfer whole, so the Upload/Download buttons take them like files.
   const localMarkedItems = $derived(view ? markedTransferable(view.local) : []);
@@ -635,15 +636,21 @@
       <div class="shrink-0 border-t border-default px-4 py-2.5" aria-label="transfer progress">
         <div class="flex items-center justify-between gap-3 text-xs text-muted">
           <span class="min-w-0 truncate">
-            {transfer.kind === 'upload' ? 'Uploading' : 'Downloading'}
-            <span class="font-mono text-fg">{transfer.name}</span>
+            {transfer.preparing
+              ? 'Preparing'
+              : transfer.kind === 'upload'
+                ? 'Uploading'
+                : 'Downloading'}
+            <span class="font-mono text-fg">{transfer.name}</span>{transfer.preparing ? '…' : ''}
           </span>
           <span class="flex shrink-0 items-center gap-3">
-            <span class="tabular-nums">
-              {formatBytes(transfer.done)}{transfer.total > 0
-                ? ` / ${formatBytes(transfer.total)}`
-                : ''}
-            </span>
+            {#if !transfer.preparing}
+              <span class="tabular-nums">
+                {formatBytes(transfer.done)}{transfer.total > 0
+                  ? ` / ${formatBytes(transfer.total)}`
+                  : ''}
+              </span>
+            {/if}
             <button
               type="button"
               class={toolBtn}
@@ -657,10 +664,15 @@
           </span>
         </div>
         <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface-inset">
-          <div
-            class="h-full rounded-full bg-accent transition-[width]"
-            style="width: {transferPercent(transfer.done, transfer.total)}%"
-          ></div>
+          {#if transfer.preparing}
+            <!-- No size yet, so no fraction to show: a pulse says it is working. -->
+            <div class="h-full w-1/3 rounded-full bg-accent motion-safe:animate-pulse"></div>
+          {:else}
+            <div
+              class="h-full rounded-full bg-accent transition-[width]"
+              style="width: {transferPercent(transfer.done, transfer.total)}%"
+            ></div>
+          {/if}
         </div>
       </div>
     {:else if view.error}

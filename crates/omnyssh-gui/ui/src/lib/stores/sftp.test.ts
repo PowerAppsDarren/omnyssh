@@ -10,6 +10,7 @@ import {
   mergeRefresh,
   applyProgress,
   applyOpDone,
+  transferState,
   formatBytes,
   formatDate,
   dragPayload,
@@ -187,6 +188,35 @@ describe('sftp reducers', () => {
     s = applyOpDone(s, true);
     expect(s.pending).toEqual([]);
     expect(s.refresh).toBe('remote');
+  });
+
+  it('transferState shows a dispatched transfer as preparing until its first tick', () => {
+    const idle = newSession('web-1');
+    expect(transferState(idle)).toBeUndefined();
+    const mkdir: SftpSession = { ...idle, pending: [{ kind: 'mkdir', refresh: 'remote' }] };
+    expect(transferState(mkdir)).toBeUndefined();
+
+    let s: SftpSession = {
+      ...idle,
+      pending: [{ kind: 'download', name: 'logs', refresh: 'local' }]
+    };
+    expect(transferState(s)).toEqual({
+      kind: 'download',
+      name: 'logs',
+      done: 0,
+      total: 0,
+      preparing: true
+    });
+    // A folder of empty files still ticks once planned: 0 of 0, no longer preparing.
+    s = applyProgress(s, { sessionId: 1, transferId: 3, done: 0, total: 0 });
+    expect(transferState(s)).toEqual({
+      kind: 'download',
+      name: 'logs',
+      done: 0,
+      total: 0,
+      preparing: false
+    });
+    expect(transferState(applyOpDone(s, true))).toBeUndefined();
   });
 
   it('formatBytes is human readable', () => {

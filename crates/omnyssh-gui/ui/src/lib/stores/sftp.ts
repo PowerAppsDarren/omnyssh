@@ -180,6 +180,18 @@ export function applyProgress(session: SftpSession, p: TransferProgressDto): Sft
   };
 }
 
+/** What the transfer strip shows: the running transfer's last tick or, from its dispatch
+ *  until the first tick (the core may spend a while walking a folder), that it is being
+ *  prepared. */
+export function transferState(
+  session: SftpSession
+): (Transfer & { preparing: boolean }) | undefined {
+  if (session.transfer) return { ...session.transfer, preparing: false };
+  const front = session.pending[0];
+  if (front?.kind !== 'upload' && front?.kind !== 'download') return undefined;
+  return { kind: front.kind, name: front.name ?? '', done: 0, total: 0, preparing: true };
+}
+
 /** Fold an `sftp-op-done` in: pop the front pending op (FIFO), record its refresh
  *  target, clear the transfer display if it was a transfer, and surface any error. */
 export function applyOpDone(session: SftpSession, ok: boolean, error?: string): SftpSession {
