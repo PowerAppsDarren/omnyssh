@@ -4,8 +4,7 @@ import { expect, test, type Page } from '@playwright/test';
 // absent, so we stub `__TAURI_INTERNALS__` at the boundary (§6.4). The stub backs the
 // update config in memory and returns an update from `check_update`; `update-available`
 // is fired after `reload_hosts` (which the layout calls once its listeners are attached),
-// mirroring the startup check. It also answers `plugin:app|version`, the call behind the
-// About row (issue #125), which Tauri's own `getVersion` makes off-runtime.
+// mirroring the startup check. `plugin:app|version` is Tauri's `getVersion`.
 const HOSTS = [
   { name: 'web-1', hostname: 'web-1.example.com', user: 'deploy', port: 22, tags: [], source: 'manual', hasKey: true, localForwards: [], tunnelAutostart: false, forwardAgent: false }
 ];
@@ -17,14 +16,13 @@ const UPDATE = {
   canSelfUpdate: true
 };
 
-const INSTALLED = '1.1.4';
+const INSTALLED = '1.0.0';
 
 async function boot(
   page: Page,
   opts: {
     fireUpdateOnBoot: boolean;
     traySupport?: { available: boolean; minimize: boolean };
-    /** Make the version unreadable, as off-runtime the About row must still render. */
     versionFails?: boolean;
   }
 ): Promise<void> {
@@ -132,24 +130,26 @@ test('the footer gear opens Settings; theme, interval, and update prefs work', a
   await expect(page.getByText('Update available — v2.0.0')).toBeVisible();
 });
 
-test('the About row names the installed build, and says so when it cannot be read', async ({
-  page
-}) => {
-  // The version a bug report has to quote (issue #125). Distinct from the "Version 2.0.0
-  // is available." line above, which is the newest release rather than this build.
+test('About shows the installed version, selectable for a bug report', async ({ page }) => {
   await boot(page, { fireUpdateOnBoot: false });
   await page.getByRole('button', { name: 'Settings' }).click();
-  await expect(page.getByRole('heading', { name: 'About' })).toBeVisible();
-  await expect(page.getByText(`Version ${INSTALLED}`, { exact: true })).toBeVisible();
 
-  // A version that will not read must not take the rest of Settings with it: the row
-  // says so and the update preferences still load.
+  const about = page.getByRole('heading', { name: 'About' }).locator('..');
+  await expect(about.getByText('Version', { exact: true })).toBeVisible();
+  const version = about.getByText(INSTALLED, { exact: true });
+  await expect(version).toBeVisible();
+  await expect(version).toHaveCSS('user-select', 'text');
+});
+
+test('a failed version read leaves no row, and the update prefs still load', async ({ page }) => {
   await boot(page, { fireUpdateOnBoot: false, versionFails: true });
   await page.getByRole('button', { name: 'Settings' }).click();
-  await expect(page.getByText('Version unavailable')).toBeVisible();
+
   await expect(
     page.getByRole('switch', { name: 'Check for updates on startup' })
   ).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('heading', { name: 'About' })).toHaveCount(0);
+  await expect(page.getByText('Version', { exact: true })).toHaveCount(0);
 });
 
 test('startup update-available raises the banner; dismiss hides it', async ({ page }) => {
