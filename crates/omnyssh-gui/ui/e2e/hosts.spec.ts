@@ -295,6 +295,127 @@ test('g is ignored under a modal and while typing', async ({ page }) => {
   await expect(grouped).toBeVisible();
 });
 
+// Card order as the grips name it, top-left to bottom-right.
+async function cardOrder(page: Page): Promise<string[]> {
+  const grips = page.getByRole('button', { name: /^Move / });
+  return (await grips.evaluateAll((els) => els.map((el) => el.getAttribute('aria-label') ?? ''))).map(
+    (label) => label.slice('Move '.length)
+  );
+}
+
+// Drags a card by its grip onto the left half of another card, in small steps.
+async function dragOnto(page: Page, host: string, onto: string): Promise<void> {
+  await page.getByText(host, { exact: true }).hover();
+  const grip = await page.getByRole('button', { name: `Move ${host}` }).boundingBox();
+  const target = await page.getByText(onto, { exact: true }).boundingBox();
+  if (!grip || !target) throw new Error('card not on screen');
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(target.x + 2, target.y + target.height / 2, { steps: 12 });
+  await page.mouse.up();
+}
+
+test('View options sorts by name and status with the arrow keys', async ({ page }) => {
+  await boot(page);
+  await expect.poll(() => cardOrder(page)).toEqual(['web-1', 'imported', 'api-1']);
+
+  await page.getByRole('button', { name: 'View options' }).click();
+  const sort = page.getByRole('radiogroup', { name: 'Sort' });
+  await expect(sort.getByRole('radio', { name: 'Custom' })).toHaveAttribute('aria-checked', 'true');
+  await sort.getByRole('radio', { name: 'Custom' }).focus();
+  await page.keyboard.press('ArrowRight');
+  const byName = sort.getByRole('radio', { name: 'Name' });
+  await expect(byName).toHaveAttribute('aria-checked', 'true');
+  await expect(byName).toBeFocused();
+  await expect.poll(() => cardOrder(page)).toEqual(['api-1', 'imported', 'web-1']);
+
+  await page.keyboard.press('ArrowRight');
+  await expect(sort.getByRole('radio', { name: 'Status' })).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('ArrowRight');
+  await expect(sort.getByRole('radio', { name: 'Custom' })).toHaveAttribute('aria-checked', 'true');
+
+  await byName.click();
+  await page.reload();
+  await expect.poll(() => cardOrder(page)).toEqual(['api-1', 'imported', 'web-1']);
+});
+
+test('dragging a card by its grip reorders the grid and persists', async ({ page }) => {
+  await boot(page);
+  await dragOnto(page, 'api-1', 'web-1');
+  await expect.poll(() => cardOrder(page)).toEqual(['api-1', 'web-1', 'imported']);
+  await expect(page.locator('[aria-live="polite"]', { hasText: 'api-1 moved to position 1 of 3' })).toHaveCount(1);
+
+  await page.reload();
+  await expect.poll(() => cardOrder(page)).toEqual(['api-1', 'web-1', 'imported']);
+
+  // Escape mid-drag, or a release outside the grid, changes nothing.
+  const grip = await page.getByRole('button', { name: 'Move imported' }).boundingBox();
+  if (!grip) throw new Error('grip not on screen');
+  await page.mouse.move(grip.x + 5, grip.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(grip.x - 300, grip.y + 5, { steps: 8 });
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  await page.mouse.move(grip.x + 5, grip.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + 5, 10, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => cardOrder(page)).toEqual(['api-1', 'web-1', 'imported']);
+});
+
+test('a drag while sorted by name starts from the name order', async ({ page }) => {
+  await boot(page);
+  const options = page.getByRole('button', { name: 'View options' });
+  await options.click();
+  await page.getByRole('radio', { name: 'Name' }).click();
+  await page.keyboard.press('Escape');
+  await expect.poll(() => cardOrder(page)).toEqual(['api-1', 'imported', 'web-1']);
+
+  // A cancelled drag leaves the sort as it was.
+  const grip = await page.getByRole('button', { name: 'Move web-1' }).boundingBox();
+  if (!grip) throw new Error('grip not on screen');
+  await page.mouse.move(grip.x + 5, grip.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(grip.x - 300, grip.y + 5, { steps: 8 });
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  await options.click();
+  await expect(page.getByRole('radio', { name: 'Name' })).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('Escape');
+
+  await dragOnto(page, 'web-1', 'imported');
+  await expect.poll(() => cardOrder(page)).toEqual(['api-1', 'web-1', 'imported']);
+  await options.click();
+  await expect(page.getByRole('radio', { name: 'Custom' })).toHaveAttribute('aria-checked', 'true');
+});
+
+test('the grip moves a card with the keyboard, within its section when grouped', async ({ page }) => {
+  await boot(page);
+  const grip = page.getByRole('button', { name: 'Move web-1' });
+  await grip.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect.poll(() => cardOrder(page)).toEqual(['imported', 'web-1', 'api-1']);
+  await expect(grip).toBeFocused();
+  await expect(page.locator('[aria-live="polite"]')).toHaveText('web-1 moved to position 2 of 3');
+  await page.keyboard.press('End');
+  await expect.poll(() => cardOrder(page)).toEqual(['imported', 'api-1', 'web-1']);
+  await page.keyboard.press('Home');
+  await expect.poll(() => cardOrder(page)).toEqual(['web-1', 'imported', 'api-1']);
+  await expect(grip).toBeFocused();
+
+  // Grouped, prod holds web-1 and api-1: End moves web-1 to the end of prod only.
+  await page.keyboard.press('g');
+  await expect.poll(() => cardOrder(page)).toEqual(['web-1', 'api-1', 'imported']);
+  await page.getByRole('button', { name: 'Move web-1' }).focus();
+  await page.keyboard.press('End');
+  await expect.poll(() => cardOrder(page)).toEqual(['api-1', 'web-1', 'imported']);
+  await expect(page.locator('[aria-live="polite"]')).toHaveText('web-1 moved to position 2 of 2');
+
+  // A drag into another section is outside the run, so it does nothing.
+  await dragOnto(page, 'web-1', 'imported');
+  await expect.poll(() => cardOrder(page)).toEqual(['api-1', 'web-1', 'imported']);
+});
+
 test('rejects a new host whose name already exists', async ({ page }) => {
   await boot(page);
 

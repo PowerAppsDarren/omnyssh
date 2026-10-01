@@ -21,6 +21,7 @@ import { metrics } from '$lib/stores/metrics';
 import { services, type HostServices } from '$lib/stores/services';
 import { tunnels } from '$lib/stores/tunnels';
 import { displayHostname } from '$lib/stores/streamer';
+import type { CardSort } from '$lib/stores/dashboardView';
 import { bracketed } from './hostForm';
 
 // Metric severity mirrors the core's `metrics::threshold_level` (Ok < 60 <= Warn <=
@@ -237,6 +238,44 @@ export function filterHosts(cards: ServerCard[], query: string): ServerCard[] {
       host.tags.some((t) => t.toLowerCase().includes(q)) ||
       (host.notes?.toLowerCase().includes(q) ?? false)
   );
+}
+
+// The TUI's status sort on card state: connected first, failed last. The card can't
+// tell connecting from not yet probed, so those share the middle in config order.
+function statusRank(card: ServerCard): number {
+  if (card.overall === 'off') return 2;
+  return card.overall === 'unknown' ? 1 : 0;
+}
+
+/** Cards in dashboard order. `order` is the custom order by host name; hosts it doesn't
+ *  list follow in config order. The sort is stable, so ties keep config order. */
+export function sortCards(cards: ServerCard[], sort: CardSort, order: readonly string[]): ServerCard[] {
+  const sorted = [...cards];
+  if (sort === 'name') {
+    return sorted.sort((a, b) =>
+      a.host.name.localeCompare(b.host.name, undefined, { numeric: true, sensitivity: 'base' })
+    );
+  }
+  if (sort === 'status') return sorted.sort((a, b) => statusRank(a) - statusRank(b));
+  const rank = new Map(order.map((name, i) => [name, i]));
+  const at = (c: ServerCard): number => rank.get(c.host.name) ?? order.length;
+  return sorted.sort((a, b) => at(a) - at(b));
+}
+
+/** The custom order after moving `run[from]` to index `to` of `run`, a run of cards on
+ *  screen (a section, or the whole grid). `all` is every card in screen order; cards
+ *  outside the run keep their places. */
+export function moveCard(all: ServerCard[], run: ServerCard[], from: number, to: number): string[] {
+  const moved = run[from].host.name;
+  const rest = run.filter((_, i) => i !== from).map((c) => c.host.name);
+  // Anchor on a neighbour in the run; names repeat, so skip the card's own name.
+  const next = rest.slice(to).find((n) => n !== moved);
+  const prev = rest.slice(0, to).reverse().find((n) => n !== moved);
+  const order = [...new Set(all.map((c) => c.host.name))].filter((n) => n !== moved);
+  const at =
+    next !== undefined ? order.indexOf(next) : prev !== undefined ? order.indexOf(prev) + 1 : order.length;
+  order.splice(at, 0, moved);
+  return order;
 }
 
 const byTagName = (a: string, b: string): number => {

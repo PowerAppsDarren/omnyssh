@@ -7,6 +7,8 @@ import {
   deriveTunnel,
   filterHosts,
   groupByTag,
+  moveCard,
+  sortCards,
   forwardListen,
   forwardTarget,
   metricStatus,
@@ -224,6 +226,55 @@ describe('group-by-tag — mirrors the TUI dashboard', () => {
 
   it('returns no sections for no cards', () => {
     expect(groupByTag([])).toEqual([]);
+  });
+});
+
+describe('dashboard sort and drag order', () => {
+  const FAILED: ConnectionStatusDto = { kind: 'failed', message: 'refused' };
+  const withStatus = (name: string, status: ConnectionStatusDto | undefined) =>
+    deriveCard(host(name), status, undefined, undefined);
+  const card = (name: string) => withStatus(name, CONNECTED);
+  const names = (cs: { host: HostDto }[]) => cs.map((c) => c.host.name);
+
+  it('custom puts listed hosts first and the rest in config order', () => {
+    const cards = [card('a'), card('b'), card('c'), card('d')];
+    expect(names(sortCards(cards, 'custom', ['c', 'gone', 'a']))).toEqual(['c', 'a', 'b', 'd']);
+    expect(names(sortCards(cards, 'custom', []))).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('name is case-insensitive and natural', () => {
+    const cards = [card('web-10'), card('Web-2'), card('db'), card('web-1')];
+    expect(names(sortCards(cards, 'name', []))).toEqual(['db', 'web-1', 'Web-2', 'web-10']);
+  });
+
+  it('status follows the TUI: connected, then not yet known, failed last', () => {
+    const cards = [
+      withStatus('down', FAILED),
+      withStatus('new', undefined),
+      withStatus('up', CONNECTED),
+      withStatus('dialing', { kind: 'connecting' }),
+      withStatus('up2', CONNECTED)
+    ];
+    expect(names(sortCards(cards, 'status', []))).toEqual(['up', 'up2', 'new', 'dialing', 'down']);
+  });
+
+  it('moves a card within the whole grid', () => {
+    const all = [card('a'), card('b'), card('c'), card('d')];
+    expect(moveCard(all, all, 3, 0)).toEqual(['d', 'a', 'b', 'c']);
+    expect(moveCard(all, all, 0, 3)).toEqual(['b', 'c', 'd', 'a']);
+    expect(moveCard(all, all, 1, 2)).toEqual(['a', 'c', 'b', 'd']);
+  });
+
+  it('moves a card within a run, leaving the cards outside it in place', () => {
+    const [a, x, b, y, c] = [card('a'), card('x'), card('b'), card('y'), card('c')];
+    const all = [a, x, b, y, c];
+    expect(moveCard(all, [a, b, c], 2, 0)).toEqual(['c', 'a', 'x', 'b', 'y']);
+    expect(moveCard(all, [a, b, c], 0, 2)).toEqual(['x', 'b', 'y', 'c', 'a']);
+  });
+
+  it('seeds the custom order from the sort on screen', () => {
+    const shown = sortCards([card('c'), card('a'), card('b')], 'name', []);
+    expect(moveCard(shown, shown, 2, 1)).toEqual(['a', 'c', 'b']);
   });
 });
 

@@ -29,4 +29,5 @@ export type IconName =
   | 'star'
   | 'tunnel'
   | 'layers'
-  | 'chevron';
+  | 'chevron'
+  | 'grip';

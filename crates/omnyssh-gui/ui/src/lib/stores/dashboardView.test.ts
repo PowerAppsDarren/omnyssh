@@ -14,6 +14,8 @@ async function fresh() {
   return (await import('./dashboardView')).dashboardView;
 }
 
+const DEFAULTS = { groupByTag: false, collapsed: [], sort: 'custom', order: [] };
+
 describe('dashboard view prefs', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -22,9 +24,9 @@ describe('dashboard view prefs', () => {
     backend.save.mockReset().mockResolvedValue(undefined);
   });
 
-  it('starts ungrouped with every section open', async () => {
+  it('starts ungrouped, unfolded, in the custom order', async () => {
     const view = await fresh();
-    expect(get(view)).toEqual({ groupByTag: false, collapsed: [] });
+    expect(get(view)).toEqual(DEFAULTS);
   });
 
   it('folds and unfolds sections', async () => {
@@ -36,11 +38,21 @@ describe('dashboard view prefs', () => {
     expect(get(view).collapsed).toEqual(['']);
   });
 
+  it('a stored order switches the sort to custom', async () => {
+    const view = await fresh();
+    view.setSort('name');
+    expect(get(view).sort).toBe('name');
+    view.setOrder(['db', 'web']);
+    expect(get(view)).toMatchObject({ sort: 'custom', order: ['db', 'web'] });
+  });
+
   it('mirrors changes to localStorage and initialises from it', async () => {
     const view = await fresh();
     view.toggleGroupByTag();
     view.toggleCollapsed('db');
-    const saved = { groupByTag: true, collapsed: ['db'] };
+    view.setOrder(['web', 'db']);
+    view.setSort('status');
+    const saved = { groupByTag: true, collapsed: ['db'], sort: 'status', order: ['web', 'db'] };
     expect(JSON.parse(localStorage.getItem(LOCAL_KEY) ?? '{}')).toEqual(saved);
     const reloaded = await fresh();
     expect(get(reloaded)).toEqual(saved);
@@ -49,20 +61,20 @@ describe('dashboard view prefs', () => {
   it('survives a corrupt mirror', async () => {
     localStorage.setItem(LOCAL_KEY, '{not json');
     const view = await fresh();
-    expect(get(view)).toEqual({ groupByTag: false, collapsed: [] });
+    expect(get(view)).toEqual(DEFAULTS);
   });
 
   it('writes the canonical tauri-plugin-store on a user change', async () => {
     const view = await fresh();
     view.toggleGroupByTag();
     await vi.waitFor(() => {
-      expect(backend.set).toHaveBeenCalledWith('dashboardView', { groupByTag: true, collapsed: [] });
+      expect(backend.set).toHaveBeenCalledWith('dashboardView', { ...DEFAULTS, groupByTag: true });
       expect(backend.save).toHaveBeenCalled();
     });
   });
 
   it('hydrate applies the stored value and refreshes the mirror', async () => {
-    const saved = { groupByTag: true, collapsed: ['web'] };
+    const saved = { groupByTag: true, collapsed: ['web'], sort: 'name', order: ['b', 'a'] };
     backend.get.mockResolvedValue(saved);
     const view = await fresh();
     await view.hydrate();
@@ -71,17 +83,22 @@ describe('dashboard view prefs', () => {
   });
 
   it('hydrate does not clobber a fresh user change', async () => {
-    backend.get.mockResolvedValue({ groupByTag: false, collapsed: ['web'] });
+    backend.get.mockResolvedValue({ groupByTag: false, collapsed: ['web'], sort: 'name' });
     const view = await fresh();
     view.toggleGroupByTag(); // user acts before hydrate resolves
     await view.hydrate();
-    expect(get(view)).toEqual({ groupByTag: true, collapsed: [] });
+    expect(get(view)).toEqual({ ...DEFAULTS, groupByTag: true });
   });
 
   it('hydrate falls back per field for invalid values', async () => {
-    backend.get.mockResolvedValue({ groupByTag: 'yes', collapsed: ['db', 1, 'db', null] });
+    backend.get.mockResolvedValue({
+      groupByTag: 'yes',
+      collapsed: ['db', 1, 'db', null],
+      sort: 'cpu',
+      order: 'web'
+    });
     const view = await fresh();
     await view.hydrate();
-    expect(get(view)).toEqual({ groupByTag: false, collapsed: ['db'] });
+    expect(get(view)).toEqual({ ...DEFAULTS, collapsed: ['db'] });
   });
 });

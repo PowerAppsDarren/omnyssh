@@ -6,7 +6,7 @@
   // (add/edit/delete, §4.1) lives here — there is no separate Hosts screen (§2).
   // Editing an SSH-config host adopts it into hosts.toml; the file itself is never
   // written, so only Delete stays manual-only.
-  import { tick } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { get } from 'svelte/store';
   import type { HostDto, HostInputDto } from '$lib/bindings';
   import { Surface, Chip, StatusDot, Icon, Button, statusToken } from '$lib/theme';
@@ -14,12 +14,14 @@
     serverCards,
     filterHosts,
     groupByTag,
+    sortCards,
+    moveCard,
     forwardListen,
     forwardTarget,
     QUICK_ACTIONS,
     type ServerCard
   } from './serverCard';
-  import { dashboardView } from '$lib/stores/dashboardView';
+  import { dashboardView, type CardSort } from '$lib/stores/dashboardView';
   import { spawnSession } from '$lib/stores/navigation';
   import { streamerMode, displayHostname } from '$lib/stores/streamer';
   import { hosts } from '$lib/stores/hosts';
@@ -36,6 +38,7 @@
   import { isGroupHotkey, isRefreshHotkey } from '$lib/stores/ui';
   import { beginKeySetup, dismissKeySetup } from '$lib/stores/keySetup';
   import { emptyForm, formFromHost } from './hostForm';
+  import { dropTarget, scrollParent, scrollStep, swallowClick } from './cardDrag';
   import HostEditor from './HostEditor.svelte';
   import Modal from '$lib/components/Modal.svelte';
 
@@ -49,9 +52,15 @@
   let searchOpen = $state(false);
   let searchInput = $state<HTMLInputElement>();
 
-  // Group-by-tag (mirrors the TUI's `g`) and the folded sections, persisted in
-  // `dashboardView` so they survive leaving the dashboard and restarts.
-  const visibleCards = $derived(filterHosts($serverCards, query));
+  // Sort, group-by-tag (mirrors the TUI's `g`) and the folded sections, persisted in
+  // `dashboardView` so they survive leaving the dashboard and restarts. Grouping keeps
+  // the sort inside each section. While a drag runs, the grid holds the order it started
+  // in (`frozen`), so a live status sort can't reshuffle cards under the pointer and a
+  // cancelled drag saves nothing.
+  let frozen = $state<string[] | null>(null);
+  const cardSort = $derived<CardSort>(frozen ? 'custom' : $dashboardView.sort);
+  const cardOrder = $derived(frozen ?? $dashboardView.order);
+  const visibleCards = $derived(sortCards(filterHosts($serverCards, query), cardSort, cardOrder));
   const groups = $derived($dashboardView.groupByTag ? groupByTag(visibleCards) : []);
 
   // View options popover. Focus moves in on open and back to the trigger on Escape or a
@@ -59,7 +68,25 @@
   let viewOpen = $state(false);
   let viewButton = $state<HTMLButtonElement>();
   let viewPanel = $state<HTMLElement>();
-  const viewChanged = $derived($dashboardView.groupByTag);
+  const viewChanged = $derived($dashboardView.groupByTag || $dashboardView.sort !== 'custom');
+
+  const SORTS: { id: CardSort; label: string }[] = [
+    { id: 'custom', label: 'Custom' },
+    { id: 'name', label: 'Name' },
+    { id: 'status', label: 'Status' }
+  ];
+
+  // Radio group keys: arrows pick the previous/next option and move focus with it.
+  async function onSortKey(e: KeyboardEvent): Promise<void> {
+    const step = ({ ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 } as Record<string, number>)[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const group = e.currentTarget as HTMLElement;
+    const at = SORTS.findIndex((o) => o.id === $dashboardView.sort);
+    dashboardView.setSort(SORTS[(at + step + SORTS.length) % SORTS.length].id);
+    await tick();
+    group.querySelector<HTMLElement>('[aria-checked="true"]')?.focus();
+  }
 
   async function openView(): Promise<void> {
     viewOpen = true;
@@ -76,6 +103,146 @@
     const target = e.target as Node;
     if (viewOpen && !viewPanel?.contains(target) && !viewButton?.contains(target)) closeView(true);
   }
+
+  // Drag to reorder, by a card's grip. Pointer events with capture, not HTML5 drag and
+  // drop, which Tauri's native file-drop handler swallows on Windows. A card moves only
+  // within its run (its section, or the whole grid). A move under a name or status sort
+  // turns it into the custom order, seeded from the screen, so the move is relative to
+  // what the user sees.
+  type Drag = {
+    run: ServerCard[];
+    grid: string | null;
+    from: number;
+    pointerId: number;
+    handle: HTMLElement;
+    cards: HTMLElement;
+    scroller: HTMLElement;
+    x0: number;
+    y0: number;
+    scroll0: number;
+    x: number;
+    y: number;
+    started: boolean;
+    to: number | null;
+  };
+  let drag: Drag | null = null;
+  let frame = 0;
+  // `grid` names the run: a section's tag key, or null for the ungrouped grid.
+  let lifted = $state<{ grid: string | null; index: number; dx: number; dy: number } | null>(null);
+  let marker = $state<{ left: number; top: number; width: number; height: number } | null>(null);
+  let announcement = $state('');
+
+  function gripDown(e: PointerEvent, run: ServerCard[], from: number, grid: string | null): void {
+    const handle = e.currentTarget as HTMLElement;
+    const cards = handle.closest<HTMLElement>('[data-cards]');
+    if (e.button !== 0 || drag || !cards) return;
+    e.preventDefault(); // no text selection
+    handle.setPointerCapture(e.pointerId);
+    const scroller = scrollParent(cards);
+    drag = {
+      run,
+      grid,
+      from,
+      pointerId: e.pointerId,
+      handle,
+      cards,
+      scroller,
+      x0: e.clientX,
+      y0: e.clientY,
+      scroll0: scroller.scrollTop,
+      x: e.clientX,
+      y: e.clientY,
+      started: false,
+      to: null
+    };
+  }
+
+  function gripMove(e: PointerEvent): void {
+    if (e.pointerId !== drag?.pointerId) return;
+    drag.x = e.clientX;
+    drag.y = e.clientY;
+    if (!drag.started) {
+      // A small threshold keeps a plain press from lifting the card.
+      if (Math.hypot(drag.x - drag.x0, drag.y - drag.y0) < 4) return;
+      drag.started = true;
+      frozen = sortCards($serverCards, cardSort, cardOrder).map((c) => c.host.name);
+      frame = requestAnimationFrame(edgeScroll);
+    }
+    track();
+  }
+
+  function gripUp(e: PointerEvent): void {
+    if (e.pointerId !== drag?.pointerId) return;
+    if (drag.started) {
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      track();
+      swallowClick();
+      const { run, from, to } = drag;
+      if (to !== null && to !== from) commitMove(run, from, to);
+    }
+    endDrag();
+  }
+
+  function endDrag(): void {
+    if (!drag) return;
+    cancelAnimationFrame(frame);
+    if (drag.handle.hasPointerCapture(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId);
+    drag = null;
+    frozen = null;
+    lifted = null;
+    marker = null;
+  }
+
+  // The lifted card follows the pointer, scroll included; the marker shows the landing gap.
+  function track(): void {
+    if (!drag) return;
+    const d = drag;
+    lifted = { grid: d.grid, index: d.from, dx: d.x - d.x0, dy: d.y - d.y0 + d.scroller.scrollTop - d.scroll0 };
+    const drop = dropTarget(d.cards, d.from, d.x, d.y);
+    d.to = drop?.to ?? null;
+    marker = drop && drop.to !== d.from ? drop.marker : null;
+  }
+
+  function edgeScroll(): void {
+    if (!drag) return;
+    if (!drag.handle.isConnected) return endDrag();
+    const step = scrollStep(drag.scroller, drag.cards, drag.y);
+    if (step) {
+      drag.scroller.scrollTop += step;
+      track();
+    }
+    frame = requestAnimationFrame(edgeScroll);
+  }
+
+  function commitMove(run: ServerCard[], from: number, to: number): void {
+    const all = sortCards($serverCards, cardSort, cardOrder);
+    dashboardView.setOrder(moveCard(all, run, from, to));
+    announcement = `${run[from].host.name} moved to position ${to + 1} of ${run.length}`;
+  }
+
+  // Keyboard reorder on the grip; focus follows the card to its new place.
+  async function gripKey(e: KeyboardEvent, run: ServerCard[], from: number): Promise<void> {
+    const last = run.length - 1;
+    const keys: Record<string, number> = {
+      ArrowUp: from - 1,
+      ArrowLeft: from - 1,
+      ArrowDown: from + 1,
+      ArrowRight: from + 1,
+      Home: 0,
+      End: last
+    };
+    const to = keys[e.key];
+    if (to === undefined || drag) return;
+    e.preventDefault();
+    if (to < 0 || to > last || to === from) return;
+    const cards = (e.currentTarget as HTMLElement).closest('[data-cards]');
+    commitMove(run, from, to);
+    await tick();
+    cards?.querySelectorAll<HTMLElement>('[data-grip]')[to]?.focus();
+  }
+
+  onDestroy(endDrag);
 
   function toggleSearch(): void {
     searchOpen = !searchOpen;
@@ -105,6 +272,13 @@
   // This listener only exists while the dashboard is mounted (the selector unmounts when
   // a session is active), so it never reaches terminal input.
   function onKeydown(e: KeyboardEvent): void {
+    if (drag) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        endDrag();
+      }
+      return;
+    }
     if (viewOpen && e.key === 'Escape') {
       closeView(true);
     } else if (isRefreshHotkey(e)) {
@@ -174,6 +348,10 @@
     'grid h-8 w-8 shrink-0 place-items-center rounded-full border border-default text-muted transition ' +
     'hover:border-strong hover:bg-accent hover:text-accent-fg ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
+  const seg =
+    'rounded-lg px-3 py-1.5 text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
+  const segState = (active: boolean): string =>
+    active ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-surface-inset hover:text-fg';
   const search =
     'min-w-0 rounded-full bg-surface-inset py-1.5 text-sm text-fg outline-none transition-all duration-200 ' +
     'placeholder:text-faint focus-visible:ring-2 focus-visible:ring-focus';
@@ -263,6 +441,31 @@
                 ></span>
               </button>
             </div>
+            <div class="border-t border-default pt-4">
+              <p id="dashboard-sort-label" class="mb-2 text-sm">Sort</p>
+              <div
+                role="radiogroup"
+                aria-labelledby="dashboard-sort-label"
+                tabindex="-1"
+                class="flex gap-1 rounded-xl bg-surface-inset p-1"
+                onkeydown={onSortKey}
+              >
+                {#each SORTS as option (option.id)}
+                  {@const on = $dashboardView.sort === option.id}
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    tabindex={on ? 0 : -1}
+                    class="{seg} flex-1 {segState(on)}"
+                    onclick={() => dashboardView.setSort(option.id)}
+                  >
+                    {option.label}
+                  </button>
+                {/each}
+              </div>
+              <p class="mt-2 text-xs text-muted">Drag a card's handle to set your own order.</p>
+            </div>
           </div>
         {/if}
       </div>
@@ -326,241 +529,281 @@
           </h2>
           <div
             id="dashboard-section-{g}"
+            data-cards
             class="{open ? 'grid' : 'hidden'} gap-4 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]"
           >
-            {#each group.cards as card, i (i)}
-              {@render serverCard(card)}
+            {#each group.cards as card, i (card.host)}
+              {@render serverCard(card, group.cards, i, key)}
             {/each}
           </div>
         </section>
       {/each}
     </div>
   {:else}
-    <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
-      {#each visibleCards as card, i (i)}
-        {@render serverCard(card)}
+    <div data-cards class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
+      {#each visibleCards as card, i (card.host)}
+        {@render serverCard(card, visibleCards, i, null)}
       {/each}
     </div>
   {/if}
+
+  <p id="dashboard-reorder-help" class="sr-only">
+    Drag, or press the arrow keys, Home or End, to move the card.
+  </p>
+  <p class="sr-only" aria-live="polite">{announcement}</p>
+  {#if marker}
+    <div
+      class="pointer-events-none fixed z-30 rounded-full bg-accent"
+      style:left="{marker.left}px"
+      style:top="{marker.top}px"
+      style:width="{marker.width}px"
+      style:height="{marker.height}px"
+    ></div>
+  {/if}
 </section>
 
-{#snippet serverCard(card: ServerCard)}
-  <Surface class="flex flex-col gap-4 p-5">
-    <!-- Identity, then the actions on their own row so the name and address
-         stay readable at any card width (a full row instead of sharing it). -->
-    <div class="flex flex-col gap-3">
-      <div class="flex min-w-0 items-start gap-2.5">
-        <span class="mt-1 shrink-0">
-          <StatusDot status={card.overall} size={9} label="{card.host.name} status" />
-        </span>
-        <div class="min-w-0">
-          <div class="flex min-w-0 items-center gap-2">
-            <span class="truncate font-medium" title={card.host.name}>{card.host.name}</span>
-            {#if card.host.source === 'sshConfig'}
-              <span
-                class="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
-                title="Imported from ~/.ssh/config — editing saves your own copy, which takes priority"
-              >
-                ssh config
-              </span>
-            {/if}
-            <!-- Auth-state reflection (tech-gui.md §4.2): key-only once password
-                 auth is disabled, otherwise a plain key badge when a key exists. -->
-            {#if card.host.passwordAuthDisabled}
-              <span
-                class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
-                title="Password authentication disabled — key only"
-              >
-                <Icon name="shield" size={10} />
-                key-only
-              </span>
-            {:else if card.host.hasKey}
-              <span
-                class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
-                title="Key authentication configured"
-              >
-                <Icon name="key" size={10} />
-                key
-              </span>
-            {/if}
-          </div>
-          <div class="truncate font-mono text-xs text-faint">
-            {card.host.user}@{displayHostname(card.host.hostname, $streamerMode)}:{card.host
-              .port}
-          </div>
-        </div>
-      </div>
-      <div class="flex flex-wrap items-center gap-1.5">
-        {#each QUICK_ACTIONS as action (action.id)}
-          <button
-            type="button"
-            class={pill}
-            title="{action.label} on {card.host.name}"
-            onclick={() => spawnSession(action.kind, card.host.name)}
-          >
-            <Icon name={action.kind} size={13} />
-            {action.label}
-          </button>
-        {/each}
-        <!-- Key setup stays manual-only even though edit no longer is: it records
-             `key_setup_date`/`password_auth_disabled` through `save_hosts`, which
-             keeps manual entries only — on an import that outcome would be dropped.
-             Adopt the host first, then set up its key. -->
-        {#if card.host.source === 'manual' && !card.host.hasKey}
-          <button
-            type="button"
-            class={iconBtn}
-            title="Set up an SSH key for {card.host.name}"
-            aria-label="Set up an SSH key for {card.host.name}"
-            onclick={() => setupKey(card.host)}
-          >
-            <Icon name="key" size={14} />
-          </button>
-        {/if}
-        <!-- Editing an import adopts it into hosts.toml (§4.2); ~/.ssh/config is
-             never written, so the action is offered whatever the source. Delete
-             stays manual-only: there is nothing of an import to remove here. -->
-        <button
-          type="button"
-          class={iconBtn}
-          title="Edit {card.host.name}"
-          aria-label="Edit {card.host.name}"
-          onclick={() => (dialog = { kind: 'edit', host: card.host })}
-        >
-          <Icon name="edit" size={14} />
-        </button>
-        {#if card.host.source === 'manual'}
-          <button
-            type="button"
-            class={iconBtn}
-            title="Delete {card.host.name}"
-            aria-label="Delete {card.host.name}"
-            onclick={() => (dialog = { kind: 'delete', host: card.host })}
-          >
-            <Icon name="trash" size={14} />
-          </button>
-        {/if}
-      </div>
-    </div>
-
-    <!-- Reachability, live metrics, or an offline state -->
-    {#if card.reachability}
-      <div
-        class="rounded-lg bg-surface-inset px-3 py-3 text-center text-xs"
-        style="color: {statusToken(card.overall)};"
-      >
-        {card.reachability}{card.host.monitorPort ? ` · port ${card.host.monitorPort}` : ''}
-      </div>
-    {:else if card.offline}
-      <div class="rounded-lg bg-surface-inset px-3 py-3 text-center text-xs text-faint">offline</div>
-    {:else}
-      <div class="space-y-2">
-        {#each card.metricRows as row (row.label)}
-          <div class="flex items-center gap-3">
-            <span class="w-9 shrink-0 text-[11px] uppercase tracking-wider text-faint">{row.label}</span>
-            <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-inset">
-              {#if row.percent != null}
-                <div
-                  class="h-full rounded-full"
-                  style="width: {Math.min(row.percent, 100)}%; background-color: {statusToken(row.status)};"
-                ></div>
+<!-- `run` is the card's section (or the whole grid), which a reorder stays within. -->
+{#snippet serverCard(card: ServerCard, run: ServerCard[], i: number, grid: string | null)}
+  {@const lift = lifted && lifted.grid === grid && lifted.index === i ? lifted : null}
+  <div
+    class="group/card relative {lift ? 'z-20 opacity-90' : ''}"
+    style:transform={lift ? `translate(${lift.dx}px, ${lift.dy}px)` : undefined}
+  >
+    <Surface class="flex h-full flex-col gap-4 p-5 {lift ? 'shadow-soft' : ''}">
+      <!-- Identity, then the actions on their own row so the name and address
+           stay readable at any card width (a full row instead of sharing it). -->
+      <div class="flex flex-col gap-3">
+        <div class="flex min-w-0 items-start gap-2.5">
+          <span class="mt-1 shrink-0">
+            <StatusDot status={card.overall} size={9} label="{card.host.name} status" />
+          </span>
+          <div class="min-w-0">
+            <div class="flex min-w-0 items-center gap-2">
+              <span class="truncate font-medium" title={card.host.name}>{card.host.name}</span>
+              {#if card.host.source === 'sshConfig'}
+                <span
+                  class="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+                  title="Imported from ~/.ssh/config — editing saves your own copy, which takes priority"
+                >
+                  ssh config
+                </span>
+              {/if}
+              <!-- Auth-state reflection (tech-gui.md §4.2): key-only once password
+                   auth is disabled, otherwise a plain key badge when a key exists. -->
+              {#if card.host.passwordAuthDisabled}
+                <span
+                  class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+                  title="Password authentication disabled — key only"
+                >
+                  <Icon name="shield" size={10} />
+                  key-only
+                </span>
+              {:else if card.host.hasKey}
+                <span
+                  class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+                  title="Key authentication configured"
+                >
+                  <Icon name="key" size={10} />
+                  key
+                </span>
               {/if}
             </div>
-            <span
-              class="w-10 shrink-0 text-right text-xs tabular-nums {row.percent == null
-                ? 'text-faint'
-                : 'text-muted'}"
-            >
-              {row.percent != null ? `${Math.round(row.percent)}%` : '—'}
-            </span>
+            <div class="truncate font-mono text-xs text-faint">
+              {card.host.user}@{displayHostname(card.host.hostname, $streamerMode)}:{card.host
+                .port}
+            </div>
           </div>
-        {/each}
-      </div>
-
-      {#if card.uptime || card.osInfo}
-        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-          {#if card.uptime}<span>up {card.uptime}</span>{/if}
-          {#if card.uptime && card.osInfo}<span class="text-faint">·</span>{/if}
-          {#if card.osInfo}<span class="min-w-0 truncate">{card.osInfo}</span>{/if}
-        </div>
-      {/if}
-
-      {#if card.topProcesses.length}
-        <ul class="space-y-1">
-          {#each card.topProcesses as proc, p (p)}
-            <li class="flex items-center justify-between gap-3 text-xs">
-              <span class="min-w-0 truncate font-mono text-muted">{proc.name}</span>
-              <span class="shrink-0 tabular-nums text-faint">{Math.round(proc.cpuPercent)}%</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    {/if}
-
-    <!-- Why it is down. It can name hosts and addresses, so streamer mode keeps it off screen.
-         Selectable: a refused host key comes with a command to copy. -->
-    {#if card.failure}
-      <p class="select-text break-words text-xs text-status-crit">
-        {$streamerMode ? 'Details hidden in streamer mode' : card.failure}
-      </p>
-    {/if}
-
-    <!-- Detected services -->
-    {#if card.detectedServices.length}
-      <div class="flex flex-wrap gap-1.5">
-        {#each card.detectedServices as service (service.kind)}
-          <Chip>{service.detail ? `${service.name} · ${service.detail}` : service.name}</Chip>
-        {/each}
-      </div>
-    {:else if card.servicesError}
-      <div class="text-xs text-faint">Service scan unavailable</div>
-    {/if}
-
-    <!-- Port forwarding: one tunnel per host carries every forward. -->
-    {#if card.tunnel}
-      {@const tunnel = card.tunnel}
-      <div class="space-y-2 border-t border-default pt-3">
-        <div class="flex items-center gap-2">
-          <span class="text-faint"><Icon name="tunnel" size={13} /></span>
-          <StatusDot status={tunnel.dot} size={7} label="{card.host.name} tunnel {tunnel.label}" />
-          <span class="text-xs text-muted">{tunnel.label}</span>
-          {#if tunnel.autostart}
-            <span
-              class="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
-              title="Starts when OmnySSH opens"
-            >
-              auto
-            </span>
-          {/if}
           <button
             type="button"
-            class="{pill} ml-auto"
-            title="{tunnel.running ? 'Stop' : 'Start'} the tunnel to {card.host.name}"
-            aria-label="{tunnel.running ? 'Stop' : 'Start'} the tunnel to {card.host.name}"
-            onclick={() => toggleTunnel(card.host.name, tunnel.running)}
+            data-grip
+            class="{iconBtn} -mr-2 -mt-1 ml-auto shrink-0 touch-none focus-visible:opacity-100 group-hover/card:opacity-100 {lift
+              ? 'cursor-grabbing opacity-100'
+              : 'cursor-grab opacity-0'}"
+            title="Drag to reorder"
+            aria-label="Move {card.host.name}"
+            aria-describedby="dashboard-reorder-help"
+            onpointerdown={(e) => gripDown(e, run, i, grid)}
+            onpointermove={gripMove}
+            onpointerup={gripUp}
+            onpointercancel={endDrag}
+          onlostpointercapture={endDrag}
+            onkeydown={(e) => gripKey(e, run, i)}
           >
-            <Icon name={tunnel.running ? 'close' : 'play'} size={12} />
-            {tunnel.running ? 'Stop' : 'Start'}
+            <Icon name="grip" size={14} />
           </button>
         </div>
-        <ul class="space-y-1">
-          {#each tunnel.forwards as forward, f (f)}
-            <li class="flex min-w-0 items-center gap-1.5 font-mono text-xs text-muted">
-              <span class="truncate">{forwardListen(forward, $streamerMode)}</span>
-              <span class="shrink-0 text-faint">→</span>
-              <span class="truncate">{forwardTarget(forward, $streamerMode)}</span>
-            </li>
+        <div class="flex flex-wrap items-center gap-1.5">
+          {#each QUICK_ACTIONS as action (action.id)}
+            <button
+              type="button"
+              class={pill}
+              title="{action.label} on {card.host.name}"
+              onclick={() => spawnSession(action.kind, card.host.name)}
+            >
+              <Icon name={action.kind} size={13} />
+              {action.label}
+            </button>
           {/each}
-        </ul>
-        <!-- The reason names hosts and addresses, so streamer mode keeps it off screen. -->
-        {#if tunnel.message}
-          <p class="break-words text-xs {tunnel.running ? 'text-faint' : 'text-status-crit'}">
-            {$streamerMode ? 'Details hidden in streamer mode' : tunnel.message}
-          </p>
-        {/if}
+          <!-- Key setup stays manual-only even though edit no longer is: it records
+               `key_setup_date`/`password_auth_disabled` through `save_hosts`, which
+               keeps manual entries only — on an import that outcome would be dropped.
+               Adopt the host first, then set up its key. -->
+          {#if card.host.source === 'manual' && !card.host.hasKey}
+            <button
+              type="button"
+              class={iconBtn}
+              title="Set up an SSH key for {card.host.name}"
+              aria-label="Set up an SSH key for {card.host.name}"
+              onclick={() => setupKey(card.host)}
+            >
+              <Icon name="key" size={14} />
+            </button>
+          {/if}
+          <!-- Editing an import adopts it into hosts.toml (§4.2); ~/.ssh/config is
+               never written, so the action is offered whatever the source. Delete
+               stays manual-only: there is nothing of an import to remove here. -->
+          <button
+            type="button"
+            class={iconBtn}
+            title="Edit {card.host.name}"
+            aria-label="Edit {card.host.name}"
+            onclick={() => (dialog = { kind: 'edit', host: card.host })}
+          >
+            <Icon name="edit" size={14} />
+          </button>
+          {#if card.host.source === 'manual'}
+            <button
+              type="button"
+              class={iconBtn}
+              title="Delete {card.host.name}"
+              aria-label="Delete {card.host.name}"
+              onclick={() => (dialog = { kind: 'delete', host: card.host })}
+            >
+              <Icon name="trash" size={14} />
+            </button>
+          {/if}
+        </div>
       </div>
-    {/if}
-  </Surface>
+
+      <!-- Reachability, live metrics, or an offline state -->
+      {#if card.reachability}
+        <div
+          class="rounded-lg bg-surface-inset px-3 py-3 text-center text-xs"
+          style="color: {statusToken(card.overall)};"
+        >
+          {card.reachability}{card.host.monitorPort ? ` · port ${card.host.monitorPort}` : ''}
+        </div>
+      {:else if card.offline}
+        <div class="rounded-lg bg-surface-inset px-3 py-3 text-center text-xs text-faint">offline</div>
+      {:else}
+        <div class="space-y-2">
+          {#each card.metricRows as row (row.label)}
+            <div class="flex items-center gap-3">
+              <span class="w-9 shrink-0 text-[11px] uppercase tracking-wider text-faint">{row.label}</span>
+              <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-inset">
+                {#if row.percent != null}
+                  <div
+                    class="h-full rounded-full"
+                    style="width: {Math.min(row.percent, 100)}%; background-color: {statusToken(row.status)};"
+                  ></div>
+                {/if}
+              </div>
+              <span
+                class="w-10 shrink-0 text-right text-xs tabular-nums {row.percent == null
+                  ? 'text-faint'
+                  : 'text-muted'}"
+              >
+                {row.percent != null ? `${Math.round(row.percent)}%` : '—'}
+              </span>
+            </div>
+          {/each}
+        </div>
+
+        {#if card.uptime || card.osInfo}
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+            {#if card.uptime}<span>up {card.uptime}</span>{/if}
+            {#if card.uptime && card.osInfo}<span class="text-faint">·</span>{/if}
+            {#if card.osInfo}<span class="min-w-0 truncate">{card.osInfo}</span>{/if}
+          </div>
+        {/if}
+
+        {#if card.topProcesses.length}
+          <ul class="space-y-1">
+            {#each card.topProcesses as proc, p (p)}
+              <li class="flex items-center justify-between gap-3 text-xs">
+                <span class="min-w-0 truncate font-mono text-muted">{proc.name}</span>
+                <span class="shrink-0 tabular-nums text-faint">{Math.round(proc.cpuPercent)}%</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+
+      <!-- Why it is down. It can name hosts and addresses, so streamer mode keeps it off screen.
+           Selectable: a refused host key comes with a command to copy. -->
+      {#if card.failure}
+        <p class="select-text break-words text-xs text-status-crit">
+          {$streamerMode ? 'Details hidden in streamer mode' : card.failure}
+        </p>
+      {/if}
+
+      <!-- Detected services -->
+      {#if card.detectedServices.length}
+        <div class="flex flex-wrap gap-1.5">
+          {#each card.detectedServices as service (service.kind)}
+            <Chip>{service.detail ? `${service.name} · ${service.detail}` : service.name}</Chip>
+          {/each}
+        </div>
+      {:else if card.servicesError}
+        <div class="text-xs text-faint">Service scan unavailable</div>
+      {/if}
+
+      <!-- Port forwarding: one tunnel per host carries every forward. -->
+      {#if card.tunnel}
+        {@const tunnel = card.tunnel}
+        <div class="space-y-2 border-t border-default pt-3">
+          <div class="flex items-center gap-2">
+            <span class="text-faint"><Icon name="tunnel" size={13} /></span>
+            <StatusDot status={tunnel.dot} size={7} label="{card.host.name} tunnel {tunnel.label}" />
+            <span class="text-xs text-muted">{tunnel.label}</span>
+            {#if tunnel.autostart}
+              <span
+                class="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
+                title="Starts when OmnySSH opens"
+              >
+                auto
+              </span>
+            {/if}
+            <button
+              type="button"
+              class="{pill} ml-auto"
+              title="{tunnel.running ? 'Stop' : 'Start'} the tunnel to {card.host.name}"
+              aria-label="{tunnel.running ? 'Stop' : 'Start'} the tunnel to {card.host.name}"
+              onclick={() => toggleTunnel(card.host.name, tunnel.running)}
+            >
+              <Icon name={tunnel.running ? 'close' : 'play'} size={12} />
+              {tunnel.running ? 'Stop' : 'Start'}
+            </button>
+          </div>
+          <ul class="space-y-1">
+            {#each tunnel.forwards as forward, f (f)}
+              <li class="flex min-w-0 items-center gap-1.5 font-mono text-xs text-muted">
+                <span class="truncate">{forwardListen(forward, $streamerMode)}</span>
+                <span class="shrink-0 text-faint">→</span>
+                <span class="truncate">{forwardTarget(forward, $streamerMode)}</span>
+              </li>
+            {/each}
+          </ul>
+          <!-- The reason names hosts and addresses, so streamer mode keeps it off screen. -->
+          {#if tunnel.message}
+            <p class="break-words text-xs {tunnel.running ? 'text-faint' : 'text-status-crit'}">
+              {$streamerMode ? 'Details hidden in streamer mode' : tunnel.message}
+            </p>
+          {/if}
+        </div>
+      {/if}
+    </Surface>
+  </div>
 {/snippet}
 
 {#if dialog?.kind === 'add'}

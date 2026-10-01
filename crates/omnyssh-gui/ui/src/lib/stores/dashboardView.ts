@@ -1,19 +1,27 @@
 import { writable } from 'svelte/store';
 
-// Dashboard organisation prefs: group-by-tag and the folded sections. Like the sidebar
-// collapse (./ui.ts) they survive restarts: persisted canonically via
-// tauri-plugin-store, mirrored to localStorage for first paint and for a plain
-// browser (Playwright, vite preview).
+// Dashboard organisation prefs: grouping, folded sections, sort and the order cards were
+// dragged into. Like the sidebar collapse (./ui.ts) they survive restarts: persisted
+// canonically via tauri-plugin-store, mirrored to localStorage for first paint and for a
+// plain browser (Playwright, vite preview).
 const LOCAL_KEY = 'omnyssh-dashboard-view';
 const STORE_FILE = 'settings.json';
 const STORE_KEY = 'dashboardView';
+
+/** How the dashboard orders cards: the user's own order, by name, or by status. */
+export type CardSort = 'custom' | 'name' | 'status';
 
 interface DashboardView {
   /** Split the grid into one section per first tag. */
   groupByTag: boolean;
   /** Folded sections by tag; '' is "Untagged", which no trimmed tag can be. */
   collapsed: string[];
+  sort: CardSort;
+  /** Host names in the custom order. */
+  order: string[];
 }
+
+const SORTS: readonly CardSort[] = ['custom', 'name', 'status'];
 
 const strings = (v: unknown): string[] =>
   Array.isArray(v) ? [...new Set(v.filter((s): s is string => typeof s === 'string'))] : [];
@@ -23,7 +31,9 @@ function parseView(raw: unknown): DashboardView {
   const v = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
   return {
     groupByTag: typeof v.groupByTag === 'boolean' ? v.groupByTag : false,
-    collapsed: strings(v.collapsed)
+    collapsed: strings(v.collapsed),
+    sort: SORTS.find((s) => s === v.sort) ?? 'custom',
+    order: strings(v.order)
   };
 }
 
@@ -87,6 +97,9 @@ function createDashboardView() {
         },
         true
       ),
+    setSort: (sort: CardSort) => apply({ ...current, sort }, true),
+    /** Store a custom order, which is then what the dashboard shows. */
+    setOrder: (order: string[]) => apply({ ...current, sort: 'custom', order }, true),
     /** Reconcile with the canonical tauri-plugin-store value (called from the layout's onMount). */
     async hydrate(): Promise<void> {
       try {
