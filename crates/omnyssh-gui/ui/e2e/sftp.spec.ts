@@ -530,7 +530,71 @@ test('drag and drop: a remote folder dropped on the local pane downloads it whol
   await expect(remotePane.getByText('config.yml')).toBeVisible();
 });
 
-test('drag and drop: files and folders dropped from the OS onto the remote pane upload', async ({
+// A drop from the OS file manager, as Tauri delivers it.
+async function osDrop(
+  page: Page,
+  paths: string[],
+  position: { x: number; y: number }
+): Promise<void> {
+  await page.evaluate(
+    ({ paths, position }) => {
+      const fire = (window as unknown as { __fireEvent: (e: string, p: unknown) => void }).__fireEvent;
+      fire('tauri://drag-drop', { paths, position });
+    },
+    { paths, position }
+  );
+}
+
+function uploads(page: Page): Promise<string[]> {
+  return page.evaluate(() => (window as unknown as { __uploads: string[] }).__uploads);
+}
+
+// Each webview reports the drop position in its own pixels and Tauri passes it on as is:
+// physical on Windows (WebView2), logical on macOS (WKWebView) and Linux (WebKitGTK).
+const PLATFORMS = [
+  {
+    name: 'Windows',
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0 Safari/537.36',
+    physical: true
+  },
+  {
+    name: 'macOS',
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)',
+    physical: false
+  },
+  {
+    name: 'Linux',
+    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko)',
+    physical: false
+  }
+];
+
+for (const platform of PLATFORMS) {
+  test.describe(`on ${platform.name} at 2x`, () => {
+    test.use({ userAgent: platform.userAgent, deviceScaleFactor: 2 });
+
+    test('files and folders dropped from the OS onto the remote pane upload', async ({ page }) => {
+      await boot(page);
+      await page.getByTitle('files on web-1').click();
+      const remotePane = page.getByRole('region', { name: 'web-1' });
+      await expect(remotePane.getByText('config.yml')).toBeVisible();
+
+      const at = await centre(remotePane.getByText('config.yml'));
+      const scale = platform.physical ? 2 : 1;
+      await osDrop(page, ['/tmp/photo.png', '/tmp/album/'], { x: at.x * scale, y: at.y * scale });
+
+      // One transfer at a time: the folder goes once the file is done.
+      await expect(page.getByLabel('transfer progress')).toBeVisible();
+      expect(await uploads(page)).toEqual(['/photo.png']);
+      await complete(page);
+      await expect.poll(() => uploads(page)).toEqual(['/photo.png', '/album']);
+    });
+  });
+}
+
+test('drag and drop: a drive or volume dropped from the OS is refused, the rest uploads', async ({
   page
 }) => {
   await boot(page);
@@ -538,23 +602,29 @@ test('drag and drop: files and folders dropped from the OS onto the remote pane 
   const remotePane = page.getByRole('region', { name: 'web-1' });
   await expect(remotePane.getByText('config.yml')).toBeVisible();
 
-  const box = await remotePane.getByText('config.yml').boundingBox();
-  if (!box) throw new Error('remote pane not laid out');
-  const position = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  await page.evaluate(
-    ({ position }) => {
-      const fire = (window as unknown as { __fireEvent: (e: string, p: unknown) => void }).__fireEvent;
-      fire('tauri://drag-drop', { paths: ['/tmp/photo.png', '/tmp/album/'], position });
-    },
-    { position }
-  );
-
-  // One transfer at a time: the folder goes once the file is done.
+  const at = await centre(remotePane.getByText('config.yml'));
+  await osDrop(page, ['/', 'D:\\', '/tmp/photo.png'], at);
+  await expect(page.getByText('A drive or volume cannot be uploaded.')).toBeVisible();
   await expect(page.getByLabel('transfer progress')).toBeVisible();
-  const uploads = () => page.evaluate(() => (window as unknown as { __uploads: string[] }).__uploads);
-  expect(await uploads()).toEqual(['/photo.png']);
-  await page.evaluate(() => (window as unknown as { __completeTransfer: () => void }).__completeTransfer());
-  await expect.poll(uploads).toEqual(['/photo.png', '/album']);
+  expect(await uploads(page)).toEqual(['/photo.png']);
+});
+
+test('an OS drop reaches only the tab on show (§2 exactly-one-active)', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  await expect(page.getByRole('region', { name: 'web-1' }).getByText('config.yml')).toBeVisible();
+  await page.getByRole('button', { name: 'Dashboard', exact: true }).click();
+  await page.getByTitle('files on db-1').click();
+  const dbRemote = page.getByRole('region', { name: 'db-1' });
+  await expect(dbRemote.getByText('config.yml')).toBeVisible();
+
+  // The hidden web-1 tab hears the drop too, and must leave it to db-1.
+  await osDrop(page, ['/tmp/photo.png'], await centre(dbRemote.getByText('config.yml')));
+  await expect(page.getByLabel('transfer progress')).toBeVisible();
+  expect(await uploads(page)).toEqual(['/photo.png']);
+  await page.getByRole('button', { name: 'web-1 · sftp', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'web-1' })).toBeVisible();
+  await expect(page.getByLabel('transfer progress').filter({ visible: true })).toHaveCount(0);
 });
 
 test('an inactive tab’s modal never overlays another entity (§2 exactly-one-active)', async ({

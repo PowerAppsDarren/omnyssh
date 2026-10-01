@@ -26,6 +26,7 @@
     type PaneSide
   } from '$lib/stores/sftp';
   import { lastError } from '$lib/stores/notifications';
+  import { dropPoint } from '$lib/platform';
   import {
     sftpOpen,
     sftpList,
@@ -392,9 +393,9 @@
     if (e.key === 'Escape' && drag) drag = null;
   }
 
-  // Drops from the OS (Explorer, Finder): Tauri reports physical pixels and absolute
-  // paths. Only the remote pane accepts them; every SFTP view stays mounted, so only
-  // the visible one reacts.
+  // Drops from the OS file manager, with absolute paths and a position in the webview's
+  // own pixels. Only the remote pane accepts them; every SFTP view stays mounted, so
+  // only the visible one reacts.
   onMount(() => {
     let unlisten: (() => void) | undefined;
     let webview: ReturnType<typeof getCurrentWebview>;
@@ -412,8 +413,8 @@
           osDrop = null;
           return;
         }
-        const ratio = window.devicePixelRatio || 1;
-        const target = dropTargetAt(p.position.x / ratio, p.position.y / ratio);
+        const at = dropPoint(p.position);
+        const target = dropTargetAt(at.x, at.y);
         const remote = target?.side === 'remote' ? target : null;
         if (p.type === 'drop') {
           osDrop = null;
