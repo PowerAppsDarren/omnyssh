@@ -153,6 +153,12 @@ export async function sftpPreview(sessionId: number, path: string): Promise<void
   if (res.status === 'error') throw new Error(res.error.message);
 }
 
+/** Cancel the session's running transfer; its `sftp-op-done` says it was cancelled. */
+export async function sftpCancel(sessionId: number): Promise<void> {
+  const res = await commands.sftpCancel(sessionId);
+  if (res.status === 'error') throw new Error(res.error.message);
+}
+
 /** Close an SFTP session and its connection. Idempotent for an already-closed id. */
 export async function sftpClose(sessionId: number): Promise<void> {
   const res = await commands.sftpClose(sessionId);

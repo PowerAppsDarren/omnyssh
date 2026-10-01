@@ -34,6 +34,9 @@ interface Preview {
   content: string;
 }
 
+/** The `sftp-op-done` error of a cancelled transfer, in the core's words. */
+export const CANCELLED = 'Transfer cancelled';
+
 // A mutating op awaiting its `sftp-op-done`. The core processes commands sequentially,
 // so op-done events arrive in issue order — this FIFO correlates each op-done to the op
 // that produced it (the contract carries no op id, §4.3). `refresh` is the pane whose

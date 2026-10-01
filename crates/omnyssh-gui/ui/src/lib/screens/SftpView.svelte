@@ -22,6 +22,7 @@
     formatBytes,
     rootOf,
     baseName,
+    CANCELLED,
     type PaneSide
   } from '$lib/stores/sftp';
   import { lastError } from '$lib/stores/notifications';
@@ -35,6 +36,7 @@
     sftpRename,
     sftpDelete,
     sftpPreview,
+    sftpCancel,
     listLocalDir,
     listLocalRoots,
     previewLocalFile
@@ -50,8 +52,9 @@
   // Queued mutations, dispatched one at a time (see the pump effect). The core's SFTP
   // command channel is bounded and drops on overflow, so a large batch fired at once
   // would silently lose commands and wedge the op-done FIFO; gating on the previous
-  // op's completion keeps at most one command outstanding.
-  let outbox = $state<Array<() => void>>([]);
+  // op's completion keeps at most one command outstanding. Transfers are flagged so a
+  // cancel drops the queued ones too.
+  let outbox = $state<Array<{ transfer: boolean; run: () => void }>>([]);
 
   // A pending mkdir/rename input. Rename carries the entry being renamed.
   let prompt = $state<{ kind: 'mkdir' | 'rename'; value: string; target?: FileEntryDto } | null>(
@@ -180,7 +183,7 @@
     if (!view || view.pending.length > 0 || outbox.length === 0) return;
     const [next, ...rest] = outbox;
     outbox = rest;
-    next();
+    next.run();
   });
 
   // Re-list the affected pane once every queued mutation has drained — the FS changed
@@ -227,14 +230,23 @@
     };
   }
 
-  function enqueue(...actions: Array<() => void>): void {
+  function enqueue(actions: Array<() => void>, transfer = false): void {
     if (!actions.length) return;
     // Clear the prior batch's lingering error only when starting from idle. Piling onto a
     // batch that is still draining must not wipe a failure it already recorded (that error
     // stays visible until the next fresh action — see applyOpDone).
     const draining = outbox.length > 0 || (view?.pending.length ?? 0) > 0;
     if (backendId != null && !draining) sftp.clearError(backendId);
-    outbox = [...outbox, ...actions];
+    outbox = [...outbox, ...actions.map((run) => ({ transfer, run }))];
+  }
+
+  // Stops the running transfer and drops the queued ones; the core cancels what was
+  // sent before this, so a transfer started afterwards runs.
+  function cancelTransfers(): void {
+    const id = backendId;
+    if (id == null) return;
+    outbox = outbox.filter((op) => !op.transfer);
+    void sftpCancel(id).catch((err) => lastError.set(errMsg(err)));
   }
 
   // `dir` defaults to the other pane's current directory; a drop onto a folder row
@@ -243,10 +255,11 @@
     const id = backendId;
     if (id == null || !view || dir == null) return;
     enqueue(
-      ...files.map((file) => () => {
+      files.map((file) => () => {
         sftp.pushOp(id, { kind: 'upload', name: file.name, refresh: 'remote' });
         void sftpUpload(id, file.path, joinRemote(dir, file.name)).catch(onDispatchError(id));
-      })
+      }),
+      true
     );
   }
 
@@ -254,10 +267,11 @@
     const id = backendId;
     if (id == null || !view || dir == null) return;
     enqueue(
-      ...files.map((file) => () => {
+      files.map((file) => () => {
         sftp.pushOp(id, { kind: 'download', name: file.name, refresh: 'local' });
         void sftpDownload(id, joinLocal(dir, file.name), file.path).catch(onDispatchError(id));
-      })
+      }),
+      true
     );
   }
 
@@ -401,7 +415,7 @@
     const id = backendId;
     if (id == null) return;
     enqueue(
-      ...remoteMarked.map((entry) => () => {
+      remoteMarked.map((entry) => () => {
         sftp.pushOp(id, { kind: 'delete', name: entry.name, refresh: 'remote' });
         void sftpDelete(id, entry.path).catch(onDispatchError(id));
       })
@@ -423,16 +437,20 @@
     if (!value) return;
     const dir = view.remote.path;
     if (prompt.kind === 'mkdir') {
-      enqueue(() => {
-        sftp.pushOp(id, { kind: 'mkdir', refresh: 'remote' });
-        void sftpMkdir(id, joinRemote(dir, value)).catch(onDispatchError(id));
-      });
+      enqueue([
+        () => {
+          sftp.pushOp(id, { kind: 'mkdir', refresh: 'remote' });
+          void sftpMkdir(id, joinRemote(dir, value)).catch(onDispatchError(id));
+        }
+      ]);
     } else if (prompt.target) {
       const from = prompt.target.path;
-      enqueue(() => {
-        sftp.pushOp(id, { kind: 'rename', refresh: 'remote' });
-        void sftpRename(id, from, joinRemote(dir, value)).catch(onDispatchError(id));
-      });
+      enqueue([
+        () => {
+          sftp.pushOp(id, { kind: 'rename', refresh: 'remote' });
+          void sftpRename(id, from, joinRemote(dir, value)).catch(onDispatchError(id));
+        }
+      ]);
     }
     prompt = null;
   }
@@ -620,10 +638,22 @@
             {transfer.kind === 'upload' ? 'Uploading' : 'Downloading'}
             <span class="font-mono text-fg">{transfer.name}</span>
           </span>
-          <span class="shrink-0 tabular-nums">
-            {formatBytes(transfer.done)}{transfer.total > 0
-              ? ` / ${formatBytes(transfer.total)}`
-              : ''}
+          <span class="flex shrink-0 items-center gap-3">
+            <span class="tabular-nums">
+              {formatBytes(transfer.done)}{transfer.total > 0
+                ? ` / ${formatBytes(transfer.total)}`
+                : ''}
+            </span>
+            <button
+              type="button"
+              class={toolBtn}
+              title="Cancel transfer"
+              aria-label="Cancel transfer"
+              onclick={cancelTransfers}
+            >
+              <Icon name="close" size={13} />
+              Cancel
+            </button>
           </span>
         </div>
         <div class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface-inset">
@@ -634,7 +664,11 @@
         </div>
       </div>
     {:else if view.error}
-      <div class="shrink-0 border-t border-default px-4 py-2 text-xs text-status-crit">
+      <!-- A cancel the user asked for is news, not a failure. -->
+      <div
+        class="shrink-0 border-t border-default px-4 py-2 text-xs
+          {view.error === CANCELLED ? 'text-muted' : 'text-status-crit'}"
+      >
         {view.error}
       </div>
     {/if}

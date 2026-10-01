@@ -23,7 +23,7 @@ async function boot(page: Page, windows = false): Promise<void> {
       let nextTransfer = 0;
       // A pending transfer holds until the test fires its op-done, so the progress bar
       // is observable mid-flight (the core is sequential — one transfer at a time).
-      const completions: Array<() => void> = [];
+      const completions: Array<{ sessionId: number; finish: () => void }> = [];
 
       type Entry = {
         name: string;
@@ -53,11 +53,13 @@ async function boot(page: Page, windows = false): Promise<void> {
               { name: 'work', path: '/home/user/work', size: 0, isDir: true }
             ]
           };
-      // Where each transfer was sent, for the test to read back.
+      // Where each transfer was sent, and which sessions cancelled, for the test to read back.
       const downloads: string[] = [];
       const uploads: string[] = [];
+      const cancels: number[] = [];
       (win as { __downloads?: string[] }).__downloads = downloads;
       (win as { __uploads?: string[] }).__uploads = uploads;
+      (win as { __cancels?: number[] }).__cancels = cancels;
       (win as { __fireEvent?: unknown }).__fireEvent = (event: string, payload: unknown) =>
         fireEvent(event, payload);
       const remote: Record<string, Entry[]> = {
@@ -93,7 +95,8 @@ async function boot(page: Page, windows = false): Promise<void> {
       }
 
       // Fire the oldest still-pending transfer's op-done (deterministic completion).
-      (win as { __completeTransfer?: () => void }).__completeTransfer = () => completions.shift()?.();
+      (win as { __completeTransfer?: () => void }).__completeTransfer = () =>
+        completions.shift()?.finish();
 
       (win as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
         // `getCurrentWebview()` reads these to scope OS drag-drop listeners.
@@ -138,9 +141,12 @@ async function boot(page: Page, windows = false): Promise<void> {
               uploads.push(dest);
               const tid = ++nextTransfer;
               setTimeout(() => fireEvent('transfer-progress', { sessionId, transferId: tid, done: 4, total: 8 }), 0);
-              completions.push(() => {
-                addFile(remote, parentOf(dest), baseName(dest));
-                fireEvent('sftp-op-done', { sessionId, ok: true });
+              completions.push({
+                sessionId,
+                finish: () => {
+                  addFile(remote, parentOf(dest), baseName(dest));
+                  fireEvent('sftp-op-done', { sessionId, ok: true });
+                }
               });
               return Promise.resolve(null);
             }
@@ -149,10 +155,27 @@ async function boot(page: Page, windows = false): Promise<void> {
               downloads.push(dest);
               const tid = ++nextTransfer;
               setTimeout(() => fireEvent('transfer-progress', { sessionId, transferId: tid, done: 2, total: 8 }), 0);
-              completions.push(() => {
-                addFile(local, parentOf(dest), baseName(dest));
-                fireEvent('sftp-op-done', { sessionId, ok: true });
+              completions.push({
+                sessionId,
+                finish: () => {
+                  addFile(local, parentOf(dest), baseName(dest));
+                  fireEvent('sftp-op-done', { sessionId, ok: true });
+                }
               });
+              return Promise.resolve(null);
+            }
+            case 'sftp_cancel': {
+              // As the core does: the session's running transfer stops and says so.
+              const { sessionId } = args as { sessionId: number };
+              cancels.push(sessionId);
+              const i = completions.findIndex((c) => c.sessionId === sessionId);
+              if (i >= 0) {
+                completions.splice(i, 1);
+                setTimeout(
+                  () => fireEvent('sftp-op-done', { sessionId, ok: false, error: 'Transfer cancelled' }),
+                  0
+                );
+              }
               return Promise.resolve(null);
             }
             case 'sftp_close':
@@ -225,6 +248,31 @@ test('round-trip: upload a local file to the remote, then download a remote file
   await expect(page.getByLabel('transfer progress')).toBeVisible();
   await page.evaluate(() => (window as unknown as { __completeTransfer: () => void }).__completeTransfer());
   await expect(localPane.getByText('config.yml')).toBeVisible();
+});
+
+test('Cancel stops the running transfer and drops the queued ones', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(localPane.getByText('notes.txt')).toBeVisible();
+  await expect(remotePane.getByText('config.yml')).toBeVisible();
+
+  // A file, then a folder queued behind it.
+  await localPane.getByRole('checkbox', { name: 'Mark notes.txt' }).click();
+  await localPane.getByRole('checkbox', { name: 'Mark work' }).click();
+  await page.getByRole('button', { name: 'Upload' }).click();
+  const strip = page.getByLabel('transfer progress');
+  await expect(strip).toBeVisible();
+
+  await strip.getByRole('button', { name: 'Cancel transfer' }).click();
+  await expect(strip).toHaveCount(0);
+  await expect(page.getByText('Transfer cancelled')).toBeVisible();
+  const sent = await page.evaluate(() => {
+    const w = window as unknown as { __uploads: string[]; __cancels: number[] };
+    return { uploads: w.__uploads, cancels: w.__cancels };
+  });
+  expect(sent).toEqual({ uploads: ['/notes.txt'], cancels: [1] });
 });
 
 test('the panes show modification times', async ({ page }) => {
