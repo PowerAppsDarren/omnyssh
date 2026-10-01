@@ -431,7 +431,8 @@ impl HostListView {
 
     /// Moves the selection one step in `dir` over a grid of `cols` columns.
     /// Up/down jump to the same column of the previous/next card row, across
-    /// section headers, clamping to shorter rows.
+    /// section headers, clamping to shorter rows. Past the top or bottom row
+    /// they land on the first or last card.
     pub fn navigate(&mut self, dir: &NavDir, cols: usize) {
         let len = self.filtered_indices.len();
         if len == 0 {
@@ -460,7 +461,8 @@ impl HostListView {
                 };
                 match target.and_then(|t| rows.get(t)) {
                     Some(row) => (row.start + col).min(row.end - 1),
-                    None => sel,
+                    None if matches!(dir, NavDir::Up) => 0,
+                    None => len - 1,
                 }
             }
         };
@@ -1627,7 +1629,7 @@ mod tests {
         view.navigate(&NavDir::Down, 2);
         assert_eq!(view.selected, 4); // u1
         view.navigate(&NavDir::Down, 2);
-        assert_eq!(view.selected, 4); // last row: stays
+        assert_eq!(view.selected, 5); // past the last row: the last card
     }
 
     #[test]
@@ -1666,6 +1668,12 @@ mod tests {
         view.selected = 2;
         view.navigate(&NavDir::Down, 3);
         assert_eq!(view.selected, 4); // clamped to the shorter last row
+        view.selected = 3;
+        view.navigate(&NavDir::Down, 3);
+        assert_eq!(view.selected, 4); // past the last row: the last card
+        view.selected = 2;
+        view.navigate(&NavDir::Up, 3);
+        assert_eq!(view.selected, 0); // past the first row: the first card
     }
 
     #[test]
