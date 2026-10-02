@@ -194,9 +194,12 @@
     if (id == null || !view || view.pending.length > 0 || outbox.length > 0 || !view.refresh) return;
     const target = view.refresh;
     sftp.clearRefresh(id);
-    if (target === 'local' || target === 'both') void refreshLocal(view.local.path);
-    // A remote listing asked for meanwhile waited in the core's queue behind the
-    // transfer, so it shows the change; the old path again would take the pane back.
+    // A listing asked for meanwhile is where the user went; the old path again would
+    // take the pane back. A remote one also waited in the core's queue behind the
+    // transfer, so it shows the change.
+    if ((target === 'local' || target === 'both') && !view.local.loading) {
+      void refreshLocal(view.local.path);
+    }
     if ((target === 'remote' || target === 'both') && !view.remote.loading) {
       refreshRemote(view.remote.path);
     }

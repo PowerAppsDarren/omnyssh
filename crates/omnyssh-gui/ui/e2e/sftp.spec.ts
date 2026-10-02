@@ -869,6 +869,25 @@ test('a single-root system shows no drive switch', async ({ page }) => {
   await expect(localPane.getByRole('combobox', { name: 'Local drive' })).toHaveCount(0);
 });
 
+test('Windows: a slow drive opened during a download stays open once it is done', async ({
+  page
+}) => {
+  await boot(page, { windows: true });
+  await page.getByTitle('files on web-1').click();
+  const localPane = page.getByRole('region', { name: 'Local' });
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(localPane.getByText('notes.txt')).toBeVisible();
+  await remotePane.getByRole('checkbox', { name: 'Mark config.yml' }).click();
+  await page.getByRole('button', { name: 'Download' }).click();
+  await expect(page.getByLabel('transfer progress')).toBeVisible();
+
+  // Z: is still listing when the download ends.
+  await localPane.getByRole('combobox', { name: 'Local drive' }).selectOption('Z:\\');
+  await complete(page);
+  await expect(localPane.getByText('Share')).toBeVisible();
+  await expect(localPane.getByText('notes.txt')).toHaveCount(0);
+});
+
 test('Windows: a slow drive left for another does not take the pane back', async ({ page }) => {
   await boot(page, { windows: true });
   await page.getByTitle('files on web-1').click();
