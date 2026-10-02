@@ -249,10 +249,15 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, view: &ViewState)
                     } else {
                         0
                     };
-                    Line::from(vec![Span::styled(
-                        format!(" Transferring: {}  {}% ", filename, pct),
-                        hint_style,
-                    )])
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" Transferring: {}  {}% ", filename, pct),
+                            hint_style,
+                        ),
+                        sep!(),
+                        key!("Esc"),
+                        hint!("cancel"),
+                    ])
                 }
             };
             frame.render_widget(

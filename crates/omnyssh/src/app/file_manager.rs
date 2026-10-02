@@ -190,7 +190,12 @@ pub struct FileManagerView {
     pub op_error: Option<String>,
     /// How many of them failed.
     pub op_failures: usize,
+    /// Esc asked the running transfer to stop, and it has not reported in yet.
+    pub cancelling: bool,
 }
+
+/// The core's error for a transfer that was cancelled.
+pub(crate) const CANCELLED: &str = "Transfer cancelled";
 
 impl App {
     // -----------------------------------------------------------------------
@@ -508,6 +513,7 @@ impl App {
         self.next_transfer_id += count as u64;
         self.view.file_manager.op_error = None;
         self.view.file_manager.op_failures = 0;
+        self.view.file_manager.cancelling = false;
 
         // Show progress popup for the first file; subsequent files update it
         // via FileTransferProgress events.
@@ -588,6 +594,7 @@ impl App {
             }
             self.view.file_manager.op_error = None;
             self.view.file_manager.op_failures = 0;
+            self.view.file_manager.cancelling = false;
             self.sftp_queue
                 .extend(paths.into_iter().map(SftpCommand::Delete));
             self.send_next_op();
@@ -708,6 +715,7 @@ fn roots_after(roots: &[String], cwd: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
     fn the_next_drive_wraps_and_ignores_case() {
@@ -1121,6 +1129,87 @@ mod tests {
         app.fm_delete().await;
         assert_eq!(app.view.status_message.as_deref(), busy);
         assert_eq!(app.sftp_queue.len(), 2);
+    }
+
+    async fn press_esc(app: &mut App) {
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let action = app.handle_key(key).await.unwrap();
+        assert!(matches!(action, Some(AppAction::FmCancelTransfer)));
+        app.process_action(action).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn esc_drops_what_is_queued_and_waits_for_the_running_item() {
+        let mut app = transferring_three().await;
+        press_esc(&mut app).await;
+        assert!(app.sftp_queue.is_empty());
+        assert!(progress_shown(&app));
+        assert_eq!(app.view.status_message.as_deref(), Some("Cancelling…"));
+        done(&mut app, Err(CANCELLED)).await;
+        assert!(!progress_shown(&app));
+        assert_eq!(app.view.status_message.as_deref(), Some(CANCELLED));
+    }
+
+    #[tokio::test]
+    async fn items_left_unsent_count_as_cancelled() {
+        let mut app = transferring_three().await;
+        press_esc(&mut app).await;
+        // The running item finished before the cancel reached it.
+        done(&mut app, Ok(())).await;
+        assert_eq!(app.view.status_message.as_deref(), Some(CANCELLED));
+    }
+
+    #[tokio::test]
+    async fn a_cancel_too_late_for_the_last_item_says_so() {
+        let mut app = transferring_three().await;
+        done(&mut app, Ok(())).await;
+        done(&mut app, Ok(())).await;
+        press_esc(&mut app).await;
+        done(&mut app, Ok(())).await;
+        assert!(!progress_shown(&app));
+        assert_eq!(
+            app.view.status_message.as_deref(),
+            Some("The transfer finished before it could be cancelled.")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_failure_outranks_the_cancel() {
+        let failure = "open local file for upload: Permission denied (os error 13)";
+        // Before the cancel.
+        let mut app = transferring_three().await;
+        done(&mut app, Err(failure)).await;
+        press_esc(&mut app).await;
+        done(&mut app, Err(CANCELLED)).await;
+        assert_eq!(
+            app.view.status_message,
+            Some(format!("Transfer failed: {failure}"))
+        );
+        // While stopping.
+        let mut app = transferring_three().await;
+        press_esc(&mut app).await;
+        done(&mut app, Err(failure)).await;
+        assert_eq!(
+            app.view.status_message,
+            Some(format!("Transfer failed: {failure}"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_esc_hides_a_transfer_slow_to_stop() {
+        let mut app = transferring_three().await;
+        press_esc(&mut app).await;
+        press_esc(&mut app).await;
+        assert!(!progress_shown(&app));
+        // The panels are free again, but a new batch waits.
+        app.view.file_manager.popup = Some(FileManagerPopup::MkDir(FormField::default()));
+        done(&mut app, Err(CANCELLED)).await;
+        assert!(matches!(
+            app.view.file_manager.popup,
+            Some(FileManagerPopup::MkDir(_))
+        ));
+        assert_eq!(app.view.status_message.as_deref(), Some(CANCELLED));
+        assert!(!app.view.file_manager.cancelling);
     }
 
     #[tokio::test]

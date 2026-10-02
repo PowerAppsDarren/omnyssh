@@ -270,7 +270,7 @@ fn handle_popup_input(key: KeyEvent, kind: PopupKind, view: &mut ViewState) -> O
         PopupKind::Rename => handle_text_input_popup(key, view, TextPopupKind::Rename),
         PopupKind::TransferProgress => {
             if key.code == KeyCode::Esc {
-                Some(AppAction::FmClosePopup)
+                Some(AppAction::FmCancelTransfer)
             } else {
                 None
             }
@@ -574,7 +574,7 @@ fn render_preview_zone(
         ..
     }) = &fm.popup
     {
-        render_transfer_progress(frame, area, filename, *done, *total, theme);
+        render_transfer_progress(frame, area, filename, *done, *total, fm.cancelling, theme);
         return;
     }
 
@@ -642,6 +642,7 @@ fn render_transfer_progress(
     filename: &str,
     done: u64,
     total: u64,
+    cancelling: bool,
     theme: &crate::ui::theme::Theme,
 ) {
     let block = Block::default()
@@ -702,6 +703,26 @@ fn render_transfer_progress(
         .label(label);
 
     frame.render_widget(gauge, rows[1]);
+
+    // A first Esc cancels; a second one hides this while the transfer stops.
+    let (state, action) = if cancelling {
+        ("  Cancelling…", ":hide")
+    } else {
+        ("", ":cancel")
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(state, Style::default().fg(theme.text_muted)),
+            Span::styled(
+                "  Esc",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(action, Style::default().fg(theme.text_muted)),
+        ])),
+        rows[2],
+    );
 }
 
 // ---------------------------------------------------------------------------
