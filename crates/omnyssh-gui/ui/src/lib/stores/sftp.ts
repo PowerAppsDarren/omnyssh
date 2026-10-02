@@ -104,6 +104,14 @@ export function clashCount(names: string[], entries: FileEntryDto[], caseless: b
   return names.filter((name) => there.has(key(name))).length;
 }
 
+/** Whether a name the server listed can be created locally as itself: one plain path
+ *  component. Joined onto a local folder, anything else would land below it, unseen by
+ *  the Replace check. On Windows `\\` separates too. */
+export function isPlainName(name: string, windows: boolean): boolean {
+  if (['', '.', '..'].includes(name) || name.includes('/')) return false;
+  return !(windows && name.includes('\\'));
+}
+
 /** What dragging `entry` carries: every marked entry when `entry` is one of them, else
  *  `entry` alone. Folders travel with their whole contents; `..` is not transferable,
  *  so dragging it carries nothing. */

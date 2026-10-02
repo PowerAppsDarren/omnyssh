@@ -91,6 +91,12 @@ async function boot(
         '/': [
           { name: 'config.yml', path: '/config.yml', size: 64, isDir: false, modified: JUNE_2024 },
           { name: 'var', path: '/var', size: 0, isDir: true }
+        ],
+        // A hostile server's names, each joined onto the folder as it was listed.
+        '/var': [
+          { name: 'a/b', path: '/var/a/b', size: 8, isDir: false },
+          { name: './x', path: '/var/./x', size: 8, isDir: false },
+          { name: 'ok.log', path: '/var/ok.log', size: 8, isDir: false }
         ]
       };
 
@@ -456,6 +462,25 @@ test('a Replace prompt left for another tab is dropped, not brought back', async
   await expect(ask).toHaveCount(0);
   const downloads = await page.evaluate(() => (window as unknown as { __downloads: string[] }).__downloads);
   expect(downloads).toEqual(['/home/user/config.yml']);
+});
+
+test('a listed name that is not one plain name is refused, the rest downloads', async ({
+  page
+}) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await remotePane.getByTitle('var', { exact: true }).click();
+  await expect(remotePane.getByText('ok.log')).toBeVisible();
+
+  for (const name of ['a/b', './x', 'ok.log']) {
+    await remotePane.getByRole('checkbox', { name: `Mark ${name}` }).click();
+  }
+  await page.getByRole('button', { name: 'Download' }).click();
+  await expect(page.getByText("'a/b' is not a name that can be created here.")).toBeVisible();
+  await expect(page.getByLabel('transfer progress')).toBeVisible();
+  const downloads = await page.evaluate(() => (window as unknown as { __downloads: string[] }).__downloads);
+  expect(downloads).toEqual(['/home/user/ok.log']);
 });
 
 test('a drop on a folder row does not ask: that folder is not on show', async ({ page }) => {

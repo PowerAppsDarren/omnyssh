@@ -17,6 +17,7 @@ import {
   clashCount,
   rootOf,
   baseName,
+  isPlainName,
   CANCELLED,
   type Pane,
   type SftpSession
@@ -88,6 +89,23 @@ describe('clashCount', () => {
   it('matches across case only where the file system ignores it', () => {
     expect(clashCount(['app.log', 'WWW'], listing, false)).toBe(0);
     expect(clashCount(['app.log', 'WWW'], listing, true)).toBe(2);
+  });
+});
+
+describe('isPlainName', () => {
+  it('takes one plain component and nothing that would land elsewhere', () => {
+    for (const name of ['notes.txt', '..hidden', 'a b', 'a\\b']) {
+      expect(isPlainName(name, false)).toBe(true);
+    }
+    for (const name of ['', '.', '..', 'a/b', './x', 'x/', '.config/autostart']) {
+      expect(isPlainName(name, false)).toBe(false);
+    }
+  });
+
+  it('splits on a backslash only on Windows', () => {
+    expect(isPlainName('a\\b', true)).toBe(false);
+    expect(isPlainName('..\\x', true)).toBe(false);
+    expect(isPlainName('notes.txt', true)).toBe(true);
   });
 });
 

@@ -96,8 +96,9 @@ pub fn sftp_upload(
 }
 
 /// Download a remote file or folder to a local path (tech-gui.md §4.2). See
-/// `sftp_upload` for the transfer-id routing; the core keeps every name the server
-/// gives inside the local destination (§3.2).
+/// `sftp_upload` for the transfer-id routing. `local` ends in the name the server
+/// listed, which the frontend checks is one plain name; the core keeps every name in
+/// a folder inside the destination (§3.2).
 #[tauri::command]
 #[specta::specta]
 pub fn sftp_download(

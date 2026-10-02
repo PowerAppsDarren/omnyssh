@@ -22,6 +22,7 @@
     formatBytes,
     rootOf,
     baseName,
+    isPlainName,
     transferState,
     CANCELLED,
     type PaneSide
@@ -292,12 +293,16 @@
     );
   }
 
+  // The local path is the listed name joined onto `dir`, so only a plain name goes.
   function download(files: FileEntryDto[], dir = view?.local.path): void {
     const id = backendId;
     if (id == null || !view || dir == null) return;
-    unlessClashing('local', files.map((file) => file.name), dir, () =>
+    const odd = files.find((file) => !isPlainName(file.name, isWindows));
+    if (odd) lastError.set(`'${odd.name}' is not a name that can be created here.`);
+    const plain = files.filter((file) => isPlainName(file.name, isWindows));
+    unlessClashing('local', plain.map((file) => file.name), dir, () =>
       enqueue(
-        files.map((file) => () => {
+        plain.map((file) => () => {
           sftp.pushOp(id, { kind: 'download', name: file.name, refresh: 'local' });
           void sftpDownload(id, joinLocal(dir, file.name), file.path).catch(onDispatchError(id));
         }),
