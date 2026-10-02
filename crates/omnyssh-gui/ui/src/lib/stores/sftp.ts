@@ -202,14 +202,16 @@ export function applyOpDone(session: SftpSession, ok: boolean, error?: string): 
   if (session.pending.length === 0) return session;
   const [front, ...rest] = session.pending;
   const wasTransfer = front.kind === 'upload' || front.kind === 'download';
+  // A later op's success must NOT wipe an earlier op's failure in the same batch — that
+  // silently masks e.g. a non-empty-folder delete beside a deleted sibling. Nor may the
+  // user's own cancel. The error persists until the next batch clears it (`clearError`,
+  // called on enqueue).
+  const keep = ok || (error === CANCELLED && session.error != null);
   return {
     ...session,
     pending: rest,
     refresh: mergeRefresh(session.refresh, front.refresh),
-    // A later op's success must NOT wipe an earlier op's failure in the same batch — that
-    // silently masks e.g. a non-empty-folder delete beside a deleted sibling. The error
-    // persists until the next batch clears it (`clearError`, called on enqueue).
-    error: ok ? session.error : (error ?? 'Operation failed'),
+    error: keep ? session.error : (error ?? 'Operation failed'),
     transfer: wasTransfer ? undefined : session.transfer
   };
 }

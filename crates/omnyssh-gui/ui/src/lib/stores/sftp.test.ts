@@ -17,6 +17,7 @@ import {
   clashCount,
   rootOf,
   baseName,
+  CANCELLED,
   type Pane,
   type SftpSession
 } from './sftp';
@@ -186,6 +187,18 @@ describe('sftp reducers', () => {
     s = applyOpDone(s, true);
     expect(s.error).toBe('directory not empty');
     expect(s.pending).toEqual([]);
+  });
+
+  it('applyOpDone keeps a prior op error when the rest of the batch is cancelled', () => {
+    const upload = (name: string) => ({ kind: 'upload' as const, name, refresh: 'remote' as const });
+    let s: SftpSession = { ...newSession('web-1'), pending: [upload('a.txt'), upload('b.txt')] };
+    s = applyOpDone(s, false, "open 'a.txt': Permission denied");
+    s = applyOpDone(s, false, CANCELLED);
+    expect(s.error).toBe("open 'a.txt': Permission denied");
+
+    // A cancel on its own still says so.
+    s = applyOpDone({ ...newSession('web-1'), pending: [upload('c.txt')] }, false, CANCELLED);
+    expect(s.error).toBe(CANCELLED);
   });
 
   it('correlates a two-file batch by FIFO order across progress + op-done', () => {
