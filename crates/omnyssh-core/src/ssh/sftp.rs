@@ -529,8 +529,11 @@ struct TreePlan {
 }
 
 impl TreePlan {
+    /// Sizes come from the server, which may claim anything.
     fn total(&self) -> u64 {
-        self.files.iter().map(|f| f.size).sum()
+        self.files
+            .iter()
+            .fold(0, |total, f| total.saturating_add(f.size))
     }
 }
 
@@ -1321,6 +1324,21 @@ mod tests {
             err.to_string(),
             "4 items skipped or failed, first '/srv/app/current': symbolic link, not followed"
         );
+    }
+
+    #[test]
+    fn sizes_a_server_makes_up_do_not_overflow_the_total() {
+        let file = |size| Planned {
+            src: String::new(),
+            dst: String::new(),
+            size,
+            mode: None,
+        };
+        let plan = TreePlan {
+            dirs: Vec::new(),
+            files: vec![file(u64::MAX), file(2)],
+        };
+        assert_eq!(plan.total(), u64::MAX);
     }
 
     #[tokio::test]
