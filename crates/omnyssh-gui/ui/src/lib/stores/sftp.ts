@@ -96,9 +96,10 @@ export function markedEntries(pane: Pane): FileEntryDto[] {
 }
 
 /** A name as a file system compares it: `caseless` for one that ignores case, as
- *  Windows and macOS do by default. */
+ *  Windows and macOS do by default. macOS also takes an accented letter composed or not
+ *  as the same; Windows does not, and gets a needless question at most. */
 function nameKey(name: string, caseless: boolean): string {
-  return caseless ? name.toLowerCase() : name;
+  return caseless ? name.normalize('NFC').toLowerCase() : name;
 }
 
 /** How many of `names` the listing `entries` already holds: what a transfer into its

@@ -91,6 +91,12 @@ describe('clashCount', () => {
     expect(clashCount(['app.log', 'WWW'], listing, false)).toBe(0);
     expect(clashCount(['app.log', 'WWW'], listing, true)).toBe(2);
   });
+
+  it('matches an accented letter composed or not where case is ignored, as macOS does', () => {
+    const decomposed = [entry('cafe\u0301.txt')];
+    expect(clashCount(['caf\u00e9.txt'], decomposed, true)).toBe(1);
+    expect(clashCount(['caf\u00e9.txt'], decomposed, false)).toBe(0);
+  });
 });
 
 describe('repeatedName', () => {
