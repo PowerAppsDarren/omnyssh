@@ -889,15 +889,14 @@ async fn create_remote_dir(
         }
         return Err(e).context("create remote dir");
     }
-    // SFTP's mkdir takes a mode, but this client sends none.
+    // SFTP's mkdir takes a mode, but this client sends none. A server may refuse to set
+    // one; the folder is there all the same.
     if let Some(mode) = mode {
         let attrs = FileAttributes {
             permissions: Some(mode | 0o700),
             ..FileAttributes::empty()
         };
-        sftp.set_metadata(path, attrs)
-            .await
-            .context("set remote dir mode")?;
+        let _ = sftp.set_metadata(path, attrs).await;
     }
     Ok(())
 }
@@ -1474,10 +1473,10 @@ mod tests {
             .expect("merged");
     }
 
-    /// An SFTP session on this machine's own files through OpenSSH's sftp-server,
-    /// where one is installed.
+    /// An SFTP session on this machine's own files through OpenSSH's sftp-server, run
+    /// with `args`, where one is installed.
     #[cfg(unix)]
-    async fn local_sftp() -> Option<russh_sftp::client::SftpSession> {
+    async fn local_sftp(args: &[&str]) -> Option<russh_sftp::client::SftpSession> {
         let server = [
             "/usr/lib/openssh/sftp-server",
             "/usr/libexec/openssh/sftp-server",
@@ -1486,6 +1485,7 @@ mod tests {
         .into_iter()
         .find(|path| Path::new(path).exists())?;
         let mut child = tokio::process::Command::new(server)
+            .args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
@@ -1499,7 +1499,7 @@ mod tests {
     #[tokio::test]
     async fn a_folder_round_trips_through_sftp_with_its_modes_and_skips_reported() {
         use std::os::unix::fs::PermissionsExt;
-        let Some(sftp) = local_sftp().await else {
+        let Some(sftp) = local_sftp(&[]).await else {
             eprintln!("no sftp-server on this machine; skipped");
             return;
         };
@@ -1607,7 +1607,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_cancelled_upload_removes_the_partial_remote_file() {
-        let Some(sftp) = local_sftp().await else {
+        let Some(sftp) = local_sftp(&[]).await else {
             eprintln!("no sftp-server on this machine; skipped");
             return;
         };
@@ -1646,9 +1646,31 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_folder_uploads_to_a_server_that_will_not_set_modes() {
+        let Some(sftp) = local_sftp(&["-P", "setstat"]).await else {
+            eprintln!("no sftp-server on this machine; skipped");
+            return;
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = |rel: &str| tmp.path().join(rel);
+        let str_of = |rel: &str| path(rel).to_str().expect("utf-8 temp dir").to_string();
+        std::fs::create_dir_all(path("src/a/b")).expect("mkdir");
+        std::fs::write(path("src/a/b/f.txt"), "hello").expect("write");
+
+        let cancels = AtomicU64::new(0);
+        let cancel = no_cancel(&cancels);
+        let (tx, _rx) = mpsc::channel(64);
+        do_upload(&str_of("src"), &sftp, &str_of("up"), 1, &tx, &cancel)
+            .await
+            .expect("uploaded");
+        assert_eq!(std::fs::read(path("up/a/b/f.txt")).expect("read"), b"hello");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_read_only_file_is_replaced_by_the_next_transfer() {
         use std::os::unix::fs::PermissionsExt;
-        let Some(sftp) = local_sftp().await else {
+        let Some(sftp) = local_sftp(&[]).await else {
             eprintln!("no sftp-server on this machine; skipped");
             return;
         };
