@@ -803,8 +803,8 @@ async fn download_file(
     write_local(remote_file, local, mode, progress, cancel).await
 }
 
-/// Writes everything `source` yields to the local file `local`; a cancel removes the
-/// part written so far.
+/// Writes everything `source` yields to the local file `local`. A cancel or a failure
+/// removes the part written so far, which would otherwise pass for the whole file.
 async fn write_local(
     mut source: impl AsyncRead + Unpin,
     local: &str,
@@ -819,27 +819,34 @@ async fn write_local(
         .context("create local file")?;
 
     let mut buf = vec![0u8; 65_536];
-    loop {
-        if let Err(e) = cancel.check() {
-            // tokio writes in the background: the flush lets the file close first.
-            let _ = local_file.flush().await;
-            drop(local_file);
-            let _ = tokio::fs::remove_file(local).await;
-            return Err(e);
+    let copied = async {
+        loop {
+            cancel.check()?;
+            // A stalled server would otherwise hold a cancel until its request times out.
+            let n = tokio::select! {
+                n = source.read(&mut buf) => n.context("read remote file")?,
+                () = cancel.cancelled() => return Err(Cancelled.into()),
+            };
+            if n == 0 {
+                return Ok(());
+            }
+            local_file
+                .write_all(&buf[..n])
+                .await
+                .context("write local file")?;
+            progress.advance(n).await;
         }
-        let n = source.read(&mut buf).await.context("read remote file")?;
-        if n == 0 {
-            break;
-        }
-        local_file
-            .write_all(&buf[..n])
-            .await
-            .context("write local file")?;
-        progress.advance(n).await;
     }
+    .await;
 
     // The last write may still be in flight; this is where it fails, if it does.
-    local_file.flush().await.context("write local file")
+    let flushed = local_file.flush().await.context("write local file");
+    let result = copied.and(flushed);
+    if result.is_err() {
+        drop(local_file);
+        let _ = tokio::fs::remove_file(local).await;
+    }
+    result
 }
 
 /// Creates or truncates the local file `path`. A new file gets the permission bits
@@ -969,25 +976,35 @@ async fn upload_file(
         .context("create remote file for upload")?;
 
     let mut buf = vec![0u8; 65_536];
-    loop {
-        if let Err(e) = cancel.check() {
+    let copied = async {
+        loop {
+            cancel.check()?;
+            let n = local_file.read(&mut buf).await.context("read local file")?;
+            if n == 0 {
+                return Ok(());
+            }
+            // A stalled server would otherwise hold a cancel until its request times out.
+            tokio::select! {
+                written = remote_file.write_all(&buf[..n]) => {
+                    written.context("write remote file")?;
+                }
+                () = cancel.cancelled() => return Err(Cancelled.into()),
+            }
+            progress.advance(n).await;
+        }
+    }
+    .await;
+
+    if copied.is_err() {
+        // Bounded: a server that stalled the copy may not answer these either.
+        let _ = time::timeout(Duration::from_secs(5), async {
             // Closed first, or the handle would close only after the removal.
             let _ = remote_file.shutdown().await;
             let _ = sftp.remove_file(remote).await;
-            return Err(e);
-        }
-        let n = local_file.read(&mut buf).await.context("read local file")?;
-        if n == 0 {
-            break;
-        }
-        remote_file
-            .write_all(&buf[..n])
-            .await
-            .context("write remote file")?;
-        progress.advance(n).await;
+        })
+        .await;
     }
-
-    Ok(())
+    copied
 }
 
 async fn do_read_preview(
@@ -1531,6 +1548,87 @@ mod tests {
             std::fs::read(&local).expect("still there"),
             b"the user's own"
         );
+    }
+
+    /// Hands out `data` once, then stalls like a server that stopped answering, or
+    /// fails like a dropped connection.
+    struct StoppingReader<'a> {
+        data: &'a [u8],
+        fail: bool,
+    }
+
+    impl AsyncRead for StoppingReader<'_> {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.data.is_empty() {
+                return if self.fail {
+                    std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()))
+                } else {
+                    std::task::Poll::Pending
+                };
+            }
+            let n = self.data.len().min(buf.remaining());
+            buf.put_slice(&self.data[..n]);
+            self.data = &self.data[n..];
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancel_stops_a_download_the_server_stalled() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let local = tmp.path().join("stalled.bin");
+        let cancels = Cancels::default();
+        let cancel = no_cancel(&cancels);
+        let (tx, _rx) = mpsc::channel(8);
+        let mut progress = Progress::start(1, 100, &tx).await;
+        let source = StoppingReader {
+            data: b"a first chunk",
+            fail: false,
+        };
+
+        let local_str = local.to_str().expect("utf-8 temp dir");
+        let copy = write_local(source, local_str, None, &mut progress, &cancel);
+        let press_cancel = async {
+            time::sleep(Duration::from_millis(50)).await;
+            cancels.bump();
+            std::future::pending::<()>().await
+        };
+        let err = time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                biased;
+                result = copy => result,
+                () = press_cancel => unreachable!("never ends"),
+            }
+        })
+        .await
+        .expect("the cancel did not wait for the server")
+        .expect_err("cancelled");
+        assert!(err.is::<Cancelled>());
+        assert!(!local.exists(), "the partial file is gone");
+    }
+
+    #[tokio::test]
+    async fn a_download_that_breaks_off_leaves_no_partial_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let local = tmp.path().join("cut.bin");
+        let cancels = Cancels::default();
+        let (tx, _rx) = mpsc::channel(8);
+        let mut progress = Progress::start(1, 100, &tx).await;
+        let source = StoppingReader {
+            data: b"a first chunk",
+            fail: true,
+        };
+
+        let local_str = local.to_str().expect("utf-8 temp dir");
+        let err = write_local(source, local_str, None, &mut progress, &no_cancel(&cancels))
+            .await
+            .expect_err("broke off");
+        assert!(!err.is::<Cancelled>());
+        assert!(!local.exists(), "no cut-off file passes for the whole one");
     }
 
     #[cfg(unix)]
