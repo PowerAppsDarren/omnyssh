@@ -800,13 +800,14 @@ async fn write_local(
 }
 
 /// Creates or truncates the local file `path`. A new file gets the permission bits
-/// `mode` less the umask, as scp and sftp give it; an existing one keeps its own.
+/// `mode` less the umask, as sftp gives it, owner write included so the next transfer
+/// can replace it; an existing one keeps its own.
 async fn create_local_file(path: &str, mode: Option<u32>) -> std::io::Result<tokio::fs::File> {
     let mut options = tokio::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     if let Some(mode) = mode {
-        options.mode(mode);
+        options.mode(mode | 0o200);
     }
     #[cfg(not(unix))]
     let _ = mode;
@@ -913,10 +914,10 @@ async fn upload_file(
     let mut local_file = tokio::fs::File::open(local)
         .await
         .context("open local file for upload")?;
-    // A new file gets the source's mode less the server's umask, as sftp gives it; an
-    // existing one keeps its own.
+    // A new file gets the source's mode less the server's umask, owner write included
+    // so the next upload can replace it; an existing one keeps its own.
     let attrs = FileAttributes {
-        permissions: mode,
+        permissions: mode.map(|mode| mode | 0o200),
         ..FileAttributes::empty()
     };
     let flags = OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE;
@@ -1641,6 +1642,43 @@ mod tests {
         };
         assert!(result.expect_err("cancelled").is::<Cancelled>());
         assert!(!dst.exists(), "the partial file is gone");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_read_only_file_is_replaced_by_the_next_transfer() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(sftp) = local_sftp().await else {
+            eprintln!("no sftp-server on this machine; skipped");
+            return;
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = |rel: &str| tmp.path().join(rel);
+        let str_of = |rel: &str| path(rel).to_str().expect("utf-8 temp dir").to_string();
+        std::fs::create_dir(path("src")).expect("mkdir");
+        for (file, mode) in [("src/obj", 0o444), ("key", 0o400)] {
+            std::fs::write(path(file), file).expect("write");
+            std::fs::set_permissions(path(file), std::fs::Permissions::from_mode(mode))
+                .expect("chmod");
+        }
+
+        let cancels = AtomicU64::new(0);
+        let cancel = no_cancel(&cancels);
+        let (tx, _rx) = mpsc::channel(64);
+        for round in 0..2 {
+            do_download(&sftp, &str_of("src"), &str_of("tree"), round, &tx, &cancel)
+                .await
+                .expect("folder downloaded");
+            do_download(&sftp, &str_of("key"), &str_of("dl"), round, &tx, &cancel)
+                .await
+                .expect("file downloaded");
+            do_upload(&str_of("key"), &sftp, &str_of("up"), round, &tx, &cancel)
+                .await
+                .expect("file uploaded");
+        }
+        // As sftp's get leaves it: the owner may write, nobody else gains anything.
+        assert_eq!(mode_of(&path("dl")), 0o600);
+        assert_eq!(std::fs::read(path("tree/obj")).expect("read"), b"src/obj");
     }
 
     #[test]
