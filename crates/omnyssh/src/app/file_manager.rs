@@ -486,6 +486,12 @@ impl App {
             return;
         }
 
+        // Nothing would be sent, and the progress would wait for it for good.
+        if self.sftp_manager.is_none() {
+            self.view.status_message = Some("Not connected to a host.".to_string());
+            return;
+        }
+
         let dst_cwd = match &dst_panel {
             FmPanel::Local => self.view.file_manager.local.cwd.clone(),
             FmPanel::Remote => self.view.file_manager.remote.cwd.clone(),
@@ -1051,5 +1057,23 @@ mod tests {
             app.view.status_message,
             Some(format!("Transfer failed: {skipped} (+1 more)"))
         );
+    }
+
+    #[tokio::test]
+    async fn a_paste_needs_a_connected_host() {
+        let mut app = App::default();
+        let fm = &mut app.view.file_manager;
+        fm.active_panel = FmPanel::Remote;
+        fm.clipboard = Some(FmClipboard {
+            paths: vec!["/l/a".to_string()],
+            source_panel: FmPanel::Local,
+        });
+        app.fm_paste().await;
+        assert_eq!(
+            app.view.status_message.as_deref(),
+            Some("Not connected to a host.")
+        );
+        assert!(!progress_shown(&app));
+        assert_eq!(app.view.file_manager.pending_ops, 0);
     }
 }
