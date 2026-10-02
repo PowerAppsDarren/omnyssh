@@ -19,6 +19,7 @@
     markedEntries,
     dragPayload,
     clashCount,
+    repeatedName,
     formatBytes,
     rootOf,
     baseName,
@@ -263,9 +264,15 @@
 
   // Runs a transfer of `names` into `dir`, asking first when the listing on show there
   // already has some of them. A folder row's listing is unknown, so a drop on one goes.
+  // Two items bound for one name do not go: the second would replace the first unasked.
   function unlessClashing(side: PaneSide, names: string[], dir: string, run: () => void): void {
     const pane = view?.[side];
     const caseless = side === 'local' && (isWindows || isMac);
+    const twice = repeatedName(names, caseless);
+    if (twice) {
+      lastError.set(`Two of the items would both be '${twice}' in ${dir}.`);
+      return;
+    }
     const count = pane?.path === dir ? clashCount(names, pane.entries, caseless) : 0;
     if (count > 0) overwrite = { count, dir, run };
     else run();

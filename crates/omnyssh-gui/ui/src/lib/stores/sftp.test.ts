@@ -15,6 +15,7 @@ import {
   formatDate,
   dragPayload,
   clashCount,
+  repeatedName,
   rootOf,
   baseName,
   isPlainName,
@@ -89,6 +90,18 @@ describe('clashCount', () => {
   it('matches across case only where the file system ignores it', () => {
     expect(clashCount(['app.log', 'WWW'], listing, false)).toBe(0);
     expect(clashCount(['app.log', 'WWW'], listing, true)).toBe(2);
+  });
+});
+
+describe('repeatedName', () => {
+  it('finds two items that would land on one name', () => {
+    expect(repeatedName(['readme.txt', 'a.png', 'readme.txt'], false)).toBe('readme.txt');
+    expect(repeatedName(['readme.txt', 'a.png'], false)).toBeUndefined();
+  });
+
+  it('matches across case only where the file system ignores it', () => {
+    expect(repeatedName(['A.txt', 'a.txt'], false)).toBeUndefined();
+    expect(repeatedName(['A.txt', 'a.txt'], true)).toBe('a.txt');
   });
 });
 

@@ -790,6 +790,21 @@ test('drag and drop: a drive or volume dropped from the OS is refused, the rest 
   expect(await uploads(page)).toEqual(['/photo.png']);
 });
 
+test('two dropped items of one name are refused, not uploaded over each other', async ({
+  page
+}) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  const remotePane = page.getByRole('region', { name: 'web-1' });
+  await expect(remotePane.getByText('config.yml')).toBeVisible();
+
+  const at = await centre(remotePane.getByText('config.yml'));
+  await osDrop(page, ['/tmp/a/readme.txt', '/tmp/b/readme.txt'], at);
+  await expect(page.getByText("Two of the items would both be 'readme.txt' in /.")).toBeVisible();
+  await expect(page.getByLabel('transfer progress')).toHaveCount(0);
+  expect(await uploads(page)).toEqual([]);
+});
+
 test('an OS drop reaches only the tab on show (§2 exactly-one-active)', async ({ page }) => {
   await boot(page);
   await page.getByTitle('files on web-1').click();

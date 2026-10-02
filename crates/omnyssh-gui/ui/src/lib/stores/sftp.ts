@@ -95,13 +95,31 @@ export function markedEntries(pane: Pane): FileEntryDto[] {
   return pane.entries.filter((e) => pane.marked.has(e.path));
 }
 
+/** A name as a file system compares it: `caseless` for one that ignores case, as
+ *  Windows and macOS do by default. */
+function nameKey(name: string, caseless: boolean): string {
+  return caseless ? name.toLowerCase() : name;
+}
+
 /** How many of `names` the listing `entries` already holds: what a transfer into its
- *  directory would replace, or merge into for a folder. `caseless` for a file system
- *  that ignores case, as Windows and macOS do by default. */
+ *  directory would replace, or merge into for a folder. */
 export function clashCount(names: string[], entries: FileEntryDto[], caseless: boolean): number {
-  const key = (name: string) => (caseless ? name.toLowerCase() : name);
-  const there = new Set(entries.filter((e) => e.name !== '..').map((e) => key(e.name)));
-  return names.filter((name) => there.has(key(name))).length;
+  const there = new Set(
+    entries.filter((e) => e.name !== '..').map((e) => nameKey(e.name, caseless))
+  );
+  return names.filter((name) => there.has(nameKey(name, caseless))).length;
+}
+
+/** A name in `names` that an earlier one would land on too: two files dropped from
+ *  different folders, or `A.txt` and `a.txt` going where case is ignored. */
+export function repeatedName(names: string[], caseless: boolean): string | undefined {
+  const seen = new Set<string>();
+  return names.find((name) => {
+    const key = nameKey(name, caseless);
+    if (seen.has(key)) return true;
+    seen.add(key);
+    return false;
+  });
 }
 
 /** Whether a name the server listed can be created locally as itself: one plain path
