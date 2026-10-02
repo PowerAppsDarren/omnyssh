@@ -327,6 +327,19 @@ describe('custom order with repeated host names', () => {
     expect(sortCards(all, 'custom', order, keyOf).map((c) => all.indexOf(c))).toEqual([2, 0, 1]);
   });
 
+  it('keeps a host in place when a namesake comes or goes', () => {
+    const [web, a, b, twin] = [at('web', 22), at('a', 22), at('b', 22), at('web', 2222)];
+    const alone = keysOf([web, a, b]);
+    const order = moveCard([a, b, web], [a, b, web], 2, 0, alone);
+    const both = [web, a, b, twin];
+    // The name-only key can't tell which "web" it meant, so the newcomer joins it.
+    expect(ids(sortCards(both, 'custom', order, keysOf(both)))).toEqual(['web:22', 'web:2222', 'a:22', 'b:22']);
+
+    const moved = moveCard(both, both, 3, 0, keysOf(both));
+    expect(ids(sortCards([web, a, b], 'custom', moved, alone))).toEqual(['web:22', 'a:22', 'b:22']);
+    expect(ids(sortCards([a, b, twin], 'custom', moved, keysOf([a, b, twin])))).toEqual(['web:2222', 'a:22', 'b:22']);
+  });
+
   it.each([2202, 22])('leaves a namesake on port %i in another section in place', (port) => {
     const all = [at('u', 22), at('a', 22, ['db']), at('dup', 22, ['db']), at('dup', port)];
     const keyOf = keysOf(all);

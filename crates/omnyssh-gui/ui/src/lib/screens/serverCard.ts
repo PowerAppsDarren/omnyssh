@@ -288,7 +288,9 @@ export function sortCards(
   if (sort === 'name') return sorted.sort((a, b) => byHostName.compare(a.host.name, b.host.name));
   if (sort === 'status') return sorted.sort((a, b) => statusRank(a) - statusRank(b));
   const rank = new Map(order.map((key, i) => [key, i]));
-  const at = (c: ServerCard): number => rank.get(keyOf(c.host)) ?? order.length;
+  // A namesake coming or going changes a host's key; its other forms keep its place.
+  const at = ({ host: h }: ServerCard): number =>
+    rank.get(keyOf(h)) ?? rank.get(addressKey(h)) ?? rank.get(nameKey(h)) ?? order.length;
   return sorted.sort((a, b) => at(a) - at(b));
 }
 
