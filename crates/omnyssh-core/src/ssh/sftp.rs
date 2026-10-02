@@ -809,6 +809,8 @@ async fn write_local(
     progress: &mut Progress<'_>,
     cancel: &Cancel<'_>,
 ) -> anyhow::Result<()> {
+    // A cancel during the remote open leaves a file already there as it was.
+    cancel.check()?;
     let mut local_file = create_local_file(local, mode)
         .await
         .context("create local file")?;
@@ -1489,6 +1491,28 @@ mod tests {
         assert!(err.is::<Cancelled>());
         assert_eq!(progress.done, 23, "the chunk was written before the cancel");
         assert!(!local.exists(), "the partial file is gone");
+    }
+
+    #[tokio::test]
+    async fn a_cancel_before_the_first_byte_leaves_the_local_file_alone() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let local = tmp.path().join("keep.txt");
+        std::fs::write(&local, "the user's own").expect("write");
+        let cancels = Cancels::default();
+        let cancel = no_cancel(&cancels);
+        cancels.bump();
+        let (tx, _rx) = mpsc::channel(8);
+        let mut progress = Progress::start(1, 100, &tx).await;
+
+        let local_str = local.to_str().expect("utf-8 temp dir");
+        let err = write_local(&b"new"[..], local_str, None, &mut progress, &cancel)
+            .await
+            .expect_err("cancelled");
+        assert!(err.is::<Cancelled>());
+        assert_eq!(
+            std::fs::read(&local).expect("still there"),
+            b"the user's own"
+        );
     }
 
     #[cfg(unix)]
