@@ -7,7 +7,7 @@
 //! plumbing. Every public item of the submodules is re-exported here so the
 //! rest of the crate keeps using the flat `crate::app::Type` paths.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::Stdout;
 use std::sync::Arc;
 use std::time::Duration;
@@ -234,6 +234,9 @@ pub struct App {
     core_rx: Option<mpsc::Receiver<CoreEvent>>,
     /// Persistent SFTP session manager for the File Manager.
     sftp_manager: Option<SftpManager>,
+    /// SFTP operations of a batch waiting for the one before them to finish. Sent
+    /// in one burst, those past the task's 64-command queue were dropped unseen.
+    sftp_queue: VecDeque<SftpCommand>,
     /// Monotone counter for assigning unique [`TransferId`] values.
     next_transfer_id: TransferId,
     /// Background metrics polling manager. Stored in `App` (not in
@@ -279,6 +282,7 @@ impl App {
             core_tx,
             core_rx: Some(core_rx),
             sftp_manager: None,
+            sftp_queue: VecDeque::new(),
             next_transfer_id: 0,
             poll_manager: None,
             pty_manager: None,
@@ -1011,6 +1015,8 @@ impl App {
 
             CoreEvent::SftpDisconnected { reason } => {
                 self.sftp_manager = None;
+                // Nothing queued for the lost session may reach the next one.
+                self.sftp_queue.clear();
                 self.view.file_manager.connected_host = None;
                 self.view.file_manager.sftp_connecting = false;
                 self.view.file_manager.remote = FilePanelView::default();
@@ -1046,9 +1052,11 @@ impl App {
                     fm.op_failures += 1;
                     fm.op_error.get_or_insert(e);
                 }
+                self.send_next_op();
+                let fm = &mut self.view.file_manager;
                 if fm.pending_ops > 0 {
-                    self.view.status_message =
-                        Some(format!("{} item(s) remaining…", fm.pending_ops));
+                    let remaining = fm.pending_ops + self.sftp_queue.len();
+                    self.view.status_message = Some(format!("{remaining} item(s) remaining…"));
                 } else {
                     // All queued operations finished — close popup and refresh.
                     fm.popup = None;

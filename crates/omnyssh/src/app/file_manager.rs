@@ -184,7 +184,7 @@ pub struct FileManagerView {
     pub preview_path: Option<String>,
     /// Transfer id of an in-progress transfer (for the progress popup).
     pub active_transfer: Option<TransferId>,
-    /// Number of queued transfer operations not yet completed.
+    /// Queued operations sent and not yet reported in: at most one.
     pub pending_ops: usize,
     /// The first failure among them, reported once they are all done.
     pub op_error: Option<String>,
@@ -321,6 +321,9 @@ impl App {
         if let Some(old) = self.sftp_manager.take() {
             old.disconnect();
         }
+        // What the old session still had to send or report is moot now.
+        self.sftp_queue.clear();
+        self.view.file_manager.pending_ops = 0;
         self.view.file_manager.connected_host = None;
         self.view.file_manager.remote = FilePanelView::default();
 
@@ -466,8 +469,7 @@ impl App {
 
     /// Pastes all clipboard contents into the active panel (upload / download).
     ///
-    /// All files are queued as individual SFTP commands and processed sequentially
-    /// by the background task. `pending_ops` tracks how many are still in flight.
+    /// Each item goes to the background task once the one before it is done.
     pub(crate) async fn fm_paste(&mut self) {
         let Some(clipboard) = self.view.file_manager.clipboard.clone() else {
             self.view.status_message = Some("Nothing in clipboard.".to_string());
@@ -486,6 +488,10 @@ impl App {
             return;
         }
 
+        if self.sftp_busy() {
+            return;
+        }
+
         // Nothing would be sent, and the progress would wait for it for good.
         if self.sftp_manager.is_none() {
             self.view.status_message = Some("Not connected to a host.".to_string());
@@ -500,7 +506,6 @@ impl App {
         let count = clipboard.paths.len();
         let first_tid = self.next_transfer_id;
         self.next_transfer_id += count as u64;
-        self.view.file_manager.pending_ops = count;
         self.view.file_manager.op_error = None;
         self.view.file_manager.op_failures = 0;
 
@@ -520,38 +525,52 @@ impl App {
             total: 0,
         });
 
-        // Queue every file as a separate SFTP command.
-        for (i, src_path) in clipboard.paths.iter().enumerate() {
-            let tid = first_tid + i as u64;
-            let fname = filename_of(src_path);
-            let dst = format!("{}/{}", dst_cwd.trim_end_matches('/'), fname);
-
-            match (&clipboard.source_panel, &dst_panel) {
-                (FmPanel::Local, FmPanel::Remote) => {
-                    if let Some(mgr) = &self.sftp_manager {
-                        mgr.send(SftpCommand::Upload {
-                            local: src_path.clone(),
-                            remote: dst,
-                            transfer_id: tid,
-                        });
-                    }
-                }
-                (FmPanel::Remote, FmPanel::Local) => {
-                    if let Some(mgr) = &self.sftp_manager {
-                        mgr.send(SftpCommand::Download {
-                            remote: src_path.clone(),
-                            local: dst,
-                            transfer_id: tid,
-                        });
-                    }
-                }
-                _ => unreachable!("same-panel case handled above"),
-            }
+        for (i, src) in clipboard.paths.iter().enumerate() {
+            let transfer_id = first_tid + i as u64;
+            let dst = format!("{}/{}", dst_cwd.trim_end_matches('/'), filename_of(src));
+            self.sftp_queue.push_back(match clipboard.source_panel {
+                FmPanel::Local => SftpCommand::Upload {
+                    local: src.clone(),
+                    remote: dst,
+                    transfer_id,
+                },
+                FmPanel::Remote => SftpCommand::Download {
+                    remote: src.clone(),
+                    local: dst,
+                    transfer_id,
+                },
+            });
         }
+        self.send_next_op();
 
         if count > 1 {
             self.view.status_message = Some(format!("Queued {count} items for transfer…"));
         }
+    }
+
+    /// Sends the next queued operation, once the one before it is done.
+    pub(crate) fn send_next_op(&mut self) {
+        if self.view.file_manager.pending_ops > 0 {
+            return;
+        }
+        let Some(cmd) = self.sftp_queue.pop_front() else {
+            return;
+        };
+        self.view.file_manager.pending_ops = 1;
+        if let Some(mgr) = &self.sftp_manager {
+            mgr.send(cmd);
+        }
+    }
+
+    /// Whether a batch is still running, saying so. A new one waits for it, or its
+    /// results would be taken for the new batch's.
+    fn sftp_busy(&mut self) -> bool {
+        let busy = self.view.file_manager.pending_ops > 0 || !self.sftp_queue.is_empty();
+        if busy {
+            self.view.status_message =
+                Some("Wait for the running operation to finish.".to_string());
+        }
+        busy
     }
 
     /// Deletes items listed in the `DeleteConfirm` popup.
@@ -564,16 +583,14 @@ impl App {
         let is_remote = self.view.file_manager.active_panel == FmPanel::Remote;
 
         if is_remote {
-            // Track how many ops are in flight so SftpOpDone can count down.
-            self.view.file_manager.pending_ops = paths.len();
+            if self.sftp_busy() {
+                return;
+            }
             self.view.file_manager.op_error = None;
             self.view.file_manager.op_failures = 0;
-            // Send delete commands for all paths.
-            for path in paths {
-                if let Some(mgr) = &self.sftp_manager {
-                    mgr.send(SftpCommand::Delete(path));
-                }
-            }
+            self.sftp_queue
+                .extend(paths.into_iter().map(SftpCommand::Delete));
+            self.send_next_op();
         } else {
             let tx = self.core_tx.clone();
             tokio::spawn(async move {
@@ -1012,8 +1029,17 @@ mod tests {
     async fn transferring_three() -> App {
         let mut app = App::default();
         app.state.write().await.screen = Screen::FileManager;
+        app.view.file_manager.pending_ops = 1;
+        app.sftp_queue = ["b", "c"]
+            .into_iter()
+            .zip(1..)
+            .map(|(name, transfer_id)| SftpCommand::Upload {
+                local: format!("/l/{name}"),
+                remote: format!("/srv/{name}"),
+                transfer_id,
+            })
+            .collect();
         let fm = &mut app.view.file_manager;
-        fm.pending_ops = 3;
         fm.popup = Some(FileManagerPopup::TransferProgress {
             transfer_id: 0,
             filename: "a  (+2 more)".to_string(),
@@ -1057,6 +1083,44 @@ mod tests {
             app.view.status_message,
             Some(format!("Transfer failed: {skipped} (+1 more)"))
         );
+    }
+
+    #[tokio::test]
+    async fn the_next_item_goes_once_the_one_before_is_done() {
+        let mut app = transferring_three().await;
+        done(&mut app, Ok(())).await;
+        assert!(matches!(
+            app.sftp_queue.front(),
+            Some(SftpCommand::Upload { local, .. }) if local == "/l/c"
+        ));
+        assert_eq!(app.view.file_manager.pending_ops, 1);
+        done(&mut app, Ok(())).await;
+        assert!(app.sftp_queue.is_empty());
+        assert!(progress_shown(&app));
+        done(&mut app, Ok(())).await;
+        assert!(!progress_shown(&app));
+        assert_eq!(app.view.status_message, None);
+    }
+
+    #[tokio::test]
+    async fn a_new_batch_waits_for_the_running_one() {
+        let mut app = transferring_three().await;
+        let fm = &mut app.view.file_manager;
+        fm.active_panel = FmPanel::Remote;
+        fm.clipboard = Some(FmClipboard {
+            paths: vec!["/l/d".to_string()],
+            source_panel: FmPanel::Local,
+        });
+        app.fm_paste().await;
+        let busy = Some("Wait for the running operation to finish.");
+        assert_eq!(app.view.status_message.as_deref(), busy);
+        app.view.status_message = None;
+        app.view.file_manager.popup = Some(FileManagerPopup::DeleteConfirm {
+            paths: vec!["/srv/x".to_string()],
+        });
+        app.fm_delete().await;
+        assert_eq!(app.view.status_message.as_deref(), busy);
+        assert_eq!(app.sftp_queue.len(), 2);
     }
 
     #[tokio::test]
