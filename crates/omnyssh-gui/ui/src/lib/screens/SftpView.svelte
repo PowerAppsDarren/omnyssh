@@ -344,12 +344,13 @@
     moved = false;
   }
 
-  // A hidden view lets go of what it held (§2): no ghost over the entity now shown, and
-  // no transfer from a release there.
+  // A hidden view lets go of what it held (§2): no ghost over the entity now shown, no
+  // transfer from a release there, and no Replace prompt to come back with a stale count.
   $effect(() => {
     if (!active) {
       endGesture();
       osDrop = null;
+      overwrite = null;
     }
   });
 

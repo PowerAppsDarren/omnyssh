@@ -427,6 +427,37 @@ test('a transfer that would replace items asks first, once for the batch', async
   await expect.poll(() => uploads(page)).toEqual(['/notes.txt', '/notes.txt', '/work']);
 });
 
+test('a Replace prompt left for another tab is dropped, not brought back', async ({ page }) => {
+  await boot(page);
+  await page.getByTitle('files on web-1').click();
+  await expect(page.getByRole('region', { name: 'web-1' }).getByText('config.yml')).toBeVisible();
+  await page.getByRole('button', { name: 'Dashboard', exact: true }).click();
+  await page.getByTitle('files on db-1').click();
+  await expect(page.getByRole('region', { name: 'db-1' }).getByText('config.yml')).toBeVisible();
+  await page.getByRole('button', { name: 'web-1 · sftp', exact: true }).click();
+
+  const localPane = page.getByRole('region', { name: 'Local' });
+  await page.getByRole('region', { name: 'web-1' }).getByRole('checkbox', { name: 'Mark config.yml' }).click();
+  await page.getByRole('button', { name: 'Download' }).click();
+  await complete(page);
+  await expect(localPane.getByText('config.yml')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Download' }).click();
+  const ask = page.getByRole('dialog', { name: 'Replace existing items' });
+  await expect(ask).toBeVisible();
+  await page.keyboard.press('Control+k');
+  await page.getByRole('dialog', { name: 'Command palette' }).getByRole('textbox').fill('db-1');
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('region', { name: 'db-1' })).toBeVisible();
+  await expect(ask).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'web-1 · sftp', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'web-1' })).toBeVisible();
+  await expect(ask).toHaveCount(0);
+  const downloads = await page.evaluate(() => (window as unknown as { __downloads: string[] }).__downloads);
+  expect(downloads).toEqual(['/home/user/config.yml']);
+});
+
 test('a drop on a folder row does not ask: that folder is not on show', async ({ page }) => {
   await boot(page);
   await page.getByTitle('files on web-1').click();
