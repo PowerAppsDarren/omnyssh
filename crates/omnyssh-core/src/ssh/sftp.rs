@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::Context;
 use russh_sftp::protocol::{FileAttributes, FileType, OpenFlags};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio::time;
 
 use crate::event::{CoreEvent, TransferId};
@@ -118,9 +118,9 @@ type Queued = (u64, SftpCommand);
 #[derive(Debug)]
 pub struct SftpManager {
     cmd_tx: mpsc::Sender<Queued>,
-    /// How many times transfers were cancelled. Shared with the task rather than
-    /// queued: the transfer to stop holds the queue until it ends.
-    cancels: Arc<AtomicU64>,
+    /// Shared with the task rather than queued: the transfer to stop holds the queue
+    /// until it ends.
+    cancels: Arc<Cancels>,
 }
 
 impl SftpManager {
@@ -155,7 +155,7 @@ impl SftpManager {
         .map_err(|_| anyhow::anyhow!("SFTP did not start within {}s", OPEN_TIMEOUT.as_secs()))??;
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<Queued>(64);
-        let cancels = Arc::new(AtomicU64::new(0));
+        let cancels = Arc::new(Cancels::default());
         let host_name = host.name.clone();
 
         // `session` and `sftp` are owned by this async block.  If the task
@@ -178,9 +178,7 @@ impl SftpManager {
 
     /// Enqueues a command (fire-and-forget). Silently drops if the task exited.
     pub fn send(&self, cmd: SftpCommand) {
-        let _ = self
-            .cmd_tx
-            .try_send((self.cancels.load(Ordering::Relaxed), cmd));
+        let _ = self.cmd_tx.try_send((self.cancels.count(), cmd));
     }
 
     /// Cancels every transfer sent so far. The running one stops at its next step and
@@ -188,7 +186,7 @@ impl SftpManager {
     /// stop before they start. Each still ends with its [`CoreEvent::SftpOpDone`],
     /// whose error says it was cancelled.
     pub fn cancel(&self) {
-        self.cancels.fetch_add(1, Ordering::Relaxed);
+        self.cancels.bump();
     }
 
     /// Cancels the transfers, sends [`SftpCommand::Disconnect`] and drops the sender.
@@ -213,7 +211,7 @@ async fn sftp_task_loop(
     sftp: russh_sftp::client::SftpSession,
     mut cmd_rx: mpsc::Receiver<Queued>,
     event_tx: mpsc::Sender<CoreEvent>,
-    cancels: Arc<AtomicU64>,
+    cancels: Arc<Cancels>,
 ) {
     while let Some((sent, cmd)) = cmd_rx.recv().await {
         let cancel = Cancel {
@@ -435,19 +433,50 @@ fn check_paths(local: &str, remote: &str) -> anyhow::Result<()> {
 /// up to never end.
 const MAX_DEPTH: usize = 64;
 
+/// How many times a manager's transfers were cancelled, and a wake-up for a step
+/// waiting on that.
+#[derive(Debug, Default)]
+struct Cancels {
+    count: AtomicU64,
+    changed: Notify,
+}
+
+impl Cancels {
+    fn count(&self) -> u64 {
+        self.count.load(Ordering::Relaxed)
+    }
+
+    fn bump(&self) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.changed.notify_waiters();
+    }
+}
+
 /// Whether the transfer at hand was cancelled: the manager's cancel count has moved
 /// on from the one its command was sent under.
 struct Cancel<'a> {
-    cancels: &'a AtomicU64,
+    cancels: &'a Cancels,
     sent: u64,
 }
 
 impl Cancel<'_> {
     fn check(&self) -> anyhow::Result<()> {
-        if self.cancels.load(Ordering::Relaxed) == self.sent {
+        if self.cancels.count() == self.sent {
             Ok(())
         } else {
             Err(Cancelled.into())
+        }
+    }
+
+    /// Resolves once the transfer is cancelled, for a step a server can keep going.
+    async fn cancelled(&self) {
+        loop {
+            // Made before the check, so a cancel in between still wakes it.
+            let changed = self.cancels.changed.notified();
+            if self.check().is_err() {
+                return;
+            }
+            changed.await;
         }
     }
 }
@@ -657,7 +686,12 @@ where
     let mut stack = vec![(root.to_string(), dst_root.to_path_buf(), mode, 0)];
     while let Some((src, dst, mode, depth)) = stack.pop() {
         cancel.check()?;
-        let entries = match list(src.clone()).await {
+        // A server can answer one listing for ever.
+        let listing = tokio::select! {
+            listing = list(src.clone()) => listing,
+            () = cancel.cancelled() => return Err(Cancelled.into()),
+        };
+        let entries = match listing {
             Ok(entries) => entries,
             Err(e) => {
                 skipped.add(&src, format_args!("read remote dir: {e:#}"));
@@ -1085,7 +1119,7 @@ mod tests {
         assert!(drive_roots(0).is_empty());
     }
 
-    fn no_cancel(cancels: &AtomicU64) -> Cancel<'_> {
+    fn no_cancel(cancels: &Cancels) -> Cancel<'_> {
         Cancel { cancels, sent: 0 }
     }
 
@@ -1131,7 +1165,7 @@ mod tests {
             std::os::unix::net::UnixListener::bind(dir.join("sock")).expect("socket");
         }
 
-        let cancels = AtomicU64::new(0);
+        let cancels = Cancels::default();
         let mut skipped = Skipped::default();
         let root = dir.to_str().expect("utf-8 temp dir");
         let plan = plan_local_tree(
@@ -1180,7 +1214,7 @@ mod tests {
         let bad = std::ffi::OsStr::from_bytes(b"bad\xff.txt");
         std::fs::write(tmp.path().join(bad), b"bad").expect("write");
 
-        let cancels = AtomicU64::new(0);
+        let cancels = Cancels::default();
         let mut skipped = Skipped::default();
         let root = tmp.path().to_str().expect("utf-8 temp dir");
         let plan = plan_local_tree(root, None, "/up", &no_cancel(&cancels), &mut skipped)
@@ -1236,7 +1270,7 @@ mod tests {
             ),
         ]);
         let dst = Path::new("dl").join("app");
-        let cancels = AtomicU64::new(0);
+        let cancels = Cancels::default();
         let mut skipped = Skipped::default();
         let plan = plan_remote_tree(
             server,
@@ -1293,7 +1327,7 @@ mod tests {
         let server = |_dir: String| {
             std::future::ready(anyhow::Ok(vec![("d".to_string(), attrs(0o40_755, 0))]))
         };
-        let cancels = AtomicU64::new(0);
+        let cancels = Cancels::default();
         let mut skipped = Skipped::default();
         let plan = plan_remote_tree(
             server,
@@ -1315,9 +1349,9 @@ mod tests {
 
     #[tokio::test]
     async fn planning_stops_at_the_next_folder_once_cancelled() {
-        let cancels = AtomicU64::new(0);
+        let cancels = Cancels::default();
         let server = |_dir: String| {
-            cancels.fetch_add(1, Ordering::Relaxed);
+            cancels.bump();
             std::future::ready(anyhow::Ok(vec![("d".to_string(), attrs(0o40_755, 0))]))
         };
         let mut skipped = Skipped::default();
@@ -1332,11 +1366,32 @@ mod tests {
         .await
         .expect_err("cancelled");
         assert!(err.is::<Cancelled>());
-        assert_eq!(
-            cancels.load(Ordering::Relaxed),
-            1,
-            "one folder read, no more"
-        );
+        assert_eq!(cancels.count(), 1, "one folder read, no more");
+    }
+
+    #[tokio::test]
+    async fn a_cancel_stops_a_listing_that_never_ends() {
+        let cancels = Cancels::default();
+        // A server that keeps the first listing going.
+        let server =
+            |_dir: String| std::future::pending::<anyhow::Result<Vec<(String, FileAttributes)>>>();
+        let cancel = no_cancel(&cancels);
+        let mut skipped = Skipped::default();
+        let plan = plan_remote_tree(server, "/x", None, Path::new("dl"), &cancel, &mut skipped);
+        let press_cancel = async {
+            cancels.bump();
+            std::future::pending::<()>().await
+        };
+        let stopped = time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                biased;
+                result = plan => result,
+                () = press_cancel => unreachable!("never ends"),
+            }
+        })
+        .await
+        .expect("planning stopped");
+        assert!(stopped.expect_err("cancelled").is::<Cancelled>());
     }
 
     #[test]
@@ -1367,7 +1422,7 @@ mod tests {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
         let manager = SftpManager {
             cmd_tx,
-            cancels: Arc::new(AtomicU64::new(0)),
+            cancels: Arc::default(),
         };
         let cancels = Arc::clone(&manager.cancels);
         let cancelled = |sent| {
@@ -1398,7 +1453,7 @@ mod tests {
     /// Hands out `data` in one read and cancels the transfer as it does.
     struct CancellingReader<'a> {
         data: &'a [u8],
-        cancels: &'a AtomicU64,
+        cancels: &'a Cancels,
     }
 
     impl AsyncRead for CancellingReader<'_> {
@@ -1410,7 +1465,7 @@ mod tests {
             let n = self.data.len().min(buf.remaining());
             buf.put_slice(&self.data[..n]);
             self.data = &self.data[n..];
-            self.cancels.fetch_add(1, Ordering::Relaxed);
+            self.cancels.bump();
             std::task::Poll::Ready(Ok(()))
         }
     }
@@ -1419,7 +1474,7 @@ mod tests {
     async fn a_cancelled_download_removes_the_part_it_wrote() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let local = tmp.path().join("part.bin");
-        let cancels = AtomicU64::new(0);
+        let cancels = Cancels::default();
         let (tx, _rx) = mpsc::channel(8);
         let mut progress = Progress::start(1, 100, &tx).await;
         let source = CancellingReader {
@@ -1446,7 +1501,7 @@ mod tests {
     #[tokio::test]
     async fn a_download_keeps_the_source_mode() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let cancels = AtomicU64::new(0);
+        let cancels = Cancels::default();
         let (tx, _rx) = mpsc::channel(8);
         let mut progress = Progress::start(1, 10, &tx).await;
 
@@ -1520,7 +1575,7 @@ mod tests {
         set_mode(path("src/private"), 0o700);
         std::os::unix::fs::symlink(path("src/run.sh"), path("src/link")).expect("symlink");
 
-        let cancels = AtomicU64::new(0);
+        let cancels = Cancels::default();
         let (tx, mut rx) = mpsc::channel(64);
         let err = do_upload(
             &str_of(&path("src")),
@@ -1623,7 +1678,7 @@ mod tests {
         // One slot: the upload cannot run more than a chunk ahead of this watcher,
         // which cancels once the first chunk is out.
         let (tx, mut rx) = mpsc::channel(1);
-        let cancels = AtomicU64::new(0);
+        let cancels = Cancels::default();
         let cancel = no_cancel(&cancels);
         let upload = do_upload(
             src.to_str().expect("utf-8"),
@@ -1636,7 +1691,7 @@ mod tests {
         let watch = async {
             while let Some(CoreEvent::FileTransferProgress(_, done, _)) = rx.recv().await {
                 if done > 0 {
-                    cancels.fetch_add(1, Ordering::Relaxed);
+                    cancels.bump();
                 }
             }
         };
@@ -1661,7 +1716,7 @@ mod tests {
         std::fs::create_dir_all(path("src/a/b")).expect("mkdir");
         std::fs::write(path("src/a/b/f.txt"), "hello").expect("write");
 
-        let cancels = AtomicU64::new(0);
+        let cancels = Cancels::default();
         let cancel = no_cancel(&cancels);
         let (tx, _rx) = mpsc::channel(64);
         do_upload(&str_of("src"), &sftp, &str_of("up"), 1, &tx, &cancel)
@@ -1688,7 +1743,7 @@ mod tests {
                 .expect("chmod");
         }
 
-        let cancels = AtomicU64::new(0);
+        let cancels = Cancels::default();
         let cancel = no_cancel(&cancels);
         let (tx, _rx) = mpsc::channel(64);
         for round in 0..2 {
