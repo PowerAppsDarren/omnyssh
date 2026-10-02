@@ -398,12 +398,16 @@ fn join_local(dir: &Path, name: &str) -> Option<PathBuf> {
     (is_safe_name(name) && path.parent() == Some(dir)).then_some(path)
 }
 
-/// Rejects a download destination whose own name could not be created as itself: the
-/// frontends build it from the name the server listed.
-fn check_local_name(local: &str) -> anyhow::Result<()> {
-    let name = Path::new(local).file_name().and_then(|n| n.to_str());
-    if !name.is_some_and(is_safe_name) {
-        anyhow::bail!("'{local}' is not a name that can be created here");
+/// Rejects a download whose own name, as the server lists it or as it ends `local`,
+/// could not be created here as itself: the frontends build `local` from that name, and
+/// on Windows `a\b` would turn into a folder and a file.
+fn check_download_name(remote: &str, local: &str) -> anyhow::Result<()> {
+    let local_name = Path::new(local).file_name().and_then(|n| n.to_str());
+    for name in [remote.rsplit('/').next(), local_name] {
+        let name = name.unwrap_or_default();
+        if !is_safe_name(name) {
+            anyhow::bail!("'{name}' is not a name that can be created here");
+        }
     }
     Ok(())
 }
@@ -701,7 +705,7 @@ async fn do_download(
     cancel: &Cancel<'_>,
 ) -> anyhow::Result<()> {
     check_paths(local, remote)?;
-    check_local_name(local)?;
+    check_download_name(remote, local)?;
     cancel.check()?;
 
     // Size, mode and type best-effort: a failed stat downloads as a file, and the open
@@ -1772,9 +1776,15 @@ mod tests {
             );
         }
         assert_eq!(join_local(dst, "x.txt"), Some(dst.join("x.txt")));
-        assert!(check_local_name(r"C:\Users\me\D:evil").is_err());
-        assert!(check_local_name(r"C:\Users\me\nul.txt").is_err());
-        assert!(check_local_name(r"C:\Users\me\notes.txt").is_ok());
+        // The item itself: the frontends join its listed name onto the destination.
+        let download =
+            |name: &str| check_download_name(&format!("/srv/{name}"), &format!(r"C:\dl\{name}"));
+        for name in ["D:evil", "nul.txt", r"a\b", r"..\x"] {
+            assert!(download(name).is_err(), "{name:?} should be refused");
+        }
+        assert!(download("notes.txt").is_ok());
+        // As the terminal app builds it, from the path's last component.
+        assert!(check_download_name(r"/srv/a\b", r"C:\dl\b").is_err());
     }
 
     #[cfg(unix)]
@@ -1790,8 +1800,10 @@ mod tests {
                 "{name:?} should be refused"
             );
         }
-        assert!(check_local_name("/home/me/dl/C:x").is_ok());
-        assert!(check_local_name("/").is_err());
+        assert!(check_download_name("/srv/a\\b", "/home/me/dl/a\\b").is_ok());
+        assert!(check_download_name("/srv/C:x", "/home/me/dl/C:x").is_ok());
+        assert!(check_download_name("/", "/home/me/dl/x").is_err());
+        assert!(check_download_name("/srv/x", "/").is_err());
     }
 
     #[test]
