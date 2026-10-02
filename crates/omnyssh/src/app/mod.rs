@@ -1038,31 +1038,27 @@ impl App {
             }
 
             CoreEvent::SftpOpDone { result } => {
-                self.view.file_manager.pending_ops =
-                    self.view.file_manager.pending_ops.saturating_sub(1);
-                let remaining = self.view.file_manager.pending_ops;
-
-                match result {
-                    Ok(()) => {
-                        if remaining == 0 {
-                            // All queued operations finished — close popup and refresh.
-                            self.view.file_manager.popup = None;
-                            self.view.file_manager.active_transfer = None;
-                            self.view.status_message = None;
-                            self.refresh_active_panels().await;
-                        } else {
-                            self.view.status_message =
-                                Some(format!("{remaining} file(s) remaining…"));
-                        }
-                    }
-                    Err(e) => {
-                        // Abort remaining: clear popup, show error, refresh.
-                        self.view.file_manager.popup = None;
-                        self.view.file_manager.active_transfer = None;
-                        self.view.file_manager.pending_ops = 0;
-                        self.view.status_message = Some(format!("Transfer failed: {e}"));
-                        self.refresh_active_panels().await;
-                    }
+                let fm = &mut self.view.file_manager;
+                fm.pending_ops = fm.pending_ops.saturating_sub(1);
+                // The queued operations run on past a failure: the first one is kept
+                // for the end, where no later result can wipe it, and the rest counted.
+                if let Err(e) = result {
+                    fm.op_failures += 1;
+                    fm.op_error.get_or_insert(e);
+                }
+                if fm.pending_ops > 0 {
+                    self.view.status_message =
+                        Some(format!("{} item(s) remaining…", fm.pending_ops));
+                } else {
+                    // All queued operations finished — close popup and refresh.
+                    fm.popup = None;
+                    fm.active_transfer = None;
+                    let more = std::mem::take(&mut fm.op_failures).saturating_sub(1);
+                    self.view.status_message = fm.op_error.take().map(|e| match more {
+                        0 => format!("Transfer failed: {e}"),
+                        more => format!("Transfer failed: {e} (+{more} more)"),
+                    });
+                    self.refresh_active_panels().await;
                 }
             }
 

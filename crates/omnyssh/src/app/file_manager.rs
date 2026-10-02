@@ -186,6 +186,10 @@ pub struct FileManagerView {
     pub active_transfer: Option<TransferId>,
     /// Number of queued transfer operations not yet completed.
     pub pending_ops: usize,
+    /// The first failure among them, reported once they are all done.
+    pub op_error: Option<String>,
+    /// How many of them failed.
+    pub op_failures: usize,
 }
 
 impl App {
@@ -491,6 +495,8 @@ impl App {
         let first_tid = self.next_transfer_id;
         self.next_transfer_id += count as u64;
         self.view.file_manager.pending_ops = count;
+        self.view.file_manager.op_error = None;
+        self.view.file_manager.op_failures = 0;
 
         // Show progress popup for the first file; subsequent files update it
         // via FileTransferProgress events.
@@ -538,7 +544,7 @@ impl App {
         }
 
         if count > 1 {
-            self.view.status_message = Some(format!("Queued {count} files for transfer…"));
+            self.view.status_message = Some(format!("Queued {count} items for transfer…"));
         }
     }
 
@@ -554,6 +560,8 @@ impl App {
         if is_remote {
             // Track how many ops are in flight so SftpOpDone can count down.
             self.view.file_manager.pending_ops = paths.len();
+            self.view.file_manager.op_error = None;
+            self.view.file_manager.op_failures = 0;
             // Send delete commands for all paths.
             for path in paths {
                 if let Some(mgr) = &self.sftp_manager {
@@ -990,5 +998,58 @@ mod tests {
         p.apply_hidden_filter();
         assert!(!p.marked.contains("/.secret"));
         assert!(p.marked.contains("/visible"));
+    }
+
+    // --- Transfers ----------------------------------------------------------
+
+    /// An app whose file manager is part way into a paste of three items.
+    async fn transferring_three() -> App {
+        let mut app = App::default();
+        app.state.write().await.screen = Screen::FileManager;
+        let fm = &mut app.view.file_manager;
+        fm.pending_ops = 3;
+        fm.popup = Some(FileManagerPopup::TransferProgress {
+            transfer_id: 0,
+            filename: "a  (+2 more)".to_string(),
+            done: 0,
+            total: 0,
+        });
+        app
+    }
+
+    async fn done(app: &mut App, result: Result<(), &str>) {
+        let result = result.map_err(String::from);
+        let event = CoreEvent::SftpOpDone { result };
+        app.handle_core_event(event).await.unwrap();
+    }
+
+    fn progress_shown(app: &App) -> bool {
+        matches!(
+            app.view.file_manager.popup,
+            Some(FileManagerPopup::TransferProgress { .. })
+        )
+    }
+
+    #[tokio::test]
+    async fn a_transfer_reports_its_first_failure_once_the_rest_is_done() {
+        let mut app = transferring_three().await;
+        let skipped = "1 item skipped or failed, first '/l/a/fifo': not a regular file or folder";
+        done(&mut app, Err(skipped)).await;
+        assert!(progress_shown(&app));
+        assert_eq!(
+            app.view.status_message.as_deref(),
+            Some("2 item(s) remaining…")
+        );
+        done(&mut app, Ok(())).await;
+        done(
+            &mut app,
+            Err("open local file for upload: Permission denied"),
+        )
+        .await;
+        assert!(!progress_shown(&app));
+        assert_eq!(
+            app.view.status_message,
+            Some(format!("Transfer failed: {skipped} (+1 more)"))
+        );
     }
 }
