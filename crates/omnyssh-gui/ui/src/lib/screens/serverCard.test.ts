@@ -251,7 +251,9 @@ describe('dashboard sort and drag order', () => {
     expect(names(sortCards(cards, 'name', [], keyOf))).toEqual(['db', 'web-1', 'Web-2', 'web-10']);
   });
 
-  it('name mixes capitals in, whatever the system locale', () => {
+  // The order WebKitGTK broke under a POSIX locale. Node maps C.UTF-8 to en-US, so
+  // this pins the order but can't reproduce that default.
+  it('name mixes capitals in', () => {
     const cards = ['Web-upper', 'api-eu', 'Zeta', 'bad-auth', 'ALPHA'].map(card);
     expect(names(sortCards(cards, 'name', [], keyOf))).toEqual(['ALPHA', 'api-eu', 'bad-auth', 'Web-upper', 'Zeta']);
   });
