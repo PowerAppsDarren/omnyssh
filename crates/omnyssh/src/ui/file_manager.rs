@@ -392,8 +392,19 @@ fn render_panel(
     }
     panel.scroll.set(scroll);
 
-    // Build list items.
-    let items: Vec<ListItem> = panel
+    // Modification times, once the panel is wide enough to keep names readable.
+    // They get a strip of their own, so no name, however wide, moves them.
+    let (names_area, dates_area) = if inner.width >= MTIME_MIN_PANEL_WIDTH {
+        let [names, dates] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(1 + MTIME_WIDTH)])
+                .areas(inner);
+        (names, Some(dates))
+    } else {
+        (inner, None)
+    };
+
+    // Build list items: each entry's name row and date row.
+    let (items, dates): (Vec<ListItem>, Vec<Option<ListItem>>) = panel
         .entries
         .iter()
         .enumerate()
@@ -427,31 +438,13 @@ fn render_panel(
                 format_size(entry.size)
             };
 
-            // Modification time, only when the panel is wide enough to keep
-            // the name readable. A fixed width keeps the column aligned.
-            let date_str = if inner.width >= MTIME_MIN_PANEL_WIDTH && entry.name != ".." {
-                format!(
-                    "{:>width$}",
-                    format_mtime(entry.modified),
-                    width = MTIME_WIDTH
-                )
-            } else {
-                String::new()
-            };
-
             // Width budget: cursor(2) + mark(3, with trailing padding) +
-            // icon(1) + space(1) + name + space-before-size(1) + size +
-            // (space + date, when shown).
+            // icon(1) + space(1) + name + space-before-size(1) + size.
             // The nerd-font glyph occupies a single cell even though its
             // codepoint is wide.
-            let date_width = if date_str.is_empty() {
-                0
-            } else {
-                1 + MTIME_WIDTH as u16
-            };
-            let name_width = inner
+            let name_width = names_area
                 .width
-                .saturating_sub(2 + 3 + 1 + 1 + 1 + size_str.len() as u16 + date_width)
+                .saturating_sub(2 + 3 + 1 + 1 + 1 + size_str.len() as u16)
                 as usize;
             let name_display: String = if entry.name.chars().count() > name_width {
                 let truncated = entry
@@ -503,24 +496,33 @@ fn render_panel(
                 ));
             }
 
-            if !date_str.is_empty() {
-                spans.push(Span::styled(
-                    format!(" {}", date_str),
+            let date_item = dates_area.map(|_| {
+                let date = if entry.name == ".." {
+                    String::new()
+                } else {
+                    format_mtime(entry.modified)
+                };
+                ListItem::new(Span::styled(
+                    format!(" {date}"),
                     Style::default().fg(theme.text_muted),
-                ));
-            }
+                ))
+            });
 
             let item = ListItem::new(Line::from(spans));
             if is_cursor {
-                item.style(Style::default().bg(theme.selected_bg))
+                let selected = Style::default().bg(theme.selected_bg);
+                (item.style(selected), date_item.map(|d| d.style(selected)))
             } else {
-                item
+                (item, date_item)
             }
         })
-        .collect();
+        .unzip();
 
     let list = List::new(items);
-    frame.render_widget(list, inner);
+    frame.render_widget(list, names_area);
+    if let Some(dates_area) = dates_area {
+        frame.render_widget(List::new(dates.into_iter().flatten()), dates_area);
+    }
 
     // Scrollbar if entries overflow.
     if panel.entries.len() > visible_rows {
@@ -1009,7 +1011,7 @@ fn render_fm_delete_confirm(
 // ---------------------------------------------------------------------------
 
 /// Cells taken by a formatted modification time ("2026-09-30 14:05").
-const MTIME_WIDTH: usize = 16;
+const MTIME_WIDTH: u16 = 16;
 
 /// Narrowest panel interior that still shows the modification-time column.
 const MTIME_MIN_PANEL_WIDTH: u16 = 48;
@@ -1091,14 +1093,51 @@ fn sanitize_preview_content(content: &str, max_width: usize, max_lines: usize) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omnyssh_core::ssh::sftp::FileEntry;
 
     #[test]
     fn format_mtime_is_fixed_width_or_blank() {
         assert_eq!(
             format_mtime(Some(1_700_000_000)).chars().count(),
-            MTIME_WIDTH
+            MTIME_WIDTH as usize
         );
         assert_eq!(format_mtime(None), "");
         assert_eq!(format_mtime(Some(i64::MAX)), "");
+    }
+
+    #[test]
+    fn dates_line_up_on_folder_rows_and_after_wide_names() {
+        let entry = |name: &str, is_dir: bool| FileEntry {
+            name: name.to_string(),
+            path: format!("/{name}"),
+            size: 14,
+            is_dir,
+            modified: Some(1_700_000_000),
+        };
+        let panel = FilePanelView {
+            entries: vec![
+                entry("src", true),
+                entry("notes.txt", false),
+                // Two glyphs two cells wide each.
+                entry(&format!("{}.txt", "\u{65e5}\u{672c}".repeat(4)), false),
+                entry(&"\u{65e5}\u{672c}".repeat(30), false),
+            ],
+            ..FilePanelView::default()
+        };
+        let backend = ratatui::backend::TestBackend::new(60, 6);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let theme = crate::ui::theme::Theme::default();
+                render_panel(frame, frame.area(), &panel, "LOCAL", true, &theme);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let date = format!(" {}", format_mtime(Some(1_700_000_000)));
+        // Column 58 is the last one inside the right border.
+        for y in 1..=4 {
+            let row: String = (0..=58).map(|x| buffer[(x, y)].symbol()).collect();
+            assert!(row.ends_with(&date), "{row:?}");
+        }
     }
 }
