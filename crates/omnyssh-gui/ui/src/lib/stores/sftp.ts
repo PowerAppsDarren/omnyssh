@@ -147,13 +147,17 @@ export function rootOf(path: string, roots: string[]): string {
   return roots.find((root) => lower.startsWith(root.toLowerCase())) ?? '';
 }
 
+// A Windows path that is only a root: a drive, a share ('\\\\server\\share'), or a drive,
+// share or volume in the long form that starts '\\\\?\\'.
+const WINDOWS_ROOT = /^(?:[a-z]:|\\\\[?.]\\(?:unc\\[^\\]+\\[^\\]+|[^\\]+)|\\\\[^\\]+\\[^\\]+)\\?$/i;
+
 /** The name a local path is uploaded under: its last component, or '' for a root
- *  ('/', 'C:\\'), which has no name to give it on the server. A path with no '/' is a
- *  Windows one, where '\\' separates; elsewhere '\\' is part of a name. */
+ *  ('/', 'C:\\', '\\\\server\\share'), which has no name to give it on the server. A path
+ *  with no '/' is a Windows one, where '\\' separates; elsewhere '\\' is part of a name. */
 export function baseName(path: string): string {
   const sep = path.includes('/') ? '/' : '\\';
-  const name = path.split(sep).filter(Boolean).at(-1) ?? '';
-  return sep === '\\' && /^[a-z]:$/i.test(name) ? '' : name;
+  if (sep === '\\' && WINDOWS_ROOT.test(path)) return '';
+  return path.split(sep).filter(Boolean).at(-1) ?? '';
 }
 
 /** Human-readable byte size for a listing row or a transfer bar. */

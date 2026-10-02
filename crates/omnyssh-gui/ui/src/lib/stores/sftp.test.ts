@@ -325,6 +325,17 @@ describe('baseName', () => {
     expect(baseName('/')).toBe('');
     expect(baseName('C:\\')).toBe('');
     expect(baseName('d:')).toBe('');
+    expect(baseName('\\\\server\\share')).toBe('');
+    expect(baseName('\\\\server\\share\\')).toBe('');
+    expect(baseName('\\\\?\\C:\\')).toBe('');
+    expect(baseName('\\\\?\\Volume{0b1c}\\')).toBe('');
+    expect(baseName('\\\\?\\UNC\\server\\share\\')).toBe('');
+  });
+
+  it('names what lies on a share or behind a long path', () => {
+    expect(baseName('\\\\server\\share\\album')).toBe('album');
+    expect(baseName('\\\\?\\C:\\Users\\me\\photo.png')).toBe('photo.png');
+    expect(baseName('\\\\?\\UNC\\server\\share\\album\\')).toBe('album');
   });
 });
 
