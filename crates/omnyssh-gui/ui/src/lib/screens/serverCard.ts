@@ -247,15 +247,29 @@ function statusRank(card: ServerCard): number {
   return card.overall === 'unknown' ? 1 : 0;
 }
 
+const nameKey = (h: HostDto): string => JSON.stringify([h.name]);
+const addressKey = (h: HostDto): string => JSON.stringify([h.name, h.user, h.hostname, h.port]);
+
 /** How the custom order names a host. Build it from every host, not a filtered few: a name
- *  that a hand-edited hosts.toml or ~/.ssh/config repeats gets user@hostname:port added.
- *  A unique host so keeps its place when its address changes; JSON keeps the parts from
- *  running together. */
+ *  that a hand-edited hosts.toml or ~/.ssh/config repeats gets user@hostname:port added,
+ *  and a later entry at the same address its count too, which holds while config order
+ *  does. The count is found by object, so key the hosts it was built from. So a unique
+ *  host keeps its place when its address is edited; JSON keeps the parts from running
+ *  together. */
 export function orderKeys(hosts: readonly HostDto[]): (host: HostDto) => string {
   const seen = new Set<string>();
   const repeated = new Set<string>();
   for (const { name } of hosts) (seen.has(name) ? repeated : seen).add(name);
-  return (h) => JSON.stringify(repeated.has(h.name) ? [h.name, h.user, h.hostname, h.port] : [h.name]);
+  const keyOf = (h: HostDto): string => (repeated.has(h.name) ? addressKey(h) : nameKey(h));
+  const copies = new Map<string, number>();
+  const later = new Map<HostDto, string>();
+  for (const h of hosts) {
+    const key = keyOf(h);
+    const n = copies.get(key) ?? 0;
+    copies.set(key, n + 1);
+    if (n) later.set(h, JSON.stringify([h.name, h.user, h.hostname, h.port, n]));
+  }
+  return (h) => later.get(h) ?? keyOf(h);
 }
 
 // A fixed locale: the system's may be POSIX (C.UTF-8), whose collation puts every
@@ -290,11 +304,10 @@ export function moveCard(
 ): string[] {
   const moved = keyOf(run[from].host);
   const rest = run.filter((_, i) => i !== from).map((c) => keyOf(c.host));
-  // Anchor on a neighbour in the run. Entries identical down to the address share a
-  // key, so skip the card's own.
-  const next = rest.slice(to).find((k) => k !== moved);
-  const prev = rest.slice(0, to).reverse().find((k) => k !== moved);
-  const order = [...new Set(all.map((c) => keyOf(c.host)))].filter((k) => k !== moved);
+  // Anchor on a neighbour in the run.
+  const next: string | undefined = rest[to];
+  const prev = to > 0 ? rest[to - 1] : undefined;
+  const order = all.map((c) => keyOf(c.host)).filter((k) => k !== moved);
   const at =
     next !== undefined ? order.indexOf(next) : prev !== undefined ? order.indexOf(prev) + 1 : order.length;
   order.splice(at, 0, moved);

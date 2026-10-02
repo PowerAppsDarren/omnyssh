@@ -225,15 +225,9 @@
     frame = requestAnimationFrame(edgeScroll);
   }
 
-  // Returns where the card landed: entries identical down to the address share one place
-  // in the saved order, so that can differ from `to`.
-  function commitMove(run: ServerCard[], from: number, to: number): number {
-    const order = moveCard(onScreen($serverCards), run, from, to, keyOf);
-    dashboardView.setOrder(order);
-    const host = run[from].host;
-    const at = sortCards(run, 'custom', order, keyOf).findIndex((c) => c.host === host);
-    announcement = `${host.name} moved to position ${at + 1} of ${run.length}`;
-    return at;
+  function commitMove(run: ServerCard[], from: number, to: number): void {
+    dashboardView.setOrder(moveCard(onScreen($serverCards), run, from, to, keyOf));
+    announcement = `${run[from].host.name} moved to position ${to + 1} of ${run.length}`;
   }
 
   // Keyboard reorder on the grip; focus follows the card to its new place.
@@ -252,9 +246,9 @@
     e.preventDefault();
     if (to < 0 || to > last || to === from) return;
     const cards = (e.currentTarget as HTMLElement).closest('[data-cards]');
-    const at = commitMove(run, from, to);
+    commitMove(run, from, to);
     await tick();
-    cards?.querySelectorAll<HTMLElement>('[data-grip]')[at]?.focus();
+    cards?.querySelectorAll<HTMLElement>('[data-grip]')[to]?.focus();
   }
 
   onDestroy(endDrag);

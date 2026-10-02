@@ -320,15 +320,22 @@ describe('custom order with repeated host names', () => {
     expect(ids(sortCards(all, 'custom', order, keyOf))).toEqual(['twin:2201', 'twin:22', 'x:22']);
   });
 
-  it('leaves a namesake in another section in place', () => {
-    const all = [at('u', 22), at('a', 22, ['db']), at('dup', 22, ['db']), at('dup', 2202)];
+  it('moves one of two entries at the same address before the other', () => {
+    const all = [at('twin', 22), at('x', 22), at('twin', 22)];
+    const keyOf = keysOf(all);
+    const order = moveCard(all, all, 2, 0, keyOf);
+    expect(sortCards(all, 'custom', order, keyOf).map((c) => all.indexOf(c))).toEqual([2, 0, 1]);
+  });
+
+  it.each([2202, 22])('leaves a namesake on port %i in another section in place', (port) => {
+    const all = [at('u', 22), at('a', 22, ['db']), at('dup', 22, ['db']), at('dup', port)];
     const keyOf = keysOf(all);
     const untagged = [all[0], all[3]];
     const order = moveCard(all, untagged, 1, 0, keyOf);
     const sections = groupByTag(sortCards(all, 'custom', order, keyOf)).map((g) => [g.tag, ids(g.cards)]);
     expect(sections).toEqual([
       ['db', ['a:22', 'dup:22']],
-      [null, ['dup:2202', 'u:22']]
+      [null, [`dup:${port}`, 'u:22']]
     ]);
   });
 });
