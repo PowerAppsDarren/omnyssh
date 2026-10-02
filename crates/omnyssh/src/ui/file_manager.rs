@@ -679,9 +679,10 @@ fn render_transfer_progress(
         rows[0],
     );
 
-    // Progress gauge.
+    // Progress gauge. A file that grows while it is copied goes past its planned
+    // size, and the gauge takes nothing above 100.
     let percent = if total > 0 {
-        ((done as f64 / total as f64) * 100.0) as u16
+        (((done as f64 / total as f64) * 100.0) as u16).min(100)
     } else {
         0
     };
@@ -1124,6 +1125,30 @@ mod tests {
         );
         assert_eq!(format_mtime(None), "");
         assert_eq!(format_mtime(Some(i64::MAX)), "");
+    }
+
+    #[test]
+    fn a_file_that_grew_while_copied_fills_the_gauge() {
+        let backend = ratatui::backend::TestBackend::new(60, 5);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let theme = crate::ui::theme::Theme::default();
+                render_transfer_progress(
+                    frame,
+                    frame.area(),
+                    "access.log",
+                    1500,
+                    1000,
+                    false,
+                    &theme,
+                );
+            })
+            .expect("draw");
+        let row: String = (0..60)
+            .map(|x| terminal.backend().buffer()[(x, 2)].symbol())
+            .collect();
+        assert!(row.contains("(100%)"), "{row:?}");
     }
 
     #[test]
