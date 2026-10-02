@@ -429,6 +429,15 @@
       // Off the Tauri runtime there is no webview to drop onto; pane to pane still works.
       return;
     }
+    // Read again as each drag comes in: the window may have moved to a screen of
+    // another scale.
+    let scale: number | null = null;
+    const readScale = () =>
+      void webview.window
+        .scaleFactor()
+        .then((s) => (scale = s))
+        .catch(() => {});
+    readScale();
     void webview
       .onDragDropEvent((event) => {
         if (!active || !view) return;
@@ -437,7 +446,8 @@
           osDrop = null;
           return;
         }
-        const at = dropPoint(p.position);
+        if (p.type === 'enter') readScale();
+        const at = dropPoint(p.position, scale);
         const target = dropTargetAt(at.x, at.y);
         const remote = target?.side === 'remote' ? target : null;
         if (p.type === 'drop') {

@@ -14,13 +14,18 @@ const HOSTS = [
 
 // `windows` swaps in a Windows-shaped local side: a home on C: and a second drive, D:.
 // `holdProgress` keeps a transfer's first tick back until `__tick()`, as while the core
-// walks a folder.
+// walks a folder. `windowScale` is the window's scale factor, the page's own ratio
+// unless given.
 async function boot(
   page: Page,
-  { windows = false, holdProgress = false }: { windows?: boolean; holdProgress?: boolean } = {}
+  {
+    windows = false,
+    holdProgress = false,
+    windowScale
+  }: { windows?: boolean; holdProgress?: boolean; windowScale?: number } = {}
 ): Promise<void> {
   await page.addInitScript(
-    ({ hosts, windows, holdProgress }) => {
+    ({ hosts, windows, holdProgress, windowScale }) => {
       let cbid = 0;
       const win = window as unknown as Record<string, unknown>;
       const listeners: Record<string, number[]> = {};
@@ -216,6 +221,8 @@ async function boot(
             case 'sftp_close':
               closes.push((args as { sessionId: number }).sessionId);
               return Promise.resolve(null);
+            case 'plugin:window|scale_factor':
+              return Promise.resolve(windowScale ?? window.devicePixelRatio);
             case 'plugin:event|listen': {
               const { event, handler } = args as { event: string; handler: number };
               (listeners[event] ||= []).push(handler);
@@ -235,7 +242,7 @@ async function boot(
         }
       };
     },
-    { hosts: HOSTS, windows, holdProgress }
+    { hosts: HOSTS, windows, holdProgress, windowScale }
   );
 
   await page.goto('/');
@@ -628,19 +635,21 @@ test('drag and drop: a remote folder dropped on the local pane downloads it whol
   await expect(remotePane.getByText('config.yml')).toBeVisible();
 });
 
-// A drop from the OS file manager, as Tauri delivers it.
+// A drop from the OS file manager, as Tauri delivers it: the drag comes in, then drops.
 async function osDrop(
   page: Page,
   paths: string[],
   position: { x: number; y: number }
 ): Promise<void> {
-  await page.evaluate(
-    ({ paths, position }) => {
-      const fire = (window as unknown as { __fireEvent: (e: string, p: unknown) => void }).__fireEvent;
-      fire('tauri://drag-drop', { paths, position });
-    },
-    { paths, position }
-  );
+  for (const event of ['tauri://drag-enter', 'tauri://drag-drop']) {
+    await page.evaluate(
+      ({ event, paths, position }) => {
+        const fire = (window as unknown as { __fireEvent: (e: string, p: unknown) => void }).__fireEvent;
+        fire(event, { paths, position });
+      },
+      { event, paths, position }
+    );
+  }
 }
 
 function uploads(page: Page): Promise<string[]> {
@@ -691,6 +700,24 @@ for (const platform of PLATFORMS) {
     });
   });
 }
+
+test.describe('on Linux with the page at 1x in a 2x window', () => {
+  // As WebKitGTK does under GDK_SCALE=2 with GDK_DPI_SCALE=0.5: it still reports the
+  // window's logical pixels, now half a CSS pixel each.
+  test.use({ userAgent: PLATFORMS[2].userAgent, deviceScaleFactor: 1 });
+
+  test('a file dropped from the OS onto the remote pane uploads', async ({ page }) => {
+    await boot(page, { windowScale: 2 });
+    await page.getByTitle('files on web-1').click();
+    const remotePane = page.getByRole('region', { name: 'web-1' });
+    await expect(remotePane.getByText('config.yml')).toBeVisible();
+
+    const at = await centre(remotePane.getByText('config.yml'));
+    await osDrop(page, ['/tmp/photo.png'], { x: at.x / 2, y: at.y / 2 });
+    await expect(page.getByLabel('transfer progress')).toBeVisible();
+    expect(await uploads(page)).toEqual(['/photo.png']);
+  });
+});
 
 test('drag and drop: a drive or volume dropped from the OS is refused, the rest uploads', async ({
   page
