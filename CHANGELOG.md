@@ -11,6 +11,7 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ### Features
 - **Settings shows the installed version.** On Windows and Linux the desktop app showed its version nowhere. Settings now ends with it, and it can be copied into a bug report.
+- **Group and arrange hosts on the dashboard.** With many hosts the dashboard was one long grid in config order. Both apps now group it with `g`: each host goes under its first tag, untagged hosts last. In the desktop app, View options also sorts the cards by name or status, sections fold from their header, and a card's handle drags it, or moves it with the arrow keys, into an order of your own that is kept across restarts.
 
 ### Bug Fixes
 - **Security: a server that offers a host key of another type than the one saved for it is refused.** OmnySSH compared the offered key only with saved keys of the same type. A host saved with its Ed25519 key that suddenly offered only an RSA or ECDSA key was therefore taken for a new host: the key was saved and the login went ahead, password included, and the dashboard did this in the background without anyone connecting. Someone intercepting the connection could get past the saved key this way. Like `ssh`, OmnySSH now refuses any key that matches none of those saved for the host, whatever its type, and says which type is saved. A server that really dropped the type of key it was saved with needs its old key removed once, as `ssh` also asks.
