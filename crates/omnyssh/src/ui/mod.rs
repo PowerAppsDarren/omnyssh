@@ -175,6 +175,7 @@ mod tests {
                 path: format!("/tmp/{name}"),
                 size: 14,
                 is_dir: false,
+                modified: None,
             })
             .collect();
         // The preview repeats the name in its title.
