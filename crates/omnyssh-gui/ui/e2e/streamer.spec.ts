@@ -90,6 +90,20 @@ test('with streamer mode off the status bar shows the error as sent', async ({ p
   await expect(page.getByRole('contentinfo').getByText(TUNNEL_ERROR)).toHaveAttribute('title', TUNNEL_ERROR);
 });
 
+test('a status-bar chip says streamer mode is on and turns it off', async ({ page }) => {
+  await boot(page, true);
+  await fireError(page, TUNNEL_ERROR);
+  const statusBar = page.getByRole('contentinfo');
+  const chip = statusBar.getByRole('button', { name: 'Streamer mode is on — click to turn it off' });
+  await expect(chip).toHaveText('Streamer mode');
+  await expect(chip).toHaveAttribute('title', /\(Ctrl\+Shift\+S\)$/);
+
+  await chip.click();
+  await expect(chip).toHaveCount(0);
+  await expect(statusBar).toContainText(TUNNEL_ERROR);
+  expect(await page.evaluate(() => localStorage.getItem('omnyssh-streamer-mode'))).toBe('false');
+});
+
 test('Ctrl+Shift+S toggles streamer mode and re-masks what is already on screen', async ({ page }) => {
   await boot(page, false);
   await fireError(page, TUNNEL_ERROR);
@@ -99,10 +113,12 @@ test('Ctrl+Shift+S toggles streamer mode and re-masks what is already on screen'
   await page.keyboard.press('Control+Shift+S');
   await expect(statusBar).toContainText("Tunnel to 'db'");
   await expect(statusBar).not.toContainText('10.20.3.7');
+  await expect(statusBar.getByRole('button', { name: /^Streamer mode is on/ })).toBeVisible();
 
   // Typing in a field does not hold it back.
   await page.getByRole('button', { name: 'Search hosts' }).click();
   await page.getByRole('textbox', { name: 'Search hosts' }).press('Control+Shift+S');
   await expect(statusBar).toContainText('10.20.3.7');
+  await expect(statusBar.getByRole('button', { name: /^Streamer mode is on/ })).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: 'Search hosts' })).toHaveValue('');
 });

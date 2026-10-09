@@ -4,8 +4,11 @@
   // (§4.1); colour lives only in the status dots, per the brandbook.
   import { lastError } from '$lib/stores/notifications';
   import { hostSummary } from '$lib/stores/hostSummary';
-  import { maskText } from '$lib/stores/streamer';
-  import { StatusDot } from '$lib/theme';
+  import { maskText, streamerMode } from '$lib/stores/streamer';
+  import { streamerChordLabel } from '$lib/stores/ui';
+  import { Icon, StatusDot } from '$lib/theme';
+
+  const chipLabel = 'Streamer mode is on — click to turn it off';
 </script>
 
 <footer
@@ -19,6 +22,19 @@
     <span class="min-w-0 truncate">Ready</span>
   {/if}
   <div class="flex shrink-0 items-center gap-3">
+    {#if $streamerMode}
+      <!-- Always in view, so nobody records believing addresses are hidden when they
+           are not, or forgets the mode is on. -->
+      <button
+        type="button"
+        class="flex items-center gap-1.5 rounded-full border border-default px-2 py-0.5 text-fg transition hover:border-strong hover:bg-accent hover:text-accent-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+        title="{chipLabel} ({streamerChordLabel})"
+        aria-label={chipLabel}
+        onclick={() => streamerMode.set(false)}
+      >
+        <Icon name="eye" size={13} />Streamer mode
+      </button>
+    {/if}
     <span>{$hostSummary.total} {$hostSummary.total === 1 ? 'host' : 'hosts'}</span>
     <span class="flex items-center gap-1.5">
       <StatusDot status="ok" label="online" />{$hostSummary.online} online
