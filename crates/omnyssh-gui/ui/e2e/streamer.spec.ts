@@ -93,23 +93,23 @@ test('with streamer mode off the status bar shows the error as sent', async ({ p
   await expect(page.getByRole('contentinfo').getByText(TUNNEL_ERROR)).toHaveAttribute('title', TUNNEL_ERROR);
 });
 
-test('a status-bar chip says streamer mode is on and turns it off', async ({ page }) => {
-  await boot(page, true);
-  await fireError(page, TUNNEL_ERROR);
+test('an eye in the status bar says streamer mode is on, without changing its height', async ({ page }) => {
+  await boot(page, false);
   const statusBar = page.getByRole('contentinfo');
-  const chip = statusBar.getByRole('button', { name: 'Streamer mode is on — click to turn it off' });
-  await expect(chip).toHaveText('Streamer mode');
-  await expect(chip).toHaveAttribute('title', /\(Ctrl\+Shift\+S\)$/);
+  const eye = statusBar.getByRole('img', { name: 'Streamer mode is on' });
+  await expect(eye).toHaveCount(0);
+  const before = (await statusBar.boundingBox())?.height;
 
-  await chip.click();
-  await expect(chip).toHaveCount(0);
-  await expect(statusBar).toContainText(TUNNEL_ERROR);
-  expect(await page.evaluate(() => localStorage.getItem('omnyssh-streamer-mode'))).toBe('false');
+  await page.keyboard.press('Control+Shift+S');
+  await expect(eye).toBeVisible();
+  await expect(eye).toHaveAttribute('title', /\(Ctrl\+Shift\+S\)$/);
+  await expect(statusBar).not.toContainText('Streamer mode');
+  expect((await statusBar.boundingBox())?.height).toBe(before);
 });
 
 test('the command palette toggles streamer mode', async ({ page }) => {
   await boot(page, false);
-  const chip = page.getByRole('contentinfo').getByRole('button', { name: /^Streamer mode is on/ });
+  const eye = page.getByRole('contentinfo').getByRole('img', { name: 'Streamer mode is on' });
 
   await page.keyboard.press('Control+k');
   const palette = page.getByRole('dialog', { name: 'Command palette' });
@@ -118,12 +118,12 @@ test('the command palette toggles streamer mode', async ({ page }) => {
   await expect(palette.getByRole('button', { name: 'Toggle streamer mode Ctrl+Shift+S' })).toBeVisible();
   await page.keyboard.press('Enter');
   await expect(palette).toHaveCount(0);
-  await expect(chip).toBeVisible();
+  await expect(eye).toBeVisible();
 
   await page.keyboard.press('Control+k');
   await palette.getByRole('button', { name: /Toggle streamer mode/ }).click();
   await expect(palette).toHaveCount(0);
-  await expect(chip).toHaveCount(0);
+  await expect(eye).toHaveCount(0);
 });
 
 test('Ctrl+Shift+S toggles streamer mode and re-masks what is already on screen', async ({ page }) => {
@@ -135,13 +135,13 @@ test('Ctrl+Shift+S toggles streamer mode and re-masks what is already on screen'
   await page.keyboard.press('Control+Shift+S');
   await expect(statusBar).toContainText("Tunnel to 'db'");
   await expect(statusBar).not.toContainText('10.20.3.7');
-  await expect(statusBar.getByRole('button', { name: /^Streamer mode is on/ })).toBeVisible();
+  await expect(statusBar.getByRole('img', { name: 'Streamer mode is on' })).toBeVisible();
 
   // Typing in a field does not hold it back.
   await page.getByRole('button', { name: 'Search hosts' }).click();
   await page.getByRole('textbox', { name: 'Search hosts' }).press('Control+Shift+S');
   await expect(statusBar).toContainText('10.20.3.7');
-  await expect(statusBar.getByRole('button', { name: /^Streamer mode is on/ })).toHaveCount(0);
+  await expect(statusBar.getByRole('img', { name: 'Streamer mode is on' })).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: 'Search hosts' })).toHaveValue('');
 });
 
@@ -241,7 +241,7 @@ test('switching streamer mode on mid-edit never locks the field being typed in',
 
   await hostname.fill('db2.example.com');
   await hostname.press('Control+Shift+S');
-  await expect(page.getByRole('contentinfo').getByRole('button', { name: /^Streamer mode is on/ })).toBeVisible();
+  await expect(page.getByRole('contentinfo').getByRole('img', { name: 'Streamer mode is on' })).toBeVisible();
   await expect(hostname).not.toHaveAttribute('readonly');
   await expect(hostname).toBeFocused();
   await hostname.press('x');
@@ -262,7 +262,7 @@ test('turning streamer mode off and on again hides a revealed form again', async
   await expect(hostname).toHaveValue('db.example.com');
   await hostname.press('Control+Shift+S');
   await hostname.press('Control+Shift+S');
-  await expect(page.getByRole('contentinfo').getByRole('button', { name: /^Streamer mode is on/ })).toBeVisible();
+  await expect(page.getByRole('contentinfo').getByRole('img', { name: 'Streamer mode is on' })).toBeVisible();
   await expect(hostname).toHaveAttribute('readonly', '');
   await expect(hostname).not.toHaveValue('db.example.com');
   await expect(remote).toHaveAttribute('readonly', '');
