@@ -11,6 +11,8 @@ mod commands;
 mod dto;
 mod error;
 mod events;
+#[cfg(target_os = "macos")]
+mod menu;
 mod state;
 mod tray;
 
@@ -245,6 +247,11 @@ fn main() {
         app = app.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::reveal(app)
         }));
+    }
+    // Replaces Tauri's default, whose ⌘W and ⌘Q close and quit without asking.
+    #[cfg(target_os = "macos")]
+    {
+        app = app.menu(menu::build);
     }
     app
         // Persists UI prefs (theme, sidebar collapse, refresh interval) from the
