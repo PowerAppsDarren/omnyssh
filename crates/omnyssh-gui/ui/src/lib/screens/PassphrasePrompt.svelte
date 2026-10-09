@@ -4,6 +4,7 @@
   import Modal from '$lib/components/Modal.svelte';
   import { Button, Icon } from '$lib/theme';
   import { passphrasePrompt, settlePassphrase } from '$lib/stores/passphrase';
+  import { maskText } from '$lib/stores/streamer';
   import { unlockIdentity } from '$lib/ipc/commands';
 
   const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -103,7 +104,7 @@
         session that stopped on this key has to be opened again.
       </p>
       {#if error}
-        <p class="text-xs text-status-crit">{error}</p>
+        <p class="text-xs text-status-crit">{$maskText(error)}</p>
       {/if}
       <div class="flex justify-end gap-2">
         <Button variant="ghost" type="button" onclick={cancel}>Cancel</Button>

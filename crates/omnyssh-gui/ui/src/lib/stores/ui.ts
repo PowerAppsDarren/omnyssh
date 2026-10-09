@@ -1,6 +1,7 @@
 import { get, writable } from 'svelte/store';
 import { dialogs } from './dialogs';
 import { palette } from './palette';
+import { isMac } from '$lib/platform';
 
 // Sticky UI-chrome prefs (tech-gui.md §2, §3.5). Sidebar collapse is manual-only
 // (header button or ⌘B) and must survive restarts: persist canonically via
@@ -97,6 +98,24 @@ export function isPaletteChord(e: KeyboardEvent): boolean {
   if (e.repeat || e.altKey || e.isComposing) return false;
   return (e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K');
 }
+
+/** The macOS close-tab chord: ⌘W. The app menu leaves it free; off macOS Ctrl+W stays
+ *  the shell's delete-word. The physical key only when the layout names no ASCII
+ *  character there: on AZERTY it is ⌘Z, on Dvorak ⌘, — but on Greek it is ⌘W. */
+export function isCloseTabChord(e: KeyboardEvent): boolean {
+  if (e.repeat || e.altKey || e.ctrlKey || e.shiftKey || e.isComposing || !e.metaKey) return false;
+  return e.key === 'w' || e.key === 'W' || (e.code === 'KeyW' && !/^[\x21-\x7e]$/.test(e.key));
+}
+
+/** The streamer-mode chord: ⌘⇧S / Ctrl+Shift+S. It fires regardless of focus, like the
+ *  palette's, so it hides addresses at once from wherever the user is. A non-Latin
+ *  layout (or WebKitGTK naming no key) goes by the physical key. */
+export function isStreamerChord(e: KeyboardEvent): boolean {
+  if (e.repeat || e.altKey || e.isComposing || !e.shiftKey || !(e.metaKey || e.ctrlKey)) return false;
+  return e.key === 's' || e.key === 'S' || (e.code === 'KeyS' && !/^[a-z]$/i.test(e.key));
+}
+
+export const streamerChordLabel = isMac ? '⌘⇧S' : 'Ctrl+Shift+S';
 
 /** A bare-letter dashboard hotkey (mirrors the TUI): no modifier, ignored while typing in
  *  an editable surface so it never eats a keystroke, and while any modal or the command

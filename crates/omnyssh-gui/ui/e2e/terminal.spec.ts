@@ -379,6 +379,17 @@ test('Ctrl+Shift+C with nothing selected copies nothing', async ({ page }) => {
   expect(await writes(page)).toEqual([]);
 });
 
+test('Ctrl+Shift+S toggles streamer mode and sends the shell no ^S', async ({ page }) => {
+  await bootWithClipboard(page);
+  await page.locator('.xterm-helper-textarea').focus();
+
+  await page.keyboard.press('Control+Shift+S');
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('omnyssh-streamer-mode')))
+    .toBe('true');
+  expect(await writes(page)).toEqual([]);
+});
+
 // WebKitGTK under a Russian layout reports keyCode 0 for letter keys, which is also
 // what a synthetic keydown carries unless told otherwise — so this is the key event
 // xterm gets there: without the fallback, Ctrl+C would send nothing at all.
