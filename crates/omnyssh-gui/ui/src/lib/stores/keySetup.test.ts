@@ -4,6 +4,7 @@ import type { KeySetupStepDto } from '$lib/bindings';
 import {
   beginKeySetup,
   dismissKeySetup,
+  keyFilePath,
   keySetup,
   reduceComplete,
   reduceFailed,
@@ -87,5 +88,31 @@ describe('terminal reducers', () => {
       hostName: 'web-1',
       phase: { kind: 'rolledBack', result: 'Restored password auth.' }
     });
+  });
+});
+
+describe('keyFilePath', () => {
+  // Pinned to the core's `sanitize_hostname` on the same inputs.
+  it.each([
+    ['web-prod_1', 'web-prod_1'],
+    ['web.1', 'web_1'],
+    ['Ελλάδα.prod-1', 'Ελλάδα_prod-1'],
+    ['日本語', '日本語'],
+    ['db²½Ⅻ', 'db²½Ⅻ'],
+    ['my server (prod)', 'my_server__prod_'],
+    ['../../etc/passwd', '______etc_passwd'],
+    ['😀db', '_db'],
+    ['e\u0301x', 'e_x'],
+    ['', 'unnamed_host']
+  ])('sanitizes %j to %s', (name, sanitized) => {
+    expect(keyFilePath(name, false)).toBe(`~/.ssh/omnyssh_${sanitized}_ed25519`);
+  });
+
+  it('cuts the name to 64 code points', () => {
+    expect(keyFilePath('λ'.repeat(70), false)).toBe(`~/.ssh/omnyssh_${'λ'.repeat(64)}_ed25519`);
+  });
+
+  it('shows the Windows profile folder on Windows', () => {
+    expect(keyFilePath('web.1', true)).toBe('%USERPROFILE%\\.ssh\\omnyssh_web_1_ed25519');
   });
 });

@@ -112,9 +112,39 @@ async function boot(page: Page, outcome: Outcome = 'success'): Promise<void> {
 
 const startCalls = (page: Page) => page.evaluate(() => (window as unknown as { __startCalls: number }).__startCalls);
 
+/** Open the confirm dialog from the card and accept it. */
+async function confirmSetup(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Set up an SSH key for pw-host' }).click();
+  await page.getByRole('dialog', { name: 'Set up key login' }).getByRole('button', { name: 'Set up key login' }).click();
+}
+
+test('asks before key setup, with Cancel focused, and Cancel starts nothing', async ({ page }) => {
+  await boot(page);
+
+  await page.getByRole('button', { name: 'Set up an SSH key for pw-host' }).click();
+  const confirm = page.getByRole('dialog', { name: 'Set up key login' });
+  await expect(confirm.getByText('Set up key login for pw-host?')).toBeVisible();
+  // Desktop Chrome's user agent says Windows, so the path is the Windows one.
+  await expect(confirm.getByText('%USERPROFILE%\\.ssh\\omnyssh_pw-host_ed25519')).toBeVisible();
+  await expect(confirm.getByText('root@pw.example.com')).toBeVisible();
+  await expect(confirm.getByText(/for every account and device/)).toBeVisible();
+  await expect(confirm.getByRole('button', { name: 'Cancel' })).toBeFocused();
+
+  await confirm.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(await startCalls(page)).toBe(0);
+
+  // Escape cancels too.
+  await page.getByRole('button', { name: 'Set up an SSH key for pw-host' }).click();
+  await expect(confirm).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(await startCalls(page)).toBe(0);
+});
+
 test('a full success says password login is off and the card shows the shield', async ({ page }) => {
   await boot(page, 'success');
-  await page.getByRole('button', { name: 'Set up an SSH key for pw-host' }).click();
+  await confirmSetup(page);
 
   const dialog = page.getByRole('dialog', { name: 'Key setup' });
   await expect(dialog).toBeVisible();
@@ -132,9 +162,9 @@ test('a full success says password login is off and the card shows the shield', 
   await expect(page.getByRole('button', { name: 'Set up an SSH key for pw-host' })).toHaveCount(0);
 });
 
-test('a partial run says password login is still on', async ({ page }) => {
+test('a partial run says password login is still on and offers to turn it off', async ({ page }) => {
   await boot(page, 'partial');
-  await page.getByRole('button', { name: 'Set up an SSH key for pw-host' }).click();
+  await confirmSetup(page);
 
   const dialog = page.getByRole('dialog', { name: 'Key setup' });
   await expect(dialog.getByText(/Key login works\. Password login is still on/)).toBeVisible();
@@ -142,13 +172,23 @@ test('a partial run says password login is still on', async ({ page }) => {
   await expect(dialog.getByText(/password login is off/)).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Done' }).click();
 
-  await expect(page.getByText('Password on')).toBeVisible();
+  const badge = page.getByRole('button', { name: 'Password on' });
+  await expect(badge).toBeVisible();
   await expect(page.getByRole('img', { name: 'Key login only' })).toHaveCount(0);
+
+  await badge.click();
+  const rerun = page.getByRole('dialog', { name: 'Turn off password login' });
+  await expect(rerun.getByText('Turn off password login on pw-host?')).toBeVisible();
+  await expect(rerun.getByText(/Reuse the login key OmnySSH made before/)).toBeVisible();
+  await expect(rerun.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await rerun.getByRole('button', { name: 'Turn off password login' }).click();
+  await expect(page.getByRole('dialog', { name: 'Key setup' })).toBeVisible();
+  expect(await startCalls(page)).toBe(2);
 });
 
 test('a failure that may leave password login off says so', async ({ page }) => {
   await boot(page, 'unsafe');
-  await page.getByRole('button', { name: 'Set up an SSH key for pw-host' }).click();
+  await confirmSetup(page);
 
   const dialog = page.getByRole('dialog', { name: 'Key setup' });
   await expect(dialog.getByText('Key setup failed — password login may be off')).toBeVisible();
@@ -168,7 +208,7 @@ test('a failure that may leave password login off says so', async ({ page }) => 
 
 test('a rollback says password login was turned back on', async ({ page }) => {
   await boot(page, 'rollback');
-  await page.getByRole('button', { name: 'Set up an SSH key for pw-host' }).click();
+  await confirmSetup(page);
 
   const dialog = page.getByRole('dialog', { name: 'Key setup' });
   await expect(dialog.getByText('Password login was turned back on')).toBeVisible();
