@@ -9,6 +9,7 @@
   import Modal from '$lib/components/Modal.svelte';
   import Select from '$lib/components/Select.svelte';
   import { isWindows } from '$lib/platform';
+  import { maskText } from '$lib/stores/streamer';
   import { emptyForwardRow, formToInput, type HostFormFields } from './hostForm';
 
   let {
@@ -302,7 +303,7 @@
       </div>
 
       {#if error}
-        <p class="text-xs text-status-crit">{error}</p>
+        <p class="text-xs text-status-crit">{$maskText(error)}</p>
       {/if}
     </div>
 
