@@ -29,6 +29,7 @@
     type PaneSide
   } from '$lib/stores/sftp';
   import { lastError } from '$lib/stores/notifications';
+  import { maskText } from '$lib/stores/streamer';
   import { dropPoint, isMac, isWindows } from '$lib/platform';
   import {
     sftpOpen,
@@ -593,7 +594,7 @@
   {#if openError}
     <div class="flex flex-1 flex-col items-center justify-center gap-2 p-10 text-center">
       <p class="font-medium">Could not open SFTP on {session.hostName}</p>
-      <p class="max-w-md text-sm text-muted">{openError}</p>
+      <p class="max-w-md text-sm text-muted">{$maskText(openError)}</p>
     </div>
   {:else if !view}
     <div class="flex flex-1 items-center justify-center p-10 text-center">
@@ -762,7 +763,7 @@
         class="shrink-0 border-t border-default px-4 py-2 text-xs
           {view.error === CANCELLED ? 'text-muted' : 'text-status-crit'}"
       >
-        {view.error}
+        {$maskText(view.error)}
       </div>
     {/if}
   {/if}

@@ -11,6 +11,7 @@
   import { Icon } from '$lib/theme';
   import type { FileEntryDto } from '$lib/bindings';
   import { formatBytes, formatDate, type Pane, type PaneSide } from '$lib/stores/sftp';
+  import { maskText } from '$lib/stores/streamer';
 
   let {
     title,
@@ -75,7 +76,7 @@
 
   <div class="min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5">
     {#if pane.error}
-      <p class="px-2 py-6 text-center text-sm text-status-crit">{pane.error}</p>
+      <p class="px-2 py-6 text-center text-sm text-status-crit">{$maskText(pane.error)}</p>
     {:else if pane.loading && pane.entries.length === 0}
       <p class="px-2 py-6 text-center text-sm text-faint">Loading…</p>
     {:else if pane.entries.length === 0}

@@ -204,9 +204,17 @@ impl App {
                             Ok(result) => {
                                 use omnyssh_core::ssh::key_setup::KeySetupState;
                                 match result.state {
-                                    KeySetupState::Success | KeySetupState::PartialSuccess => {
+                                    KeySetupState::Success => {
                                         let _ = tx
                                             .send(CoreEvent::KeySetupComplete(
+                                                host_clone.name.clone(),
+                                                result.key_path,
+                                            ))
+                                            .await;
+                                    }
+                                    KeySetupState::PartialSuccess => {
+                                        let _ = tx
+                                            .send(CoreEvent::KeySetupPartial(
                                                 host_clone.name.clone(),
                                                 result.key_path,
                                             ))

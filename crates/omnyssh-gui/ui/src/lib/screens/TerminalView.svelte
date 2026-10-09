@@ -18,6 +18,7 @@
   import { lastError } from '$lib/stores/notifications';
   import { dialogs } from '$lib/stores/dialogs';
   import { palette } from '$lib/stores/palette';
+  import { isStreamerChord } from '$lib/stores/ui';
   import { activeEntity } from '$lib/stores/activeEntity';
   import {
     terminalOpen,
@@ -183,6 +184,9 @@
       // reaches the shell. Returning false only keeps xterm out of it; the default is
       // ours to stop. The write happens inside the keydown, which WebKit requires.
       term.attachCustomKeyEventHandler((e) => {
+        // The streamer chord belongs to the window (AppShell), never to the shell, where
+        // a ^S would stop its output.
+        if (isStreamerChord(e)) return false;
         if (isCopyShortcut(e, isMac)) {
           e.preventDefault();
           if (term?.hasSelection()) {

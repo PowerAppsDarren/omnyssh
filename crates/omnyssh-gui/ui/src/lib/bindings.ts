@@ -572,15 +572,17 @@ export type HostsLoaded = HostDto[]
  */
 export type KeyPassphraseRequired = { hostName: string; keyPath: string }
 /**
- * Key setup finished successfully — key auth is configured (tech-gui.md §4.3).
- * `keyPath` is the generated private-key path (a path, never key material, §3.4).
+ * Key setup finished — key auth is configured (tech-gui.md §4.3). `keyPath` is the
+ * generated private-key path (a path, never key material, §3.4). `passwordOff` is
+ * false when the server's password login stayed on (no passwordless sudo).
  */
-export type KeySetupComplete = { hostName: string; keyPath: string }
+export type KeySetupComplete = { hostName: string; keyPath: string; passwordOff: boolean }
 /**
- * Key setup failed before touching the server's auth config (tech-gui.md §4.3).
- * Password authentication is never disabled unless a key was verified first.
+ * Key setup failed (tech-gui.md §4.3). `passwordMayBeOff` is true when OmnySSH could
+ * not confirm the server's password login is on: the rollback failed, or the disable
+ * step never answered. Otherwise password login was not changed, or was restored.
  */
-export type KeySetupFailed = { hostName: string; error: string }
+export type KeySetupFailed = { hostName: string; error: string; passwordMayBeOff: boolean }
 /**
  * A progress step of an auto key-setup run (tech-gui.md §4.3). Mapped by the shared
  * engine bridge from `CoreEvent::KeySetupProgress`; the host name identifies the run.
@@ -588,7 +590,7 @@ export type KeySetupFailed = { hostName: string; error: string }
 export type KeySetupProgress = { hostName: string; step: KeySetupStepDto }
 /**
  * Key setup rolled the server's sshd config back after a late failure (tech-gui.md
- * §4.3). `result` is the human-readable rollback outcome.
+ * §4.3). `result` is the failure that triggered the rollback.
  */
 export type KeySetupRollback = { hostName: string; result: string }
 /**

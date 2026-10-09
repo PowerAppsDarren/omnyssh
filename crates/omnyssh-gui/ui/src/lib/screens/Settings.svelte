@@ -10,6 +10,7 @@
   import { streamerMode } from '$lib/stores/streamer';
   import { refreshInterval, REFRESH_OPTIONS } from '$lib/stores/settings';
   import { traySupport, trayBehavior } from '$lib/stores/tray';
+  import { confirmQuit } from '$lib/stores/quit';
   import { isMac } from '$lib/platform';
   import { offerUpdate } from '$lib/stores/update';
   import { lastError } from '$lib/stores/notifications';
@@ -199,6 +200,13 @@
             No icon in sight? Opening OmnySSH again brings the window back.
           </p>
         {/if}
+        {@render traySwitch(
+          'Ask before quitting',
+          'When terminals, transfers, tunnels or snippet runs are still open.',
+          $confirmQuit,
+          true,
+          () => confirmQuit.toggle()
+        )}
       </div>
     </Surface>
 
