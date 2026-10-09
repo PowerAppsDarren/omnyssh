@@ -14,12 +14,13 @@
   import UpdateBanner from './UpdateBanner.svelte';
   import { support } from '$lib/stores/support';
   import { get } from 'svelte/store';
-  import { sidebarCollapsed, isCollapseChord, isCloseTabChord } from '$lib/stores/ui';
+  import { sidebarCollapsed, isCollapseChord, isCloseTabChord, isStreamerChord } from '$lib/stores/ui';
   import { activeEntity } from '$lib/stores/activeEntity';
   import { palette } from '$lib/stores/palette';
   import { dialogs } from '$lib/stores/dialogs';
   import { closeSession } from '$lib/stores/navigation';
   import { isMac } from '$lib/platform';
+  import { streamerMode } from '$lib/stores/streamer';
 
   let { children }: { children: Snippet } = $props();
 
@@ -34,6 +35,9 @@
       if (get(palette).open) return;
       const active = get(activeEntity);
       if (get(dialogs).length === 0 && active.kind === 'session') closeSession(active.id);
+    } else if (isStreamerChord(e)) {
+      e.preventDefault();
+      streamerMode.toggle();
     }
   }
 </script>

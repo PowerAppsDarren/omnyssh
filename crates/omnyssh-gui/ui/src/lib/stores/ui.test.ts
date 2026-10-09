@@ -6,7 +6,8 @@ import {
   isCollapseChord,
   isGroupHotkey,
   isPaletteChord,
-  isRefreshHotkey
+  isRefreshHotkey,
+  isStreamerChord
 } from './ui';
 import { dialogs } from './dialogs';
 import { palette } from './palette';
@@ -152,6 +153,42 @@ describe('close-tab chord (⌘W)', () => {
     expect(chord({ key: 'w', metaKey: true, altKey: true })).toBe(false);
     expect(chord({ key: 'w', metaKey: true, repeat: true })).toBe(false);
     expect(chord({ key: 'w' })).toBe(false);
+  });
+});
+
+describe('streamer chord (⌘⇧S / Ctrl+Shift+S)', () => {
+  const chord = (init: KeyboardEventInit) => isStreamerChord(new KeyboardEvent('keydown', init));
+
+  it('matches ⌘⇧S and Ctrl+Shift+S, either case', () => {
+    expect(chord({ key: 'S', code: 'KeyS', metaKey: true, shiftKey: true })).toBe(true);
+    expect(chord({ key: 's', code: 'KeyS', ctrlKey: true, shiftKey: true })).toBe(true);
+  });
+
+  it('goes by the physical key under a non-Latin layout, but not for another Latin letter', () => {
+    expect(chord({ key: 'Σ', code: 'KeyS', ctrlKey: true, shiftKey: true })).toBe(true);
+    expect(chord({ key: 'Unidentified', code: 'KeyS', ctrlKey: true, shiftKey: true })).toBe(true);
+    expect(chord({ key: 'O', code: 'KeyS', ctrlKey: true, shiftKey: true })).toBe(false); // Dvorak
+  });
+
+  it('rejects auto-repeat, Alt, IME composing, a missing Shift or modifier, and other keys', () => {
+    expect(chord({ key: 'S', metaKey: true, shiftKey: true, repeat: true })).toBe(false);
+    expect(chord({ key: 'S', metaKey: true, shiftKey: true, altKey: true })).toBe(false);
+    expect(chord({ key: 'S', metaKey: true, shiftKey: true, isComposing: true })).toBe(false);
+    expect(chord({ key: 's', metaKey: true })).toBe(false);
+    expect(chord({ key: 'S', shiftKey: true })).toBe(false);
+    expect(chord({ key: 'K', metaKey: true, shiftKey: true })).toBe(false);
+  });
+
+  it('fires even while typing in an input', () => {
+    const input = document.createElement('input');
+    document.body.append(input);
+    let matched = false;
+    input.addEventListener('keydown', (e) => (matched = isStreamerChord(e)));
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'S', ctrlKey: true, shiftKey: true, bubbles: true })
+    );
+    input.remove();
+    expect(matched).toBe(true);
   });
 });
 

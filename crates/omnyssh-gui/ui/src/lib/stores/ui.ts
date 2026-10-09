@@ -106,6 +106,14 @@ export function isCloseTabChord(e: KeyboardEvent): boolean {
   return e.key === 'w' || e.key === 'W' || (e.code === 'KeyW' && !/^[\x21-\x7e]$/.test(e.key));
 }
 
+/** The streamer-mode chord: ⌘⇧S / Ctrl+Shift+S. It fires regardless of focus, like the
+ *  palette's, so it hides addresses at once from wherever the user is. A non-Latin
+ *  layout (or WebKitGTK naming no key) goes by the physical key. */
+export function isStreamerChord(e: KeyboardEvent): boolean {
+  if (e.repeat || e.altKey || e.isComposing || !e.shiftKey || !(e.metaKey || e.ctrlKey)) return false;
+  return e.key === 's' || e.key === 'S' || (e.code === 'KeyS' && !/^[a-z]$/i.test(e.key));
+}
+
 /** A bare-letter dashboard hotkey (mirrors the TUI): no modifier, ignored while typing in
  *  an editable surface so it never eats a keystroke, and while any modal or the command
  *  palette is open so it never changes the view behind it. Terminal input is never

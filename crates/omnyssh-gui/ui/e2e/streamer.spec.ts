@@ -75,7 +75,7 @@ test('streamer mode keeps real addresses out of the status bar and its tooltip',
   await boot(page, true);
   await fireError(page, TUNNEL_ERROR);
 
-  const status = page.locator('footer').getByText("Tunnel to 'db'");
+  const status = page.getByRole('contentinfo').getByText("Tunnel to 'db'");
   await expect(status).toBeVisible();
   for (const real of ['10.20.3.7', 'db.example.com']) {
     await expect(status).not.toContainText(real);
@@ -87,5 +87,22 @@ test('streamer mode keeps real addresses out of the status bar and its tooltip',
 test('with streamer mode off the status bar shows the error as sent', async ({ page }) => {
   await boot(page, false);
   await fireError(page, TUNNEL_ERROR);
-  await expect(page.locator('footer').getByText(TUNNEL_ERROR)).toHaveAttribute('title', TUNNEL_ERROR);
+  await expect(page.getByRole('contentinfo').getByText(TUNNEL_ERROR)).toHaveAttribute('title', TUNNEL_ERROR);
+});
+
+test('Ctrl+Shift+S toggles streamer mode and re-masks what is already on screen', async ({ page }) => {
+  await boot(page, false);
+  await fireError(page, TUNNEL_ERROR);
+  const statusBar = page.getByRole('contentinfo');
+  await expect(statusBar).toContainText('10.20.3.7');
+
+  await page.keyboard.press('Control+Shift+S');
+  await expect(statusBar).toContainText("Tunnel to 'db'");
+  await expect(statusBar).not.toContainText('10.20.3.7');
+
+  // Typing in a field does not hold it back.
+  await page.getByRole('button', { name: 'Search hosts' }).click();
+  await page.getByRole('textbox', { name: 'Search hosts' }).press('Control+Shift+S');
+  await expect(statusBar).toContainText('10.20.3.7');
+  await expect(page.getByRole('textbox', { name: 'Search hosts' })).toHaveValue('');
 });
