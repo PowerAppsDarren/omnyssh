@@ -9,8 +9,8 @@ import type { KeySetupStepDto } from '$lib/bindings';
 /** The phase a run is in: streaming steps, or one of the three terminal outcomes. */
 export type KeySetupPhase =
   | { kind: 'running'; step: KeySetupStepDto | null }
-  | { kind: 'complete'; keyPath: string }
-  | { kind: 'failed'; error: string }
+  | { kind: 'complete'; keyPath: string; passwordOff: boolean }
+  | { kind: 'failed'; error: string; passwordMayBeOff: boolean }
   | { kind: 'rolledBack'; result: string };
 
 export interface KeySetupRun {
@@ -34,26 +34,27 @@ export function dismissKeySetup(): void {
   keySetup.set(null);
 }
 
-/** Fold a `key-setup-progress` event into the active run. Only the active host's run
- *  advances — a stray progress for another host is ignored (single active run). Pure. */
+/** Fold a `key-setup-progress` event into the active run. Only the active host's
+ *  running run advances — a stray progress for another host is ignored (single active
+ *  run), and an outcome is never turned back into a running panel. Pure. */
 export function reduceProgress(
   run: KeySetupRun | null,
   hostName: string,
   step: KeySetupStepDto
 ): KeySetupRun | null {
-  if (run?.hostName !== hostName) return run;
+  if (run?.hostName !== hostName || run.phase.kind !== 'running') return run;
   return { hostName, phase: { kind: 'running', step } };
 }
 
 /** A terminal outcome always shows for its host, even if the running panel was
  *  dismissed — so the result (and, for `complete`, the card refresh) is never missed.
  *  Pure. */
-export function reduceComplete(hostName: string, keyPath: string): KeySetupRun {
-  return { hostName, phase: { kind: 'complete', keyPath } };
+export function reduceComplete(hostName: string, keyPath: string, passwordOff: boolean): KeySetupRun {
+  return { hostName, phase: { kind: 'complete', keyPath, passwordOff } };
 }
 
-export function reduceFailed(hostName: string, error: string): KeySetupRun {
-  return { hostName, phase: { kind: 'failed', error } };
+export function reduceFailed(hostName: string, error: string, passwordMayBeOff: boolean): KeySetupRun {
+  return { hostName, phase: { kind: 'failed', error, passwordMayBeOff } };
 }
 
 export function reduceRollback(hostName: string, result: string): KeySetupRun {

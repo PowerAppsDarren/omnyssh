@@ -51,26 +51,34 @@ describe('reduceProgress', () => {
     expect(reduceProgress(null, 'web-1', step(1))).toBeNull();
   });
 
-  it('overwrites a terminal phase only for its own host', () => {
-    const done: KeySetupRun = { hostName: 'web-1', phase: { kind: 'complete', keyPath: '/k' } };
-    // A late progress for the same host would re-open running (harmless); a different
-    // host's progress is ignored so the completed panel stays put.
+  it('never turns an outcome back into a running panel', () => {
+    const done: KeySetupRun = {
+      hostName: 'web-1',
+      phase: { kind: 'complete', keyPath: '/k', passwordOff: true }
+    };
+    const failed: KeySetupRun = {
+      hostName: 'web-1',
+      phase: { kind: 'failed', error: 'x', passwordMayBeOff: true }
+    };
+    // A late step must not hide the outcome, least of all a may-be-off failure.
+    expect(reduceProgress(done, 'web-1', step(4))).toBe(done);
+    expect(reduceProgress(failed, 'web-1', step(5))).toBe(failed);
     expect(reduceProgress(done, 'db-9', step(4))).toBe(done);
   });
 });
 
 describe('terminal reducers', () => {
-  it('reduceComplete carries the key path', () => {
-    expect(reduceComplete('web-1', '/home/me/.ssh/omnyssh_web-1_ed25519')).toEqual({
+  it('reduceComplete carries the key path and whether password login is off', () => {
+    expect(reduceComplete('web-1', '/home/me/.ssh/omnyssh_web-1_ed25519', false)).toEqual({
       hostName: 'web-1',
-      phase: { kind: 'complete', keyPath: '/home/me/.ssh/omnyssh_web-1_ed25519' }
+      phase: { kind: 'complete', keyPath: '/home/me/.ssh/omnyssh_web-1_ed25519', passwordOff: false }
     });
   });
 
-  it('reduceFailed carries the error', () => {
-    expect(reduceFailed('web-1', 'Connection failed')).toEqual({
+  it('reduceFailed carries the error and whether password login may be off', () => {
+    expect(reduceFailed('web-1', 'Connection failed', true)).toEqual({
       hostName: 'web-1',
-      phase: { kind: 'failed', error: 'Connection failed' }
+      phase: { kind: 'failed', error: 'Connection failed', passwordMayBeOff: true }
     });
   });
 

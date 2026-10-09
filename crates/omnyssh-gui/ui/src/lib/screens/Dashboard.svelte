@@ -620,15 +620,24 @@
                   ssh config
                 </span>
               {/if}
-              <!-- Auth-state reflection (tech-gui.md §4.2): key-only once password
-                   auth is disabled, otherwise a plain key badge when a key exists. -->
-              {#if card.host.passwordAuthDisabled}
+              <!-- Auth-state reflection (tech-gui.md §4.2): a shield once password login
+                   is off; "Password on" when OmnySSH set up the key but the server still
+                   takes passwords; else a plain key badge. -->
+              {#if card.host.passwordAuthDisabled === true}
                 <span
-                  class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
-                  title="Password authentication disabled — key only"
+                  class="inline-flex shrink-0 items-center rounded-full border border-default p-1 text-faint"
+                  role="img"
+                  title="Key login only"
+                  aria-label="Key login only"
                 >
                   <Icon name="shield" size={10} />
-                  key-only
+                </span>
+              {:else if card.host.passwordAuthDisabled === false}
+                <span
+                  class="inline-flex shrink-0 items-center gap-1 rounded-full border border-status-warn px-1.5 py-0.5 text-[10px] text-status-warn"
+                  title="Key login works, but the server still accepts passwords"
+                >
+                  Password on
                 </span>
               {:else if card.host.hasKey}
                 <span
