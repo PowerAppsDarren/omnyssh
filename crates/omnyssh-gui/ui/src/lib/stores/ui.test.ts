@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { isCollapseChord, isGroupHotkey, isPaletteChord, isRefreshHotkey } from './ui';
+import {
+  isCloseTabChord,
+  isCollapseChord,
+  isGroupHotkey,
+  isPaletteChord,
+  isRefreshHotkey
+} from './ui';
 import { dialogs } from './dialogs';
 import { palette } from './palette';
 
@@ -120,6 +126,32 @@ describe('palette chord (⌘K / Ctrl+K)', () => {
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }));
     input.remove();
     expect(matched).toBe(true);
+  });
+});
+
+describe('close-tab chord (⌘W)', () => {
+  const chord = (init: KeyboardEventInit) => isCloseTabChord(new KeyboardEvent('keydown', init));
+
+  it('matches ⌘W, by key or by physical key', () => {
+    expect(chord({ key: 'w', metaKey: true })).toBe(true);
+    expect(chord({ key: 'W', metaKey: true })).toBe(true);
+    // AZERTY puts W where QWERTY has Z.
+    expect(chord({ key: 'w', code: 'KeyZ', metaKey: true })).toBe(true);
+    // A Greek layout names the key ς.
+    expect(chord({ key: '\u03c2', code: 'KeyW', metaKey: true })).toBe(true);
+  });
+
+  it('leaves the W key to a Latin layout that puts another character there', () => {
+    expect(chord({ key: 'z', code: 'KeyW', metaKey: true })).toBe(false); // AZERTY ⌘Z
+    expect(chord({ key: ',', code: 'KeyW', metaKey: true })).toBe(false); // Dvorak ⌘,
+  });
+
+  it('leaves Ctrl+W to the shell, ⌘⇧W to the window, and a held chord at one tab', () => {
+    expect(chord({ key: 'w', ctrlKey: true })).toBe(false);
+    expect(chord({ key: 'w', metaKey: true, shiftKey: true })).toBe(false);
+    expect(chord({ key: 'w', metaKey: true, altKey: true })).toBe(false);
+    expect(chord({ key: 'w', metaKey: true, repeat: true })).toBe(false);
+    expect(chord({ key: 'w' })).toBe(false);
   });
 });
 

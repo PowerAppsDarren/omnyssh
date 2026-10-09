@@ -191,3 +191,53 @@ test('with nothing live a minimized window closes where it is', async ({ page })
   await expect(dialog(page)).toHaveCount(0);
   expect(await calls(page)).not.toContain('plugin:window|unminimize');
 });
+
+// The Desktop Chrome device reports a Windows user agent: Ctrl+W is the shell's.
+test('off macOS Ctrl+W goes to the terminal', async ({ page }) => {
+  await boot(page);
+  await openTerminal(page);
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.press('Control+w');
+  await expect(page.getByRole('button', { name: 'web-1 · terminal', exact: true })).toBeVisible();
+});
+
+test.describe('on macOS', () => {
+  test.use({
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)'
+  });
+
+  test('⌘W closes the active tab, not the window', async ({ page }) => {
+    await boot(page);
+    await openTerminal(page);
+    await page.locator('.xterm-helper-textarea').focus();
+    await page.keyboard.press('Meta+w');
+    await expect(page.getByRole('button', { name: 'web-1 · terminal', exact: true })).toHaveCount(0);
+    await expect(page.locator('.xterm')).toHaveCount(0);
+    expect(await calls(page)).not.toContain('plugin:window|destroy');
+
+    // With no tab left it does nothing.
+    await page.keyboard.press('Meta+w');
+    await expect(page.getByText('web-1', { exact: true })).toBeVisible();
+    expect(await calls(page)).not.toContain('plugin:window|destroy');
+  });
+
+  test('⌘W leaves the tab alone while a dialog is open', async ({ page }) => {
+    await boot(page);
+    await openTerminal(page);
+    await closeWindow(page);
+    await expect(dialog(page)).toBeVisible();
+    await page.keyboard.press('Meta+w');
+    await expect(page.getByRole('button', { name: 'web-1 · terminal', exact: true })).toBeVisible();
+    await expect(dialog(page).getByRole('button', { name: 'Keep running in the menu bar instead' })).toBeVisible();
+  });
+
+  test('⌘W leaves the tab alone while the command palette is open', async ({ page }) => {
+    await boot(page);
+    await openTerminal(page);
+    await page.keyboard.press('Meta+k');
+    await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+    await page.keyboard.press('Meta+w');
+    await expect(page.getByRole('button', { name: 'web-1 · terminal', exact: true })).toBeVisible();
+  });
+});

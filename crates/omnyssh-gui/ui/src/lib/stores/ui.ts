@@ -98,6 +98,14 @@ export function isPaletteChord(e: KeyboardEvent): boolean {
   return (e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K');
 }
 
+/** The macOS close-tab chord: ⌘W. The app menu leaves it free; off macOS Ctrl+W stays
+ *  the shell's delete-word. The physical key only when the layout names no ASCII
+ *  character there: on AZERTY it is ⌘Z, on Dvorak ⌘, — but on Greek it is ⌘W. */
+export function isCloseTabChord(e: KeyboardEvent): boolean {
+  if (e.repeat || e.altKey || e.ctrlKey || e.shiftKey || e.isComposing || !e.metaKey) return false;
+  return e.key === 'w' || e.key === 'W' || (e.code === 'KeyW' && !/^[\x21-\x7e]$/.test(e.key));
+}
+
 /** A bare-letter dashboard hotkey (mirrors the TUI): no modifier, ignored while typing in
  *  an editable surface so it never eats a keystroke, and while any modal or the command
  *  palette is open so it never changes the view behind it. Terminal input is never
