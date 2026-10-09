@@ -104,6 +104,25 @@ test('a status-bar chip says streamer mode is on and turns it off', async ({ pag
   expect(await page.evaluate(() => localStorage.getItem('omnyssh-streamer-mode'))).toBe('false');
 });
 
+test('the command palette toggles streamer mode', async ({ page }) => {
+  await boot(page, false);
+  const chip = page.getByRole('contentinfo').getByRole('button', { name: /^Streamer mode is on/ });
+
+  await page.keyboard.press('Control+k');
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  await palette.getByRole('textbox').fill('streamer');
+  await expect(palette.getByText('Commands')).toBeVisible();
+  await expect(palette.getByRole('button', { name: 'Toggle streamer mode Ctrl+Shift+S' })).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(palette).toHaveCount(0);
+  await expect(chip).toBeVisible();
+
+  await page.keyboard.press('Control+k');
+  await palette.getByRole('button', { name: /Toggle streamer mode/ }).click();
+  await expect(palette).toHaveCount(0);
+  await expect(chip).toHaveCount(0);
+});
+
 test('Ctrl+Shift+S toggles streamer mode and re-masks what is already on screen', async ({ page }) => {
   await boot(page, false);
   await fireError(page, TUNNEL_ERROR);
