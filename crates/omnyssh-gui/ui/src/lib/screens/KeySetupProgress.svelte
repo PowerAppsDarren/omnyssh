@@ -13,6 +13,7 @@
   import { reloadHosts } from '$lib/ipc/commands';
   import { spawnSession } from '$lib/stores/navigation';
   import { lastError } from '$lib/stores/notifications';
+  import { maskText } from '$lib/stores/streamer';
 
   const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -122,7 +123,7 @@
             {:else}
               <p class="text-sm font-medium">Key setup failed</p>
             {/if}
-            <p class="break-words text-xs text-muted">{phase.error}</p>
+            <p class="break-words text-xs text-muted">{$maskText(phase.error)}</p>
             {#if !phase.passwordMayBeOff}
               <p class="text-xs text-faint">Password login was not changed.</p>
             {/if}
@@ -143,7 +144,7 @@
               A step after password login was turned off failed, so OmnySSH restored the
               server's SSH settings from its backup. Password login works as before.
             </p>
-            <p class="break-words text-xs text-faint">Cause: {phase.result}</p>
+            <p class="break-words text-xs text-faint">Cause: {$maskText(phase.result)}</p>
           </div>
         </div>
         <div class="flex justify-end">
