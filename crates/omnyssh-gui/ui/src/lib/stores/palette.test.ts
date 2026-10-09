@@ -29,9 +29,17 @@ describe('paletteItems — filter & sections', () => {
   const hosts = [host('web-1', { tags: ['prod'] }), host('db-1', { user: 'root' }), host('web-2')];
   const sessions = [session(1, 'web-1', 'terminal'), session(2, 'db-1', 'sftp')];
 
-  it('navigator lists sessions first, then hosts', () => {
+  it('navigator lists sessions first, then hosts, then commands', () => {
     const items = paletteItems('navigate', hosts, sessions, '');
-    expect(items.map((i) => i.kind)).toEqual(['session', 'session', 'host', 'host', 'host']);
+    expect(items.map((i) => i.kind)).toEqual(['session', 'session', 'host', 'host', 'host', 'command']);
+  });
+
+  it('matches the streamer command by its label, in the navigator only', () => {
+    const toggle = { kind: 'command', id: 'toggle-streamer', label: 'Toggle streamer mode' };
+    expect(paletteItems('navigate', hosts, sessions, 'streamer')).toEqual([toggle]);
+    expect(paletteItems('navigate', hosts, sessions, 'toggle mode')).toEqual([toggle]);
+    expect(paletteItems('navigate', hosts, sessions, 'web')).not.toContainEqual(toggle);
+    expect(paletteItems('pickHost', hosts, sessions, 'streamer')).toEqual([]);
   });
 
   it('picker lists only hosts', () => {
@@ -61,7 +69,7 @@ describe('paletteItems — filter & sections', () => {
   });
 
   it('an empty query keeps everything', () => {
-    expect(paletteItems('navigate', hosts, sessions, '   ')).toHaveLength(5);
+    expect(paletteItems('navigate', hosts, sessions, '   ')).toHaveLength(6);
   });
 
   it('lists a shared host name once, as its first host, whatever the query', () => {
@@ -97,6 +105,13 @@ describe('paletteSignature — stable across volatile updates', () => {
     const withoutSession = paletteItems('navigate', [host('web-1')], [], '');
     const withSession = paletteItems('navigate', [host('web-1')], [session(1, 'web-1')], '');
     expect(paletteSignature(withoutSession)).not.toBe(paletteSignature(withSession));
+  });
+
+  it('changes when the query drops the command row', () => {
+    const all = paletteItems('navigate', [host('web-1')], [], '');
+    const hostOnly = paletteItems('navigate', [host('web-1')], [], 'web');
+    expect(paletteSignature(all)).toBe(`h:web-1\u0000c:toggle-streamer`);
+    expect(paletteSignature(hostOnly)).toBe('h:web-1');
   });
 });
 

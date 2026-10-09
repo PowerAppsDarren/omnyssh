@@ -20,7 +20,7 @@ import { statuses } from '$lib/stores/statuses';
 import { metrics } from '$lib/stores/metrics';
 import { services, type HostServices } from '$lib/stores/services';
 import { tunnels } from '$lib/stores/tunnels';
-import { displayHostname } from '$lib/stores/streamer';
+import { displayHostname, REVEALS_NOTHING } from '$lib/stores/streamer';
 import type { CardSort } from '$lib/stores/dashboardView';
 import { bracketed } from './hostForm';
 
@@ -87,9 +87,6 @@ export function deriveTunnel(host: HostDto, status: TunnelStatusDto | undefined)
       return { ...base, running: false, dot: 'unknown', label: 'Off' };
   }
 }
-
-// Loopback and wildcard addresses reveal nothing, and read wrong disguised.
-const REVEALS_NOTHING = /^(localhost|127(\.\d{1,3}){3}|::1|\*|0\.0\.0\.0|::)$/i;
 
 /** An address as a forward shows it: masked in streamer mode like any host address. */
 function shown(address: string, streamerOn: boolean): string {

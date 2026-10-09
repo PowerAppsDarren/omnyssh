@@ -845,6 +845,44 @@ impl App {
                 ));
             }
 
+            CoreEvent::KeySetupPartial(host_name, key_path) => {
+                tracing::info!(
+                    host = %host_name,
+                    key = %key_path.display(),
+                    "key setup partial: password login still on"
+                );
+
+                // The key works, but the server still takes the password, so
+                // it stays saved.
+                {
+                    let mut state = self.state.write().await;
+                    if let Some(host) = state.hosts.iter_mut().find(|h| h.name == host_name) {
+                        host.identity_file = Some(key_path.to_string_lossy().to_string());
+                        host.key_setup_date = Some(chrono::Utc::now().to_rfc3339());
+                        host.password_auth_disabled = Some(false);
+                    }
+                    if let Err(e) = config::save_hosts(&state.hosts) {
+                        tracing::warn!("Failed to save hosts after key setup: {}", e);
+                    }
+                }
+
+                self.view.host_list.popup = None;
+                self.view.status_message = Some(format!(
+                    "⚠ Key login works for '{}', but password login is still on (needs sudo without a password). Key: {}",
+                    host_name,
+                    key_path.display()
+                ));
+            }
+
+            CoreEvent::KeySetupFailedUnsafe(host_name, error) => {
+                tracing::error!(host = %host_name, error = %error, "key setup failed, password login may be off");
+                self.view.host_list.popup = None;
+                self.view.status_message = Some(format!(
+                    "✗ Key setup failed for '{}' and password login may be off: {}",
+                    host_name, error
+                ));
+            }
+
             CoreEvent::KeySetupFailed(host_name, error) => {
                 tracing::error!(host = %host_name, error = %error, "key setup failed");
                 // Close popup and show error.

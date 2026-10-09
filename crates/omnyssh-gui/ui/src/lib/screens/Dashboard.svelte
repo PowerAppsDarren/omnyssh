@@ -41,9 +41,14 @@
   import { emptyForm, formFromHost } from './hostForm';
   import { clampToScroller, dropTarget, scrollParent, scrollStep, swallowClick } from './cardDrag';
   import HostEditor from './HostEditor.svelte';
+  import KeySetupConfirm from './KeySetupConfirm.svelte';
   import Modal from '$lib/components/Modal.svelte';
 
-  type Dialog = { kind: 'add' } | { kind: 'edit'; host: HostDto } | { kind: 'delete'; host: HostDto };
+  type Dialog =
+    | { kind: 'add' }
+    | { kind: 'edit'; host: HostDto }
+    | { kind: 'delete'; host: HostDto }
+    | { kind: 'keySetup'; host: HostDto; rerun: boolean };
 
   let dialog = $state<Dialog | null>(null);
 
@@ -334,8 +339,8 @@
     dialog = null;
   }
 
-  // Host-first auto key-setup (tech-gui.md §4.2). Open the progress panel immediately,
-  // then kick the backend flow; its progress/outcome arrive as `key-setup-*` events.
+  // Host-first auto key-setup (tech-gui.md §4.2), once the confirm dialog is accepted.
+  // Open the progress panel immediately, then kick the backend flow; its progress/outcome arrive as `key-setup-*` events.
   // A synchronous reject (unknown host) closes the panel and surfaces the error.
   async function setupKey(host: HostDto): Promise<void> {
     beginKeySetup(host.name);
@@ -345,6 +350,11 @@
       dismissKeySetup();
       lastError.set(message(e));
     }
+  }
+
+  function confirmKeySetup(host: HostDto): void {
+    dialog = null;
+    void setupKey(host);
   }
 
   // The outcome arrives as `tunnel-status-changed`; only a rejected command lands here.
@@ -620,16 +630,27 @@
                   ssh config
                 </span>
               {/if}
-              <!-- Auth-state reflection (tech-gui.md §4.2): key-only once password
-                   auth is disabled, otherwise a plain key badge when a key exists. -->
-              {#if card.host.passwordAuthDisabled}
+              <!-- Auth-state reflection (tech-gui.md §4.2): a shield once password login
+                   is off; "Password on" when OmnySSH set up the key but the server still
+                   takes passwords (offers the re-run); else a plain key badge. -->
+              {#if card.host.passwordAuthDisabled === true}
                 <span
-                  class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
-                  title="Password authentication disabled — key only"
+                  class="inline-flex shrink-0 items-center rounded-full border border-default p-1 text-faint"
+                  role="img"
+                  title="Key login only"
+                  aria-label="Key login only"
                 >
                   <Icon name="shield" size={10} />
-                  key-only
                 </span>
+              {:else if card.host.passwordAuthDisabled === false}
+                <button
+                  type="button"
+                  class="inline-flex shrink-0 items-center gap-1 rounded-full border border-status-warn px-1.5 py-0.5 text-[10px] text-status-warn hover:bg-surface-inset"
+                  title="Key login works, but the server still accepts passwords. Turn off password login…"
+                  onclick={() => (dialog = { kind: 'keySetup', host: card.host, rerun: true })}
+                >
+                  Password on
+                </button>
               {:else if card.host.hasKey}
                 <span
                   class="inline-flex shrink-0 items-center gap-1 rounded-full border border-default px-1.5 py-0.5 text-[10px] text-faint"
@@ -686,7 +707,7 @@
               class={iconBtn}
               title="Set up an SSH key for {card.host.name}"
               aria-label="Set up an SSH key for {card.host.name}"
-              onclick={() => setupKey(card.host)}
+              onclick={() => (dialog = { kind: 'keySetup', host: card.host, rerun: false })}
             >
               <Icon name="key" size={14} />
             </button>
@@ -848,6 +869,14 @@
     previousName={host.name}
     imported={host.source === 'sshConfig'}
     onSubmit={submit}
+    onCancel={() => (dialog = null)}
+  />
+{:else if dialog?.kind === 'keySetup'}
+  {@const host = dialog.host}
+  <KeySetupConfirm
+    {host}
+    rerun={dialog.rerun}
+    onConfirm={() => confirmKeySetup(host)}
     onCancel={() => (dialog = null)}
   />
 {:else if dialog?.kind === 'delete'}
