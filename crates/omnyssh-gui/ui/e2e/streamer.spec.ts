@@ -13,13 +13,13 @@ const HOSTS = [
     source: 'manual',
     hasKey: true,
     monitoring: 'ssh',
-    localForwards: [{ bindPort: 8080, remoteHost: '10.20.3.7', remotePort: 5432 }],
+    localForwards: [{ bindAddress: '192.168.1.5', bindPort: 8080, remoteHost: '10.20.3.7', remotePort: 5432 }],
     tunnelAutostart: false,
     forwardAgent: false
   }
 ];
 
-async function boot(page: Page, streamer: boolean): Promise<void> {
+async function boot(page: Page, streamer: boolean, hosts: unknown[] = HOSTS): Promise<void> {
   await page.addInitScript(
     ({ hosts, streamer }) => {
       localStorage.setItem('omnyssh-streamer-mode', String(streamer));
@@ -37,6 +37,9 @@ async function boot(page: Page, streamer: boolean): Promise<void> {
           switch (cmd) {
             case 'list_hosts':
               return Promise.resolve(hosts);
+            case 'save_host':
+              win.__saved = args;
+              return Promise.resolve(null);
             case 'plugin:event|listen': {
               const { event, handler } = args as { event: string; handler: number };
               (listeners[event] ||= []).push(handler);
@@ -56,7 +59,7 @@ async function boot(page: Page, streamer: boolean): Promise<void> {
         }
       };
     },
-    { hosts: HOSTS, streamer }
+    { hosts, streamer }
   );
   await page.goto('/');
   await expect(page.getByText('1 host', { exact: true })).toBeVisible();
@@ -140,4 +143,150 @@ test('Ctrl+Shift+S toggles streamer mode and re-masks what is already on screen'
   await expect(statusBar).toContainText('10.20.3.7');
   await expect(statusBar.getByRole('button', { name: /^Streamer mode is on/ })).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: 'Search hosts' })).toHaveValue('');
+});
+
+test('the host form shows disguised addresses until Reveal, and saves the real ones', async ({ page }) => {
+  await boot(page, true);
+  await page.getByRole('button', { name: 'Edit db' }).click();
+  let editor = page.getByRole('dialog', { name: 'Edit host' });
+  let hostname = editor.getByLabel('Hostname / IP');
+  const local = editor.getByLabel('Forward 1 local port');
+  const remote = editor.getByLabel('Forward 1 remote host');
+
+  await expect(hostname).toHaveAttribute('readonly', '');
+  await expect(hostname).toHaveValue(/^[a-z]+\d+\.com$/);
+  await expect(local).toHaveAttribute('readonly', '');
+  await expect(local).toHaveValue(/^\d+\.\d+\.\d+\.\d+:8080$/);
+  await expect(local).not.toHaveValue('192.168.1.5:8080');
+  await expect(remote).toHaveAttribute('readonly', '');
+  await expect(remote).not.toHaveValue('10.20.3.7');
+  // Edit focus skips the disguised field.
+  await expect(editor.getByLabel('User', { exact: true })).toBeFocused();
+
+  await editor.getByRole('button', { name: 'Reveal' }).first().click();
+  await expect(hostname).toHaveValue('db.example.com');
+  await expect(hostname).toBeFocused();
+  await expect(hostname).not.toHaveAttribute('readonly');
+  await expect(local).toHaveValue('192.168.1.5:8080');
+  await expect(remote).toHaveValue('10.20.3.7');
+  await expect(editor.getByRole('button', { name: 'Reveal' })).toHaveCount(0);
+
+  // A reveal lasts for this open form only; saving while disguised keeps the real values.
+  await editor.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('button', { name: 'Edit db' }).click();
+  editor = page.getByRole('dialog', { name: 'Edit host' });
+  hostname = editor.getByLabel('Hostname / IP');
+  await expect(hostname).toHaveAttribute('readonly', '');
+  await editor.getByRole('button', { name: 'Save' }).click();
+  await expect(editor).toHaveCount(0);
+  const saved = await page.evaluate(() => JSON.stringify((window as unknown as { __saved: unknown }).__saved));
+  expect(saved).toContain('"hostname":"db.example.com"');
+  expect(saved).toContain('"remoteHost":"10.20.3.7"');
+});
+
+test('a new host and new forwards stay editable in streamer mode, and save as typed', async ({ page }) => {
+  await boot(page, true);
+  await page.getByRole('button', { name: 'Add host' }).click();
+  const editor = page.getByRole('dialog', { name: 'Add host' });
+  const hostname = editor.getByLabel('Hostname / IP');
+  await expect(hostname).not.toHaveAttribute('readonly');
+  await expect(editor.getByRole('button', { name: 'Reveal' })).toHaveCount(0);
+
+  await editor.getByLabel('Name', { exact: true }).fill('cache');
+  await hostname.fill('cache.example.com');
+  await expect(hostname).toHaveValue('cache.example.com');
+  await expect(hostname).not.toHaveAttribute('readonly');
+
+  await editor.getByRole('button', { name: 'Add forward' }).click();
+  await editor.getByLabel('Forward 1 local port').fill('6380');
+  await editor.getByLabel('Forward 1 remote host').fill('10.9.8.7');
+  await editor.getByLabel('Forward 1 remote port').fill('6379');
+  await expect(editor.getByLabel('Forward 1 remote host')).toHaveValue('10.9.8.7');
+  await expect(editor.getByRole('button', { name: 'Reveal' })).toHaveCount(0);
+
+  await editor.getByRole('button', { name: 'Add host' }).click();
+  await expect(editor).toHaveCount(0);
+  const saved = await page.evaluate(() => JSON.stringify((window as unknown as { __saved: unknown }).__saved));
+  expect(saved).toContain('"hostname":"cache.example.com"');
+  expect(saved).toContain('"remoteHost":"10.9.8.7"');
+});
+
+test('only the forwards present at open are disguised', async ({ page }) => {
+  await boot(page, true);
+  await page.getByRole('button', { name: 'Edit db' }).click();
+  const editor = page.getByRole('dialog', { name: 'Edit host' });
+
+  await editor.getByRole('button', { name: 'Add forward' }).click();
+  await expect(editor.getByLabel('Forward 1 remote host')).toHaveAttribute('readonly', '');
+  const added = editor.getByLabel('Forward 2 remote host');
+  await expect(added).not.toHaveAttribute('readonly');
+  await added.fill('10.1.2.3');
+  await expect(added).toHaveValue('10.1.2.3');
+  await expect(editor.getByRole('button', { name: 'Reveal' })).toHaveCount(2);
+
+  // Removing the disguised row leaves the added one, still editable, and no forward to reveal.
+  await editor.getByRole('button', { name: 'Remove forward 1' }).click();
+  await expect(editor.getByLabel('Forward 1 remote host')).toHaveValue('10.1.2.3');
+  await expect(editor.getByLabel('Forward 1 remote host')).not.toHaveAttribute('readonly');
+  await expect(editor.getByRole('button', { name: 'Reveal' })).toHaveCount(1);
+  await expect(editor.getByLabel('Hostname / IP')).toHaveAttribute('readonly', '');
+});
+
+test('switching streamer mode on mid-edit never locks the field being typed in', async ({ page }) => {
+  await boot(page, false);
+  await page.getByRole('button', { name: 'Edit db' }).click();
+  const editor = page.getByRole('dialog', { name: 'Edit host' });
+  const hostname = editor.getByLabel('Hostname / IP');
+  const remote = editor.getByLabel('Forward 1 remote host');
+
+  await hostname.fill('db2.example.com');
+  await hostname.press('Control+Shift+S');
+  await expect(page.getByRole('contentinfo').getByRole('button', { name: /^Streamer mode is on/ })).toBeVisible();
+  await expect(hostname).not.toHaveAttribute('readonly');
+  await expect(hostname).toBeFocused();
+  await hostname.press('x');
+  await expect(hostname).toHaveValue('db2.example.comx');
+  // The untouched forward was there at open, so it is disguised now.
+  await expect(remote).toHaveAttribute('readonly', '');
+  await expect(remote).not.toHaveValue('10.20.3.7');
+});
+
+test('turning streamer mode off and on again hides a revealed form again', async ({ page }) => {
+  await boot(page, true);
+  await page.getByRole('button', { name: 'Edit db' }).click();
+  const editor = page.getByRole('dialog', { name: 'Edit host' });
+  const hostname = editor.getByLabel('Hostname / IP');
+  const remote = editor.getByLabel('Forward 1 remote host');
+
+  await editor.getByRole('button', { name: 'Reveal' }).first().click();
+  await expect(hostname).toHaveValue('db.example.com');
+  await hostname.press('Control+Shift+S');
+  await hostname.press('Control+Shift+S');
+  await expect(page.getByRole('contentinfo').getByRole('button', { name: /^Streamer mode is on/ })).toBeVisible();
+  await expect(hostname).toHaveAttribute('readonly', '');
+  await expect(hostname).not.toHaveValue('db.example.com');
+  await expect(remote).toHaveAttribute('readonly', '');
+  await expect(remote).not.toHaveValue('10.20.3.7');
+  await expect(editor.getByRole('button', { name: 'Reveal' })).toHaveCount(2);
+});
+
+test('a field its disguise leaves as is stays editable without a Reveal', async ({ page }) => {
+  await boot(page, true, [
+    { ...HOSTS[0], localForwards: [{ bindPort: 8080, remoteHost: 'localhost', remotePort: 80 }] }
+  ]);
+  await page.getByRole('button', { name: 'Edit db' }).click();
+  const editor = page.getByRole('dialog', { name: 'Edit host' });
+  const local = editor.getByLabel('Forward 1 local port');
+  const remote = editor.getByLabel('Forward 1 remote host');
+
+  await expect(local).toHaveValue('8080');
+  await expect(local).not.toHaveAttribute('readonly');
+  await expect(remote).toHaveValue('localhost');
+  await expect(remote).not.toHaveAttribute('readonly');
+  // Only the hostname is held, and changing the port leaves it disguised.
+  await expect(editor.getByRole('button', { name: 'Reveal' })).toHaveCount(1);
+  await local.fill('9090');
+  await expect(local).toHaveValue('9090');
+  await expect(editor.getByLabel('Hostname / IP')).toHaveAttribute('readonly', '');
+  await expect(editor.getByLabel('Hostname / IP')).not.toHaveValue('db.example.com');
 });
